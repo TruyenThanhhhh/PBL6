@@ -1,0 +1,48 @@
+================================================================================
+HƯỚNG DẪN COPY-PASTE NHANH VÀO TRELLO (KHÔNG CẦN DÙNG CODE/API)
+================================================================================
+Bạn chỉ cần:
+1. Mở Board Trello của nhóm bạn (tạo sẵn 3 cột: "Cần Làm", "Đang Làm", "Đã Xong").
+2. Copy toàn bộ danh sách ở từng mục dưới đây.
+3. Bấm "Add a card" ở cột tương ứng rồi Paste (Ctrl + V) vào.
+4. Trello sẽ hiện hộp thoại hỏi: "Do you want to create X cards or just one?" -> Bấm "Create X cards"!
+
+--------------------------------------------------------------------------------
+MỤC 1: COPY DÁN VÀO CỘT "ĐÃ XONG (DONE)" (10 THẺ):
+--------------------------------------------------------------------------------
+[TASK-01] Khảo sát phần cứng máy (RTX 3050 4GB) & tài liệu đề tài
+[TASK-02] So sánh định lượng 6 họ LLM & chọn Qwen 2.5 3B + BGE-M3
+[TASK-03] Thiết kế kiến trúc phân tầng, SQLite Schema 6 bảng & API Spec
+[TASK-04] Cài đặt Ollama & tải model Qwen 2.5 3B chạy trên GPU
+[TASK-05] Bộ Document Parser bóc tách sạch file PDF, DOCX, PPTX, TXT
+[TASK-06] Thuật toán Smart Recursive Text Chunking kèm metadata số trang
+[TASK-07] CSDL SQLite knowledge.db & Full-Text Search FTS5 (BM25)
+[TASK-08] Lõi AI Service: Trò chuyện tự nhiên + Tổng hợp ý nghĩa + Trích dẫn
+[TASK-09] Giao diện Web UI MVP kéo-thả upload file & chat RAG
+[TASK-10] Script 1-click start_app.bat & kiểm thử trọn vẹn luồng RAG
+
+--------------------------------------------------------------------------------
+MỤC 2: COPY DÁN VÀO CỘT "ĐANG LÀM (IN PROGRESS)" (3 THẺ):
+--------------------------------------------------------------------------------
+[TASK-11] Tích hợp thư viện fastembed & Dense Embedding BGE-M3 (1024 dims)
+[TASK-12] Triển khai thuật toán Reciprocal Rank Fusion (RRF) gộp Dense + BM25
+[TASK-14] Citation Viewer Modal: Click vào trích dẫn xem đoạn văn bản gốc
+
+--------------------------------------------------------------------------------
+MỤC 3: COPY DÁN VÀO CỘT "CẦN LÀM (TO DO)" (15 THẺ):
+--------------------------------------------------------------------------------
+[TASK-13] Tích hợp Cross-Encoder Reranker (bge-reranker-v2-m3)
+[TASK-15] Xây dựng Network Monitor & Giới hạn VRAM GPU < 3.5GB
+[TASK-16] Nút gạt chuyển đổi linh hoạt Qwen 3B (Fast) & 7B (Deep)
+[TASK-17] Tích hợp DuckDuckGo Search API tra cứu Internet
+[TASK-18] Web Content Extractor làm sạch HTML & gắn link URL
+[TASK-19] AI Router: Intent Classifier & Time-sensitive Detector
+[TASK-20] Cơ chế Fallback tự động khi mất mạng hoặc Web lỗi
+[TASK-21] Backend API sinh Tóm tắt, Flashcard và Quiz
+[TASK-22] Màn hình Study Center: Flashcard lật mặt & Bảng Quiz
+[TASK-23] Thuật toán đối chiếu và so sánh đa tài liệu (Multi-doc)
+[TASK-24] Tính năng xuất báo cáo nghiên cứu dạng Markdown/PDF
+[TASK-25] Xây dựng bộ test Benchmark 50 câu hỏi tiếng Việt
+[TASK-26] Đo lường định lượng Hit Rate@5, MRR, Ragas Faithfulness
+[TASK-27] Viết toàn bộ Báo cáo Thuyết minh Đồ án PBL6
+[TASK-28] Thiết kế Slide thuyết trình bảo vệ & quay Video Demo
