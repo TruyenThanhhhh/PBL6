@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal AI Knowledge Platform - MVP Local RAG</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    .chat-bubble-user { background: #2563eb; color: white; border-radius: 18px 18px 4px 18px; }
+    .chat-bubble-ai { background: #f1f5f9; color: #1e293b; border-radius: 18px 18px 18px 4px; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shadow-md shadow-blue-500/20">
+        <i class="fa-solid fa-brain"></i>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold text-slate-900 leading-tight">Personal AI Knowledge Platform</h1>
+        <p class="text-xs text-slate-500">Local-First • SQLite FTS5 RAG • Ollama Local LLM</p>
+      </div>
+    </div>
+    <div id="ollama-status-badge" class="flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+      <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+      <span>Đang kiểm tra kết nối...</span>
+    </div>
+  </header>
+
+  <!-- Main Content Layout -->
+  <div class="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 md:grid-cols-12 gap-6">
+
+    <!-- Cột trái: Quản lý Tài liệu & Workspace (4 cols) -->
+    <div class="md:col-span-4 flex flex-col space-y-4">
+      
+      <!-- Box Upload tài liệu -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <h2 class="text-sm font-semibold text-slate-900 flex items-center mb-3">
+          <i class="fa-solid fa-cloud-arrow-up text-blue-600 mr-2"></i> Tải Lên Tài Liệu
+        </h2>
+        
+        <div id="drop-zone" class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center cursor-pointer transition bg-slate-50 hover:bg-blue-50/50">
+          <input type="file" id="file-input" class="hidden" accept=".pdf,.docx,.txt,.md" />
+          <i class="fa-solid fa-file-arrow-up text-3xl text-slate-400 mb-2"></i>
+          <p class="text-xs text-slate-600 font-medium">Bấm vào đây hoặc kéo thả file</p>
+          <p class="text-[11px] text-slate-400 mt-1">Hỗ trợ PDF, DOCX, TXT, Markdown</p>
+        </div>
+        
+        <div id="upload-progress" class="hidden mt-3 text-xs text-blue-600 flex items-center">
+          <i class="fa-solid fa-circle-notch fa-spin mr-2"></i> Đang bóc tách và phân đoạn (chunking)...
+        </div>
+      </div>
+
+      <!-- Danh sách tài liệu trong Workspace -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex-1 flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-slate-900 flex items-center">
+            <i class="fa-solid fa-folder-open text-amber-500 mr-2"></i> Kho Tri Thức (<span id="doc-count">0</span>)
+          </h2>
+          <button onclick="loadDocuments()" class="text-xs text-slate-400 hover:text-blue-600 transition">
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+        </div>
+        
+        <div id="document-list" class="space-y-2 overflow-y-auto max-h-[380px] flex-1 pr-1">
+          <!-- Documents Render Here -->
+          <div class="text-xs text-slate-400 text-center py-8">Chưa có tài liệu nào. Hãy tải lên file đầu tiên!</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Cột phải: Chat & RAG Interaction (8 cols) -->
+    <div class="md:col-span-8 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col h-[750px]">
+      
+      <!-- Chat Header -->
+      <div class="px-6 py-3.5 border-b border-slate-100 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+          <span class="text-xs font-semibold text-slate-700">Hỏi Đáp Tri Thức (Local RAG)</span>
+        </div>
+        <div class="text-xs text-slate-400">
+          Chế độ: <span class="text-blue-600 font-medium bg-blue-50 px-2 py-0.5 rounded">Local Mode</span>
+        </div>
+      </div>
+
+      <!-- Chat Messages Container -->
+      <div id="chat-messages" class="flex-1 p-6 overflow-y-auto space-y-4">
+        
+        <!-- Welcome Message -->
+        <div class="flex items-start space-x-3">
+          <div class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+            <i class="fa-solid fa-robot"></i>
+          </div>
+          <div class="chat-bubble-ai px-4 py-3 text-sm max-w-xl shadow-sm">
+            <p class="font-medium text-slate-800 mb-1">Xin chào!</p>
+            <p class="text-slate-600 leading-relaxed text-xs">
+              Tôi là trợ lý tri thức cá nhân của bạn. Bạn hãy tải các file tài liệu (PDF, DOCX, TXT) ở cột bên trái lên, sau đó đặt câu hỏi. Tôi sẽ tìm kiếm các đoạn ngữ cảnh liên quan và trả lời kèm trích dẫn nguồn cụ thể!
+            </p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Chat Input Box -->
+      <div class="p-4 border-t border-slate-100">
+        <form id="chat-form" class="flex items-center space-x-2">
+          <input 
+            type="text" 
+            id="chat-input" 
+            placeholder="Hỏi bất cứ điều gì về tài liệu của bạn..." 
+            class="flex-1 text-sm bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition"
+            required
+          />
+          <button 
+            type="submit" 
+            id="send-btn"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl text-sm font-medium transition shadow-md shadow-blue-500/20 flex items-center space-x-2"
+          >
+            <span>Gửi</span>
+            <i class="fa-solid fa-paper-plane text-xs"></i>
+          </button>
+        </form>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const API_BASE = "/api/v1";
+    const workspaceId = "default";
+
+    // 1. Kiểm tra trạng thái hệ thống
+    async function checkStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/status`);
+        const data = await res.json();
+        const badge = document.getElementById("ollama-status-badge");
+        if (data.ollama.running) {
+          badge.className = "flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+          badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span>Ollama Online (${data.ollama.available_models.length} model)</span>`;
+        } else {
+          badge.className = "flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
+          badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span><span>Ollama Chưa Bật (Chạy Context Fallback)</span>`;
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // 2. Tải danh sách tài liệu
+    async function loadDocuments() {
+      try {
+        const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/documents`);
+        const data = await res.json();
+        const list = document.getElementById("document-list");
+        const count = document.getElementById("doc-count");
+        count.innerText = data.documents.length;
+
+        if (data.documents.length === 0) {
+          list.innerHTML = `<div class="text-xs text-slate-400 text-center py-8">Chưa có tài liệu nào. Hãy tải lên file đầu tiên!</div>`;
+          return;
+        }
+
+        list.innerHTML = data.documents.map(doc => `
+          <div class="p-3 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200/60 flex items-center justify-between transition">
+            <div class="flex items-center space-x-2.5 overflow-hidden">
+              <i class="fa-solid fa-file-lines text-blue-500 text-base shrink-0"></i>
+              <div class="truncate">
+                <p class="text-xs font-medium text-slate-800 truncate" title="${doc.file_name}">${doc.file_name}</p>
+                <p class="text-[10px] text-slate-400">${doc.total_chunks} chunks • ${(doc.file_size / 1024).toFixed(1)} KB</p>
+              </div>
+            </div>
+            <button onclick="deleteDoc('${doc.id}')" class="text-slate-400 hover:text-rose-500 p-1 transition" title="Xóa">
+              <i class="fa-solid fa-trash-can text-xs"></i>
+            </button>
+          </div>
+        `).join("");
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // 3. Xóa tài liệu
+    async function deleteDoc(id) {
+      if (!confirm("Bạn có chắc muốn xóa tài liệu này?")) return;
+      await fetch(`${API_BASE}/documents/${id}`, { method: "DELETE" });
+      loadDocuments();
+    }
+
+    // 4. Xử lý Upload file
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+    const uploadProgress = document.getElementById("upload-progress");
+
+    dropZone.onclick = () => fileInput.click();
+    fileInput.onchange = (e) => {
+      if (e.target.files.length) uploadFile(e.target.files[0]);
+    };
+
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add("border-blue-500", "bg-blue-50/50"); };
+    dropZone.ondragleave = () => { dropZone.classList.remove("border-blue-500", "bg-blue-50/50"); };
+    dropZone.ondrop = (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("border-blue-500", "bg-blue-50/50");
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    };
+
+    async function uploadFile(file) {
+      uploadProgress.classList.remove("hidden");
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/documents/upload`, {
+          method: "POST",
+          body: formData
+        });
+        if (res.ok) {
+          loadDocuments();
+        } else {
+          alert("Lỗi khi tải file!");
+        }
+      } catch (err) {
+        alert("Lỗi kết nối máy chủ");
+      } finally {
+        uploadProgress.classList.add("hidden");
+        fileInput.value = "";
+      }
+    }
+
+    // 5. Xử lý Chat
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const chatMessages = document.getElementById("chat-messages");
+
+    chatForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const query = chatInput.value.trim();
+      if (!query) return;
+
+      // Render tin nhắn người dùng
+      chatMessages.innerHTML += `
+        <div class="flex items-start justify-end space-x-3">
+          <div class="chat-bubble-user px-4 py-3 text-sm max-w-xl shadow-sm">
+            <p>${escapeHtml(query)}</p>
+          </div>
+        </div>
+      `;
+      chatInput.value = "";
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // Loading bubble
+      const loadingId = "loading-" + Date.now();
+      chatMessages.innerHTML += `
+        <div id="${loadingId}" class="flex items-start space-x-3">
+          <div class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+            <i class="fa-solid fa-robot"></i>
+          </div>
+          <div class="chat-bubble-ai px-4 py-3 text-sm max-w-xl shadow-sm text-slate-500 flex items-center space-x-2">
+            <i class="fa-solid fa-circle-notch fa-spin text-blue-600"></i>
+            <span class="text-xs">Đang truy xuất ngữ cảnh và tạo câu trả lời...</span>
+          </div>
+        </div>
+      `;
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      try {
+        const res = await fetch(`${API_BASE}/chat/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_id: workspaceId, query: query })
+        });
+        const data = await res.json();
+        
+        document.getElementById(loadingId).remove();
+
+        // Render Citations HTML
+        let citationsHtml = "";
+        if (data.citations && data.citations.length > 0) {
+          citationsHtml = `
+            <div class="mt-3 pt-3 border-t border-slate-200/60">
+              <p class="text-[11px] font-semibold text-slate-500 mb-1.5 uppercase tracking-wider flex items-center">
+                <i class="fa-solid fa-quote-left mr-1.5 text-blue-500"></i> Bằng chứng trích dẫn (${data.citations.length}):
+              </p>
+              <div class="space-y-1.5">
+                ${data.citations.map(c => `
+                  <div class="text-[11px] bg-white p-2 rounded-lg border border-slate-200 text-slate-600">
+                    <div class="font-medium text-blue-600 mb-0.5">[${c.ref_id}] ${c.document_name} (Trang ${c.page_number})</div>
+                    <div class="italic text-slate-500 line-clamp-2">"${c.snippet}"</div>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          `;
+        }
+
+        chatMessages.innerHTML += `
+          <div class="flex items-start space-x-3">
+            <div class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+              <i class="fa-solid fa-robot"></i>
+            </div>
+            <div class="chat-bubble-ai px-4 py-3 text-sm max-w-xl shadow-sm">
+              <div class="text-slate-800 leading-relaxed whitespace-pre-wrap">${data.answer}</div>
+              ${citationsHtml}
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById(loadingId).remove();
+        chatMessages.innerHTML += `
+          <div class="text-xs text-rose-500 text-center py-2">Lỗi khi gọi API: ${err.message}</div>
+        `;
+      }
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    };
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // Khởi chạy khi load trang
+    checkStatus();
+    loadDocuments();
+  </script>
+</body>
+</html>

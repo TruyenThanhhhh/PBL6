@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# CSDL & Dữ liệu tải lên cá nhân
+sourcecode/backend/data/uploads/*
+!sourcecode/backend/data/uploads/.gitkeep
+*.db-journal
+*.sqlite3-journal
+
+# Python Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Cache thư viện AI & HuggingFace
+.cache/
+hf_cache/
+models/
