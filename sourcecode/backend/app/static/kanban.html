@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bảng Kanban Dự Án PBL6 - Nhóm 3 Thành Viên</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    .kanban-col { min-height: 650px; }
+    .task-card { cursor: grab; transition: all 0.2s ease; }
+    .task-card:active { cursor: grabbing; }
+    .task-card.dragging { opacity: 0.4; transform: scale(0.98); }
+    .drag-over { background-color: #f1f5f9; border: 2px dashed #3b82f6 !important; }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between sticky top-0 z-20 shadow-sm">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shadow-md shadow-blue-500/20">
+        <i class="fa-solid fa-table-columns"></i>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold text-slate-900 leading-tight">Bảng Kanban Dự Án PBL6</h1>
+        <p class="text-xs text-slate-500">Nền tảng Trợ lý Tri thức Cá nhân Đa nguồn • Nhóm 3 Thành Viên</p>
+      </div>
+    </div>
+
+    <!-- Thanh công cụ lọc & Điều hướng -->
+    <div class="flex items-center space-x-3 mt-2 sm:mt-0">
+      <div class="relative">
+        <input 
+          type="text" 
+          id="search-input" 
+          placeholder="Tìm task..." 
+          class="text-xs bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-2 focus:outline-none focus:border-blue-500 w-44 transition"
+        />
+        <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2.5 text-xs text-slate-400"></i>
+      </div>
+
+      <!-- Bộ lọc thành viên -->
+      <select id="member-filter" class="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500">
+        <option value="all">👥 Tất cả thành viên</option>
+        <option value="tv1">🔵 Thành viên 1 (AI / RAG)</option>
+        <option value="tv2">🟣 Thành viên 2 (Backend / Data)</option>
+        <option value="tv3">🟢 Thành viên 3 (Frontend / UI)</option>
+      </select>
+
+      <a href="/" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium px-3.5 py-2 rounded-lg border border-blue-200 transition flex items-center space-x-1.5">
+        <i class="fa-solid fa-comments"></i>
+        <span>Vào Chat RAG</span>
+      </a>
+
+      <button onclick="resetKanban()" class="text-xs text-slate-400 hover:text-slate-600 p-2" title="Khôi phục trạng thái mặc định">
+        <i class="fa-solid fa-rotate-left"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Progress Bar Header -->
+  <div class="bg-white border-b border-slate-200 px-6 py-2.5 flex items-center justify-between text-xs text-slate-600">
+    <div class="flex items-center space-x-4">
+      <span>Tiến độ tổng thể: <strong id="progress-text" class="text-blue-600 font-bold">0%</strong></span>
+      <div class="w-48 bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
+        <div id="progress-bar" class="bg-blue-600 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="flex items-center space-x-3 text-[11px]">
+      <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-blue-500 mr-1.5"></span>TV1: AI/LLM</span>
+      <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-purple-500 mr-1.5"></span>TV2: Backend/DB</span>
+      <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 mr-1.5"></span>TV3: Frontend/UI</span>
+    </div>
+  </div>
+
+  <!-- Main Kanban Board Layout -->
+  <main class="flex-1 p-6 max-w-7xl w-full mx-auto">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+      <!-- CỘT 1: TO DO -->
+      <div class="flex flex-col bg-slate-200/60 rounded-2xl p-4 border border-slate-200">
+        <div class="flex items-center justify-between mb-3 px-1">
+          <div class="flex items-center space-x-2">
+            <span class="w-3 h-3 rounded-full bg-slate-400"></span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-slate-700">📋 Cần Làm (To Do)</h2>
+          </div>
+          <span id="count-todo" class="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-300 text-slate-700">0</span>
+        </div>
+        
+        <div id="col-todo" class="kanban-col flex-1 space-y-3 overflow-y-auto max-h-[720px] p-1" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, 'todo')">
+          <!-- Cards Render Here -->
+        </div>
+      </div>
+
+      <!-- CỘT 2: IN PROGRESS -->
+      <div class="flex flex-col bg-amber-50/70 rounded-2xl p-4 border border-amber-200/80">
+        <div class="flex items-center justify-between mb-3 px-1">
+          <div class="flex items-center space-x-2">
+            <span class="w-3 h-3 rounded-full bg-amber-500 animate-pulse"></span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-amber-900">🚧 Đang Làm (In Progress)</h2>
+          </div>
+          <span id="count-inprogress" class="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-800">0</span>
+        </div>
+        
+        <div id="col-inprogress" class="kanban-col flex-1 space-y-3 overflow-y-auto max-h-[720px] p-1" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, 'inprogress')">
+          <!-- Cards Render Here -->
+        </div>
+      </div>
+
+      <!-- CỘT 3: DONE -->
+      <div class="flex flex-col bg-emerald-50/70 rounded-2xl p-4 border border-emerald-200/80">
+        <div class="flex items-center justify-between mb-3 px-1">
+          <div class="flex items-center space-x-2">
+            <span class="w-3 h-3 rounded-full bg-emerald-500"></span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-900">✅ Đã Xong (Done)</h2>
+          </div>
+          <span id="count-done" class="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-800">0</span>
+        </div>
+        
+        <div id="col-done" class="kanban-col flex-1 space-y-3 overflow-y-auto max-h-[720px] p-1" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, 'done')">
+          <!-- Cards Render Here -->
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script>
+    // Dữ liệu 28 Tasks gốc
+    const DEFAULT_TASKS = [
+      // DONE
+      { id: "TASK-01", phase: "GĐ 1", name: "Khảo sát phần cứng máy (RTX 3050 4GB) & tài liệu đề tài", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "done", deliverable: "File 01_So_Sanh_Va_Lua_Chon_Mo_Hinh_AI.md" },
+      { id: "TASK-02", phase: "GĐ 1", name: "So sánh 6 họ LLM & chọn Qwen 2.5 3B + BGE-M3", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "done", deliverable: "Bộ cấu hình tối ưu Golden Stack" },
+      { id: "TASK-03", phase: "GĐ 1", name: "Thiết kế kiến trúc phân tầng, SQLite Schema & API Spec", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "done", deliverable: "File 02_Kien_Truc_He_Thong_Va_Ky_Thuat.md" },
+      { id: "TASK-04", phase: "GĐ 1", name: "Cài đặt Ollama & tải model Qwen 2.5 3B chạy trên GPU", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "done", deliverable: "Model Qwen 3B chạy cổng 11434 (>40 tok/s)" },
+      { id: "TASK-05", phase: "GĐ 1", name: "Bộ Document Parser bóc tách file PDF, DOCX, PPTX, TXT", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "done", deliverable: "Module document_service.py" },
+      { id: "TASK-06", phase: "GĐ 1", name: "Thuật toán Smart Recursive Text Chunking kèm metadata", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "done", deliverable: "Chunking ~800 chars, overlap 150" },
+      { id: "TASK-07", phase: "GĐ 1", name: "CSDL SQLite knowledge.db & Full-Text Search FTS5 (BM25)", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "done", deliverable: "CSDL SQLite cục bộ không cần Docker" },
+      { id: "TASK-08", phase: "GĐ 1", name: "Lõi AI Service: Trò chuyện tự nhiên + Tổng hợp ý nghĩa + Trích dẫn", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "done", deliverable: "Module llm_service.py" },
+      { id: "TASK-09", phase: "GĐ 1", name: "Giao diện Web UI MVP kéo-thả upload file & chat RAG", member: "tv3", memberName: "Thành viên 3", priority: "Cao", status: "done", deliverable: "File static/index.html" },
+      { id: "TASK-10", phase: "GĐ 1", name: "Script khởi động 1-click start_app.bat & test toàn luồng", member: "all", memberName: "Cả nhóm", priority: "Cao", status: "done", deliverable: "File start_app.bat chạy hoàn hảo" },
+
+      // IN PROGRESS
+      { id: "TASK-11", phase: "GĐ 2", name: "Tích hợp thư viện fastembed & Dense Embedding BGE-M3", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "inprogress", deliverable: "Sinh vector 1024 dims cho từng chunk" },
+      { id: "TASK-12", phase: "GĐ 2", name: "Triển khai thuật toán Reciprocal Rank Fusion (RRF)", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "inprogress", deliverable: "Gộp Dense Vector + BM25 FTS5" },
+      { id: "TASK-14", phase: "GĐ 2", name: "Citation Viewer Modal: Click vào trích dẫn xem đoạn gốc", member: "tv3", memberName: "Thành viên 3", priority: "Trung bình", status: "inprogress", deliverable: "Popup xem đoạn văn bản gốc khi bấm link" },
+
+      // TO DO
+      { id: "TASK-13", phase: "GĐ 2", name: "Tích hợp Cross-Encoder Reranker (bge-reranker-v2-m3)", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "todo", deliverable: "Lọc Top 20 lấy Top 4 chunks tinh túy" },
+      { id: "TASK-15", phase: "GĐ 3", name: "Network Monitor & Giới hạn VRAM GPU < 3.5GB", member: "tv2", memberName: "Thành viên 2", priority: "Trung bình", status: "todo", deliverable: "Kiểm soát an toàn tài nguyên phần cứng" },
+      { id: "TASK-16", phase: "GĐ 3", name: "Nút gạt chuyển đổi Qwen 3B (Fast) & 7B (Deep)", member: "tv3", memberName: "Thành viên 3", priority: "Trung bình", status: "todo", deliverable: "Model Switcher trên thanh chat" },
+      { id: "TASK-17", phase: "GĐ 4", name: "Tích hợp DuckDuckGo Search API tra cứu Internet", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "todo", deliverable: "Module web_search_service.py" },
+      { id: "TASK-18", phase: "GĐ 4", name: "Web Content Extractor làm sạch HTML & gắn link URL", member: "tv2", memberName: "Thành viên 2", priority: "Trung bình", status: "todo", deliverable: "Bóc tách bài viết bỏ qua quảng cáo" },
+      { id: "TASK-19", phase: "GĐ 5", name: "AI Router: Intent Classifier & Time-sensitive Detector", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "todo", deliverable: "Tự động chọn Local/Web/Hybrid" },
+      { id: "TASK-20", phase: "GĐ 5", name: "Cơ chế Fallback tự động khi mất mạng/Web lỗi", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "todo", deliverable: "Tự động chuyển về Local RAG an toàn" },
+      { id: "TASK-21", phase: "GĐ 6", name: "Backend API sinh Tóm tắt, Flashcard và Quiz", member: "tv2", memberName: "Thành viên 2", priority: "Cao", status: "todo", deliverable: "Endpoints /api/v1/study/*" },
+      { id: "TASK-22", phase: "GĐ 6", name: "Màn hình Study Center: Flashcard lật mặt & Làm Quiz", member: "tv3", memberName: "Thành viên 3", priority: "Cao", status: "todo", deliverable: "Giao diện thẻ lật & bài test chấm điểm" },
+      { id: "TASK-23", phase: "GĐ 7", name: "Thuật toán đối chiếu và so sánh đa tài liệu (Multi-doc)", member: "tv1", memberName: "Thành viên 1", priority: "Trung bình", status: "todo", deliverable: "So sánh quan điểm giữa 2-3 tài liệu" },
+      { id: "TASK-24", phase: "GĐ 7", name: "Tính năng xuất báo cáo nghiên cứu dạng Markdown/PDF", member: "tv3", memberName: "Thành viên 3", priority: "Trung bình", status: "todo", deliverable: "Nút xuất báo cáo kèm References" },
+      { id: "TASK-25", phase: "GĐ 8", name: "Xây dựng bộ test Benchmark 50 câu hỏi tiếng Việt", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "todo", deliverable: "File evaluation_dataset.json" },
+      { id: "TASK-26", phase: "GĐ 8", name: "Đo lường định lượng Hit Rate@5, MRR, Ragas Faithfulness", member: "tv1", memberName: "Thành viên 1", priority: "Cao", status: "todo", deliverable: "Biểu đồ khoa học chứng minh hiệu quả" },
+      { id: "TASK-27", phase: "GĐ 8", name: "Viết toàn bộ Báo cáo Thuyết minh Đồ án PBL6", member: "all", memberName: "Cả nhóm", priority: "Cao", status: "todo", deliverable: "Bản báo cáo đề tài đầy đủ các chương" },
+      { id: "TASK-28", phase: "GĐ 8", name: "Thiết kế Slide thuyết trình bảo vệ & quay Video Demo", member: "tv3", memberName: "Thành viên 3", priority: "Cao", status: "todo", deliverable: "Bộ Slide PPTX & Video demo 5 phút" }
+    ];
+
+    let tasks = JSON.parse(localStorage.getItem("pbl6_kanban_tasks")) || DEFAULT_TASKS;
+
+    function saveTasks() {
+      localStorage.setItem("pbl6_kanban_tasks", JSON.stringify(tasks));
+      renderBoard();
+    }
+
+    function resetKanban() {
+      if (confirm("Khôi phục toàn bộ bảng Kanban về trạng thái mặc định ban đầu?")) {
+        tasks = JSON.parse(JSON.stringify(DEFAULT_TASKS));
+        saveTasks();
+      }
+    }
+
+    // Helper màu theo thành viên
+    function getMemberBadge(member, name) {
+      if (member === "tv1") return `<span class="bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded text-[10px] flex items-center"><span class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-1"></span>TV1: AI</span>`;
+      if (member === "tv2") return `<span class="bg-purple-100 text-purple-700 font-semibold px-2 py-0.5 rounded text-[10px] flex items-center"><span class="w-1.5 h-1.5 rounded-full bg-purple-500 mr-1"></span>TV2: Backend</span>`;
+      if (member === "tv3") return `<span class="bg-emerald-100 text-emerald-700 font-semibold px-2 py-0.5 rounded text-[10px] flex items-center"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1"></span>TV3: UI</span>`;
+      return `<span class="bg-slate-200 text-slate-700 font-semibold px-2 py-0.5 rounded text-[10px]">Cả nhóm</span>`;
+    }
+
+    function renderBoard() {
+      const colTodo = document.getElementById("col-todo");
+      const colInprogress = document.getElementById("col-inprogress");
+      const colDone = document.getElementById("col-done");
+
+      colTodo.innerHTML = "";
+      colInprogress.innerHTML = "";
+      colDone.innerHTML = "";
+
+      const memberFilter = document.getElementById("member-filter").value;
+      const searchQuery = document.getElementById("search-input").value.toLowerCase().trim();
+
+      let todoCount = 0, inprogCount = 0, doneCount = 0;
+
+      tasks.forEach(t => {
+        // Bộ lọc
+        if (memberFilter !== "all" && t.member !== memberFilter && t.member !== "all") return;
+        if (searchQuery && !t.name.toLowerCase().includes(searchQuery) && !t.id.toLowerCase().includes(searchQuery)) return;
+
+        if (t.status === "todo") todoCount++;
+        else if (t.status === "inprogress") inprogCount++;
+        else if (t.status === "done") doneCount++;
+
+        const card = document.createElement("div");
+        card.className = "task-card bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-sm hover:shadow-md transition";
+        card.draggable = true;
+        card.id = `card-${t.id}`;
+        card.ondragstart = (e) => handleDragStart(e, t.id);
+        card.ondragend = (e) => handleDragEnd(e);
+
+        const priorityColor = t.priority === "Cao" ? "text-rose-600 bg-rose-50" : "text-amber-600 bg-amber-50";
+
+        card.innerHTML = `
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">${t.id} • ${t.phase}</span>
+            <span class="text-[10px] font-medium px-1.5 py-0.5 rounded ${priorityColor}">${t.priority}</span>
+          </div>
+          <p class="text-xs font-semibold text-slate-800 leading-snug mb-2.5">${t.name}</p>
+          <div class="text-[11px] text-slate-500 mb-2.5 line-clamp-1 italic">
+            <i class="fa-solid fa-box-archive mr-1 text-[10px] text-slate-400"></i> ${t.deliverable}
+          </div>
+          <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+            ${getMemberBadge(t.member, t.memberName)}
+            <div class="text-[10px] text-slate-400">
+              ${t.status === 'done' ? '<i class="fa-solid fa-check text-emerald-500"></i> Xong' : (t.status === 'inprogress' ? '<i class="fa-solid fa-spinner fa-spin text-amber-500"></i> Đang làm' : '<i class="fa-regular fa-clock"></i> Chờ')}
+            </div>
+          </div>
+        `;
+
+        if (t.status === "todo") colTodo.appendChild(card);
+        else if (t.status === "inprogress") colInprogress.appendChild(card);
+        else if (t.status === "done") colDone.appendChild(card);
+      });
+
+      // Cập nhật số đếm
+      document.getElementById("count-todo").innerText = todoCount;
+      document.getElementById("count-inprogress").innerText = inprogCount;
+      document.getElementById("count-done").innerText = doneCount;
+
+      // Cập nhật Progress Bar
+      const total = tasks.length;
+      const completed = tasks.filter(t => t.status === "done").length;
+      const pct = Math.round((completed / total) * 100);
+      document.getElementById("progress-text").innerText = `${pct}% (${completed}/${total} tasks)`;
+      document.getElementById("progress-bar").style.width = `${pct}%`;
+    }
+
+    // Drag & Drop handlers
+    let draggedTaskId = null;
+
+    function handleDragStart(e, taskId) {
+      draggedTaskId = taskId;
+      e.target.classList.add("dragging");
+      e.dataTransfer.setData("text/plain", taskId);
+    }
+
+    function handleDragEnd(e) {
+      e.target.classList.remove("dragging");
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+      e.currentTarget.classList.add("drag-over");
+    }
+
+    function handleDragLeave(e) {
+      e.currentTarget.classList.remove("drag-over");
+    }
+
+    function handleDrop(e, targetStatus) {
+      e.preventDefault();
+      e.currentTarget.classList.remove("drag-over");
+      if (!draggedTaskId) return;
+
+      const task = tasks.find(t => t.id === draggedTaskId);
+      if (task && task.status !== targetStatus) {
+        task.status = targetStatus;
+        saveTasks();
+      }
+      draggedTaskId = null;
+    }
+
+    document.getElementById("member-filter").onchange = renderBoard;
+    document.getElementById("search-input").oninput = renderBoard;
+
+    renderBoard();
+  </script>
+</body>
+</html>

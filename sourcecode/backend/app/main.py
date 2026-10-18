@@ -48,3 +48,10 @@ def serve_index():
         "docs_url": "/docs",
         "api_v1": "/api/v1"
     }
+
+@app.get("/kanban")
+def serve_kanban():
+    kanban_file = STATIC_DIR / "kanban.html"
+    if kanban_file.exists():
+        return FileResponse(str(kanban_file))
+    return {"message": "Kanban board is not available"}
