@@ -2,6 +2,26 @@ import sqlite3
 from typing import Generator
 from app.config import DATABASE_PATH
 
+import json
+
+def init_db():
+    conn = sqlite3.connect("data/knowledge.db")
+    cursor = conn.cursor()
+    
+    # Tạo bảng lưu tài liệu & vector embedding
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS document_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id TEXT,
+        chunk_index INTEGER,
+        content TEXT,
+        embedding TEXT,  -- Lưu mảng float dưới dạng JSON string
+        metadata TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
 def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
@@ -69,7 +89,19 @@ def init_db():
     );
     """)
 
-    # 5. Bảng Chat Sessions
+    # 5. Bảng Chunk Embeddings (lưu Dense Vectors 1024 dims của BGE-M3 dạng JSON)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chunk_embeddings (
+        chunk_id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        embedding_json TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (chunk_id) REFERENCES document_chunks(id) ON DELETE CASCADE
+    );
+    """)
+
+    # 6. Bảng Chat Sessions
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_sessions (
         id TEXT PRIMARY KEY,

@@ -7,6 +7,40 @@ from app.services.llm_service import generate_rag_answer, check_ollama_status
 
 router = APIRouter(prefix="/api/v1", tags=["Chat & RAG"])
 
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from app.services.retrieval_service import retrieval_service
+from app.services.reranker_service import reranker_service
+from app.services.llm_service import llm_service
+
+router = APIRouter()
+
+class ChatRequest(BaseModel):
+    message: str
+
+@router.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    try:
+        # 1. Hybrid Search + RRF
+        retrieved_docs = retrieval_service.hybrid_search(query=request.message, top_k=10)
+        
+        # 2. Re-ranking với Cross-Encoder
+        reranked_docs = reranker_service.rerank(query=request.message, documents=retrieved_docs, top_k=3)
+        
+        # 3. Tạo Context cho LLM
+        context = "\n---\n".join([d["content"] for d in reranked_docs])
+        prompt = f"Sử dụng ngữ cảnh sau để trả lời câu hỏi:\nContext:\n{context}\n\nQuestion: {request.message}"
+        
+        # 4. Gọi LLM sinh câu trả lời
+        response = llm_service.generate_response(prompt)
+        
+        return {
+            "response": response,
+            "sources": reranked_docs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 class ChatQueryRequest(BaseModel):
     workspace_id: str = "default"
     query: str

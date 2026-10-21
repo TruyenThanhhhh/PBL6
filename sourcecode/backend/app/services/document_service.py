@@ -7,6 +7,42 @@ from typing import List, Dict, Any
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR
 from app.database import get_db_connection
 
+import json
+import sqlite3
+from app.services.embedding_service import embedding_service
+
+class DocumentService:
+    def process_and_store_document(self, doc_id: str, content: str, metadata: dict = None):
+        # 1. Chia nhỏ văn bản (Chunking)
+        chunks = self._chunk_text(content, chunk_size=512, overlap=50)
+        
+        # 2. Sinh Vector Embedding tự động qua BGE-M3
+        embeddings = embedding_service.generate_embeddings(chunks)
+        
+        # 3. Lưu vào Database
+        conn = sqlite3.connect("data/knowledge.db")
+        cursor = conn.cursor()
+        
+        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            cursor.execute(
+                "INSERT INTO document_chunks (document_id, chunk_index, content, embedding, metadata) VALUES (?, ?, ?, ?, ?)",
+                (doc_id, idx, chunk, json.dumps(emb), json.dumps(metadata or {}))
+            )
+            
+        conn.commit()
+        conn.close()
+        return len(chunks)
+
+    def _chunk_text(self, text: str, chunk_size: int = 512, overlap: int = 50):
+        # Hàm phân tách văn bản đơn giản
+        words = text.split()
+        chunks = []
+        for i in range(0, len(words), chunk_size - overlap):
+            chunks.append(" ".join(words[i:i + chunk_size]))
+        return chunks
+
+document_service = DocumentService()
+
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
     """
     Trích xuất text sạch từ file (PDF, DOCX, PPTX, TXT, MD) và giữ metadata số trang/slide.
