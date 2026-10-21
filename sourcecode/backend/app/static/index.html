@@ -10,9 +10,55 @@
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     .chat-bubble-user { background: #2563eb; color: white; border-radius: 18px 18px 4px 18px; }
     .chat-bubble-ai { background: #f1f5f9; color: #1e293b; border-radius: 18px 18px 18px 4px; }
+    .citation-button { cursor: pointer; }
+    .citation-button:hover { border-color: #93c5fd; background: #eff6ff; }
   </style>
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-800 flex flex-col">
+
+  <!-- Public landing page -->
+  <div id="landing-page" class="hidden min-h-screen bg-white">
+    <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur sm:px-10">
+      <div class="mx-auto flex max-w-7xl items-center justify-between gap-4">
+        <a href="/" class="flex items-center gap-3 text-inherit no-underline">
+          <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-lg text-white shadow-md"><i class="fa-solid fa-brain"></i></span>
+          <span><span class="block text-base font-bold leading-tight text-slate-900">Personal AI Knowledge</span><span class="block text-xs text-slate-500">Nền tảng tri thức cá nhân</span></span>
+        </a>
+        <div class="flex items-center gap-2">
+          <button id="landing-login" type="button" class="rounded-xl px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100">Đăng nhập</button>
+          <button id="landing-register" type="button" class="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700">Đăng ký</button>
+        </div>
+      </div>
+    </header>
+    <main class="mx-auto grid min-h-[calc(100vh-73px)] max-w-7xl items-center gap-12 px-6 py-16 md:grid-cols-2 md:px-10">
+      <section>
+        <span class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700"><i class="fa-solid fa-sparkles"></i> Tri thức của bạn, dễ tìm hơn</span>
+        <h1 class="mt-6 max-w-2xl text-4xl font-bold leading-tight tracking-tight text-slate-900 sm:text-5xl">Đọc tài liệu của bạn. Hỏi AI điều bạn muốn biết.</h1>
+        <p class="mt-5 max-w-xl text-base leading-7 text-slate-600">Tải PDF, Word, PowerPoint và các tệp văn bản lên kho cá nhân. Đặt câu hỏi bằng ngôn ngữ tự nhiên và xem câu trả lời kèm trích dẫn đến nội dung gốc.</p>
+        <div class="mt-8 flex flex-wrap gap-3">
+          <button id="landing-start" type="button" class="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700">Bắt đầu miễn phí <i class="fa-solid fa-arrow-right ml-2"></i></button>
+          <span class="flex items-center gap-2 px-2 text-sm text-slate-500"><i class="fa-solid fa-shield-halved text-emerald-600"></i> Kho tài liệu riêng theo tài khoản</span>
+        </div>
+        <div class="mt-10 flex flex-wrap gap-x-6 gap-y-3 text-xs text-slate-500">
+          <span><i class="fa-solid fa-file-lines mr-1.5 text-blue-600"></i> PDF · DOCX · PPTX · TXT</span>
+          <span><i class="fa-solid fa-quote-left mr-1.5 text-blue-600"></i> Trích dẫn nguồn</span>
+          <span><i class="fa-solid fa-laptop mr-1.5 text-blue-600"></i> Ollama chạy cục bộ</span>
+        </div>
+      </section>
+      <section class="relative mx-auto w-full max-w-xl">
+        <div class="absolute -inset-5 rounded-[2rem] bg-gradient-to-br from-blue-100 via-indigo-50 to-emerald-50 blur-xl"></div>
+        <div class="relative rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-900/10 sm:p-7">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-4"><div class="flex items-center gap-2 text-sm font-semibold text-slate-800"><span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span> Hỏi đáp tài liệu</div><span class="rounded-lg bg-blue-50 px-2.5 py-1 text-xs text-blue-700">Local RAG</span></div>
+          <div class="mt-5 flex justify-end"><div class="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600 px-4 py-3 text-sm text-white">Tóm tắt những điểm quan trọng trong tài liệu này.</div></div>
+          <div class="mt-4 flex gap-3"><span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white"><i class="fa-solid fa-brain"></i></span><div class="rounded-2xl rounded-bl-sm bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-700">Mình đã tìm thấy 3 ý chính trong tài liệu. Nội dung tập trung vào mục tiêu, phương pháp và kết quả...<div class="mt-3 border-t border-slate-200 pt-2 text-xs font-medium text-blue-700"><i class="fa-solid fa-quote-left mr-1"></i> Nguồn: Bao_cao.pdf · Trang 2</div></div></div>
+          <div class="mt-6 flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-400"><i class="fa-solid fa-paperclip"></i> Tải tài liệu lên và bắt đầu hỏi...</div>
+        </div>
+      </section>
+    </main>
+    <footer class="border-t border-slate-100 px-6 py-5 text-center text-xs text-slate-400">Personal AI Knowledge Platform · Tri thức cá nhân được tổ chức trong không gian riêng</footer>
+  </div>
+
+  <div id="app-shell" class="hidden">
 
   <!-- Header -->
   <header class="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
@@ -26,10 +72,8 @@
       </div>
     </div>
     <div class="flex items-center space-x-3">
-      <a href="/kanban" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-3.5 py-1.5 rounded-full border border-slate-200 transition flex items-center space-x-1.5">
-        <i class="fa-solid fa-table-columns text-blue-600"></i>
-        <span>Bảng Kanban (WBS)</span>
-      </a>
+      <span id="account-name" class="hidden sm:inline text-xs text-slate-500"></span>
+      <button id="logout-btn" type="button" class="text-xs text-slate-500 hover:text-rose-600">Thoát</button>
       <div id="ollama-status-badge" class="flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
         <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
         <span>Đang kiểm tra kết nối...</span>
@@ -50,10 +94,10 @@
         </h2>
         
         <div id="drop-zone" class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center cursor-pointer transition bg-slate-50 hover:bg-blue-50/50">
-          <input type="file" id="file-input" class="hidden" accept=".pdf,.docx,.txt,.md" />
+          <input type="file" id="file-input" class="hidden" accept=".pdf,.docx,.pptx,.txt,.md,.csv,.json" />
           <i class="fa-solid fa-file-arrow-up text-3xl text-slate-400 mb-2"></i>
           <p class="text-xs text-slate-600 font-medium">Bấm vào đây hoặc kéo thả file</p>
-          <p class="text-[11px] text-slate-400 mt-1">Hỗ trợ PDF, DOCX, TXT, Markdown</p>
+          <p class="text-[11px] text-slate-400 mt-1">Hỗ trợ PDF, DOCX, PPTX, TXT, Markdown</p>
         </div>
         
         <div id="upload-progress" class="hidden mt-3 text-xs text-blue-600 flex items-center">
@@ -114,14 +158,20 @@
 
       <!-- Chat Input Box -->
       <div class="p-4 border-t border-slate-100">
-        <form id="chat-form" class="flex items-center space-x-2">
-          <input 
-            type="text" 
+        <div id="chat-image-preview" class="mb-3 hidden items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
+          <img id="chat-image-thumb" class="h-16 w-16 rounded-lg border border-slate-200 bg-white object-cover" alt="Ảnh đính kèm xem trước">
+          <span id="chat-image-name" class="min-w-0 flex-1 truncate text-xs text-slate-600">Ảnh đã dán</span>
+          <button id="chat-image-remove" type="button" class="rounded-lg p-2 text-slate-400 hover:bg-white hover:text-rose-600" aria-label="Bỏ ảnh"><i class="fa-solid fa-trash"></i></button>
+        </div>
+        <form id="chat-form" class="flex items-end space-x-2">
+          <input id="chat-image-file" type="file" class="hidden" accept="image/png,image/jpeg,image/webp">
+          <button id="chat-image-pick" type="button" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-600" title="Chọn ảnh hoặc dán ảnh bằng Ctrl+V" aria-label="Đính kèm ảnh"><i class="fa-regular fa-image"></i></button>
+          <textarea
             id="chat-input" 
-            placeholder="Hỏi bất cứ điều gì về tài liệu của bạn..." 
-            class="flex-1 text-sm bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition"
-            required
-          />
+            rows="1"
+            placeholder="Hỏi về tài liệu hoặc dán ảnh bằng Ctrl+V..."
+            class="min-h-11 max-h-32 flex-1 resize-y text-sm bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition"
+            required></textarea>
           <button 
             type="submit" 
             id="send-btn"
@@ -137,9 +187,174 @@
 
   </div>
 
+  </div>
+
+  <!-- Account gate -->
+  <div id="auth-gate" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+    <section class="relative w-full max-w-md rounded-2xl bg-white p-7 shadow-2xl">
+      <button id="auth-close" type="button" class="absolute right-4 top-4 rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng"><i class="fa-solid fa-xmark"></i></button>
+      <div class="mb-6 text-center">
+        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white"><i class="fa-solid fa-brain"></i></div>
+        <h2 id="auth-title" class="text-xl font-bold text-slate-900">Đăng nhập</h2>
+        <p class="mt-1 text-sm text-slate-500">Đăng nhập để dùng kho tri thức cá nhân</p>
+      </div>
+      <form id="auth-form" class="space-y-3">
+        <label class="block text-sm text-slate-600">Email
+          <input id="auth-email" type="email" autocomplete="email" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-blue-500">
+        </label>
+        <label class="block text-sm text-slate-600">Mật khẩu
+          <input id="auth-password" type="password" minlength="10" maxlength="128" autocomplete="current-password" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-blue-500">
+          <span id="password-hint" class="mt-1 block text-xs text-slate-400">Ít nhất 10 ký tự</span>
+        </label>
+        <p id="auth-error" class="hidden text-sm text-rose-600"></p>
+        <button id="auth-submit" class="w-full rounded-xl bg-blue-600 py-2.5 font-medium text-white hover:bg-blue-700">Đăng nhập</button>
+      </form>
+      <div class="my-4 flex items-center gap-3 text-xs text-slate-400"><span class="h-px flex-1 bg-slate-200"></span>hoặc<span class="h-px flex-1 bg-slate-200"></span></div>
+      <button id="google-login" type="button" class="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+        <i class="fa-brands fa-google"></i><span>Tiếp tục với Google</span>
+      </button>
+      <p id="google-hint" class="mt-2 text-center text-xs text-slate-400"></p>
+      <p class="mt-5 text-center text-sm text-slate-500"><span id="auth-switch-label">Chưa có tài khoản?</span>
+        <button id="auth-switch" type="button" class="font-medium text-blue-600 hover:underline">Đăng ký</button>
+      </p>
+    </section>
+  </div>
+
+  <!-- Citation detail modal -->
+  <div id="citation-modal" class="fixed inset-0 z-40 hidden items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-labelledby="citation-title">
+    <section class="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl">
+      <div class="mb-4 flex items-start justify-between gap-4">
+        <div><h2 id="citation-title" class="font-semibold text-slate-900">Nguồn trích dẫn</h2><p id="citation-meta" class="mt-1 text-xs text-slate-500"></p></div>
+        <button id="citation-close" type="button" class="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="citation-content" class="max-h-[60vh] overflow-y-auto whitespace-pre-wrap rounded-xl bg-slate-50 p-4 text-sm leading-7 text-slate-700">Đang tải trích dẫn...</div>
+      <a id="citation-link" class="mt-4 hidden text-sm text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">Mở nguồn web <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i></a>
+    </section>
+  </div>
+
   <script>
     const API_BASE = "/api/v1";
-    const workspaceId = "default";
+    let workspaceId = null;
+    let authToken = localStorage.getItem("pbl6_access_token");
+    let authMode = "login";
+    const conversationHistory = [];
+
+    function apiFetch(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+      return fetch(`${API_BASE}${path}`, { ...options, headers });
+    }
+
+    function showAuthError(message) {
+      const error = document.getElementById("auth-error");
+      error.textContent = message;
+      error.classList.remove("hidden");
+    }
+
+    function applySession(session) {
+      authToken = session.access_token;
+      workspaceId = session.workspace_id;
+      localStorage.setItem("pbl6_access_token", authToken);
+      document.getElementById("account-name").textContent = session.user.name;
+      document.getElementById("auth-gate").classList.add("hidden");
+      document.getElementById("landing-page").classList.add("hidden");
+      document.getElementById("app-shell").classList.remove("hidden");
+      loadDocuments();
+    }
+
+    function openAuth(mode = "login") {
+      authMode = mode;
+      const registering = mode === "register";
+      document.getElementById("auth-title").textContent = registering ? "Tạo tài khoản" : "Đăng nhập";
+      document.getElementById("auth-submit").textContent = registering ? "Đăng ký" : "Đăng nhập";
+      document.getElementById("auth-switch-label").textContent = registering ? "Đã có tài khoản?" : "Chưa có tài khoản?";
+      document.getElementById("auth-switch").textContent = registering ? "Đăng nhập" : "Đăng ký";
+      document.getElementById("auth-password").autocomplete = registering ? "new-password" : "current-password";
+      document.getElementById("password-hint").classList.toggle("hidden", !registering);
+      document.getElementById("auth-error").classList.add("hidden");
+      document.getElementById("auth-gate").classList.remove("hidden");
+      document.getElementById("auth-email").focus();
+    }
+
+    async function initializeAuth() {
+      const query = new URLSearchParams(location.search);
+      const authError = query.get("auth_error");
+      if (authError) {
+        history.replaceState(null, "", location.pathname + location.hash);
+      }
+      const hash = new URLSearchParams(location.hash.slice(1));
+      const oauthToken = hash.get("access_token");
+      if (oauthToken) {
+        authToken = oauthToken;
+        localStorage.setItem("pbl6_access_token", oauthToken);
+        history.replaceState(null, "", location.pathname + location.search);
+      }
+      if (authToken) {
+        try {
+          const res = await apiFetch("/auth/me");
+          if (res.ok) {
+            applySession({ ...await res.json(), access_token: authToken });
+            return;
+          }
+        } catch (err) { console.error(err); }
+      }
+      authToken = null;
+      workspaceId = null;
+      localStorage.removeItem("pbl6_access_token");
+      document.getElementById("app-shell").classList.add("hidden");
+      document.getElementById("landing-page").classList.remove("hidden");
+      document.getElementById("auth-gate").classList.add("hidden");
+      if (authError === "google_auth_failed") {
+        openAuth("login");
+        showAuthError("Google chưa xác thực được tài khoản. Hãy kiểm tra log backend để biết bước OAuth gặp lỗi.");
+      } else if (authError === "google_profile_invalid") {
+        openAuth("login");
+        showAuthError("Tài khoản Google không cung cấp email đã xác minh. Hãy thử tài khoản Google khác.");
+      }
+      try {
+        const res = await fetch(`${API_BASE}/status`);
+        const data = await res.json();
+        const googleButton = document.getElementById("google-login");
+        if (!data.google_auth_enabled) {
+          googleButton.disabled = true;
+          googleButton.classList.add("opacity-50", "cursor-not-allowed");
+          document.getElementById("google-hint").textContent = "Google OAuth cần được cấu hình trong biến môi trường.";
+        }
+      } catch (err) { console.error(err); }
+    }
+
+    document.getElementById("auth-switch").onclick = () => {
+      openAuth(authMode === "login" ? "register" : "login");
+    };
+
+    document.getElementById("landing-login").onclick = () => openAuth("login");
+    document.getElementById("landing-register").onclick = () => openAuth("register");
+    document.getElementById("landing-start").onclick = () => openAuth("register");
+    document.getElementById("auth-close").onclick = () => document.getElementById("auth-gate").classList.add("hidden");
+
+    document.getElementById("auth-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const submit = document.getElementById("auth-submit");
+      const error = document.getElementById("auth-error");
+      error.classList.add("hidden");
+      submit.disabled = true;
+      try {
+        const res = await fetch(`${API_BASE}/auth/${authMode === "register" ? "register" : "login"}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: document.getElementById("auth-email").value, password: document.getElementById("auth-password").value })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Không thể xác thực tài khoản");
+        applySession(data);
+      } catch (err) { showAuthError(err.message); }
+      finally { submit.disabled = false; }
+    };
+
+    document.getElementById("google-login").onclick = () => { location.href = `${API_BASE}/auth/google`; };
+    document.getElementById("logout-btn").onclick = () => {
+      localStorage.removeItem("pbl6_access_token");
+      location.reload();
+    };
 
     // 1. Kiểm tra trạng thái hệ thống
     async function checkStatus() {
@@ -147,9 +362,13 @@
         const res = await fetch(`${API_BASE}/status`);
         const data = await res.json();
         const badge = document.getElementById("ollama-status-badge");
-        if (data.ollama.running) {
+        const modelCount = data.ollama.available_models.length;
+        if (data.ollama.running && modelCount > 0) {
           badge.className = "flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
-          badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span>Ollama Online (${data.ollama.available_models.length} model)</span>`;
+          badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span>Ollama sẵn sàng (${modelCount} model)</span>`;
+        } else if (data.ollama.running) {
+          badge.className = "flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
+          badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span><span>Ollama đang chạy, chưa có model</span>`;
         } else {
           badge.className = "flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
           badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span><span>Ollama Chưa Bật (Chạy Context Fallback)</span>`;
@@ -162,7 +381,9 @@
     // 2. Tải danh sách tài liệu
     async function loadDocuments() {
       try {
-        const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/documents`);
+        const res = await apiFetch(`/workspaces/${workspaceId}/documents`);
+        if (res.status === 401) { localStorage.removeItem("pbl6_access_token"); location.reload(); return; }
+        if (!res.ok) throw new Error("Không thể tải danh sách tài liệu");
         const data = await res.json();
         const list = document.getElementById("document-list");
         const count = document.getElementById("doc-count");
@@ -178,7 +399,7 @@
             <div class="flex items-center space-x-2.5 overflow-hidden">
               <i class="fa-solid fa-file-lines text-blue-500 text-base shrink-0"></i>
               <div class="truncate">
-                <p class="text-xs font-medium text-slate-800 truncate" title="${doc.file_name}">${doc.file_name}</p>
+                <p class="text-xs font-medium text-slate-800 truncate" title="${escapeHtml(doc.file_name)}">${escapeHtml(doc.file_name)}</p>
                 <p class="text-[10px] text-slate-400">${doc.total_chunks} chunks • ${(doc.file_size / 1024).toFixed(1)} KB</p>
               </div>
             </div>
@@ -195,7 +416,8 @@
     // 3. Xóa tài liệu
     async function deleteDoc(id) {
       if (!confirm("Bạn có chắc muốn xóa tài liệu này?")) return;
-      await fetch(`${API_BASE}/documents/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/documents/${id}`, { method: "DELETE" });
+      if (!res.ok) { alert("Không thể xóa tài liệu."); return; }
       loadDocuments();
     }
 
@@ -223,14 +445,15 @@
       formData.append("file", file);
 
       try {
-        const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/documents/upload`, {
+        const res = await apiFetch(`/workspaces/${workspaceId}/documents/upload`, {
           method: "POST",
           body: formData
         });
         if (res.ok) {
           loadDocuments();
         } else {
-          alert("Lỗi khi tải file!");
+          const data = await res.json();
+          alert(data.detail || "Lỗi khi tải file!");
         }
       } catch (err) {
         alert("Lỗi kết nối máy chủ");
@@ -244,21 +467,122 @@
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
     const chatMessages = document.getElementById("chat-messages");
+    let pendingChatImage = null;
+
+    function clearChatImage() {
+      pendingChatImage = null;
+      document.getElementById("chat-image-file").value = "";
+      document.getElementById("chat-image-preview").classList.add("hidden");
+      document.getElementById("chat-image-preview").classList.remove("flex");
+    }
+
+    function setChatImage(file) {
+      if (!file || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+        alert("Chỉ hỗ trợ ảnh PNG, JPG hoặc WEBP.");
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        alert("Ảnh tối đa 5 MB. Hãy cắt hoặc giảm kích thước ảnh rồi thử lại.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || "");
+        const separator = dataUrl.indexOf(",");
+        if (separator < 0) return;
+        pendingChatImage = { dataUrl, base64: dataUrl.slice(separator + 1), mimeType: file.type, name: file.name || "Ảnh đã dán" };
+        document.getElementById("chat-image-thumb").src = dataUrl;
+        document.getElementById("chat-image-name").textContent = pendingChatImage.name;
+        document.getElementById("chat-image-preview").classList.remove("hidden");
+        document.getElementById("chat-image-preview").classList.add("flex");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    document.getElementById("chat-image-pick").onclick = () => document.getElementById("chat-image-file").click();
+    document.getElementById("chat-image-file").onchange = event => setChatImage(event.target.files?.[0]);
+    document.getElementById("chat-image-remove").onclick = clearChatImage;
+    chatInput.addEventListener("paste", event => {
+      const imageItem = [...(event.clipboardData?.items || [])].find(item => item.type.startsWith("image/"));
+      if (!imageItem) return;
+      const imageFile = imageItem.getAsFile();
+      if (imageFile) {
+        event.preventDefault();
+        setChatImage(imageFile);
+      }
+    });
+    const citationRegistry = new Map();
+    let nextCitationId = 0;
+
+    async function openCitation(citation) {
+      const modal = document.getElementById("citation-modal");
+      const content = document.getElementById("citation-content");
+      const link = document.getElementById("citation-link");
+      document.getElementById("citation-title").textContent = citation.source_type === "web"
+        ? (citation.title || "Nguồn web") : (citation.document_name || "Tài liệu");
+      document.getElementById("citation-meta").textContent = citation.source_type === "web"
+        ? "Nguồn Internet" : `Trang ${citation.page_number} · Đoạn ${citation.chunk_index + 1}`;
+      content.textContent = citation.snippet || "Đang tải nội dung nguồn...";
+      link.classList.add("hidden");
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+      if (citation.source_type === "web") {
+        if (citation.url) {
+          try {
+            const parsed = new URL(citation.url);
+            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+              link.href = parsed.href;
+              link.classList.remove("hidden");
+            }
+          } catch (err) { console.warn("Invalid citation URL"); }
+        }
+        return;
+      }
+      try {
+        const res = await apiFetch(`/documents/${encodeURIComponent(citation.document_id)}/chunks/${encodeURIComponent(citation.chunk_index)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Không tải được đoạn trích dẫn");
+        content.textContent = data.citation.content;
+      } catch (err) {
+        content.textContent = `${citation.snippet || ""}\n\n${err.message}`;
+      }
+    }
+
+    chatMessages.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-citation-id]");
+      if (!button) return;
+      const citation = citationRegistry.get(button.dataset.citationId);
+      if (citation) openCitation(citation);
+    });
+
+    function closeCitation() {
+      const modal = document.getElementById("citation-modal");
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    }
+    document.getElementById("citation-close").onclick = closeCitation;
+    document.getElementById("citation-modal").addEventListener("click", (event) => {
+      if (event.target.id === "citation-modal") closeCitation();
+    });
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeCitation(); });
 
     chatForm.onsubmit = async (e) => {
       e.preventDefault();
-      const query = chatInput.value.trim();
+      const query = chatInput.value.trim() || (pendingChatImage ? "Hãy mô tả nội dung trong ảnh và trả lời câu hỏi liên quan." : "");
       if (!query) return;
+      const attachedImage = pendingChatImage;
 
       // Render tin nhắn người dùng
       chatMessages.innerHTML += `
         <div class="flex items-start justify-end space-x-3">
           <div class="chat-bubble-user px-4 py-3 text-sm max-w-xl shadow-sm">
             <p>${escapeHtml(query)}</p>
+            ${attachedImage ? `<img src="${attachedImage.dataUrl}" alt="Ảnh người dùng gửi" class="mt-2 max-h-64 max-w-full rounded-lg border border-white/30 object-contain">` : ""}
           </div>
         </div>
       `;
       chatInput.value = "";
+      clearChatImage();
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
       // Loading bubble
@@ -277,14 +601,20 @@
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
       try {
-        const res = await fetch(`${API_BASE}/chat/query`, {
+        const res = await apiFetch(`/chat/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspace_id: workspaceId, query: query })
+          body: JSON.stringify({
+            workspace_id: workspaceId,
+            query: query,
+            history: conversationHistory.slice(-8),
+            ...(attachedImage ? { image_base64: attachedImage.base64, image_mime_type: attachedImage.mimeType } : {})
+          })
         });
         const data = await res.json();
-        
-        document.getElementById(loadingId).remove();
+        if (!res.ok) throw new Error(data.detail || "Không thể nhận câu trả lời");
+
+        document.getElementById(loadingId)?.remove();
 
         // Render Citations HTML
         let citationsHtml = "";
@@ -295,12 +625,15 @@
                 <i class="fa-solid fa-quote-left mr-1.5 text-blue-500"></i> Bằng chứng trích dẫn (${data.citations.length}):
               </p>
               <div class="space-y-1.5">
-                ${data.citations.map(c => `
-                  <div class="text-[11px] bg-white p-2 rounded-lg border border-slate-200 text-slate-600">
-                    <div class="font-medium text-blue-600 mb-0.5">[${c.ref_id}] ${c.document_name} (Trang ${c.page_number})</div>
-                    <div class="italic text-slate-500 line-clamp-2">"${c.snippet}"</div>
-                  </div>
-                `).join("")}
+                ${data.citations.map(c => {
+                  const id = String(++nextCitationId);
+                  citationRegistry.set(id, c);
+                  const label = c.source_type === "web" ? (c.title || "Nguồn web") : `${c.document_name} · Trang ${c.page_number}`;
+                  return `<button type="button" data-citation-id="${id}" class="citation-button w-full text-left text-[11px] bg-white p-2 rounded-lg border border-slate-200 text-slate-600">
+                    <span class="block font-medium text-blue-600 mb-0.5">[${escapeHtml(String(c.ref_id))}] ${escapeHtml(label)}</span>
+                    <span class="block italic text-slate-500 line-clamp-2">${escapeHtml(c.snippet || "Mở nguồn")}</span>
+                  </button>`;
+                }).join("")}
               </div>
             </div>
           `;
@@ -312,27 +645,42 @@
               <i class="fa-solid fa-robot"></i>
             </div>
             <div class="chat-bubble-ai px-4 py-3 text-sm max-w-xl shadow-sm">
-              <div class="text-slate-800 leading-relaxed whitespace-pre-wrap">${data.answer}</div>
+              <div class="text-slate-800 leading-relaxed">${renderMarkdown(data.answer)}</div>
               ${citationsHtml}
             </div>
           </div>
         `;
+        conversationHistory.push({ role: "user", content: query });
+        conversationHistory.push({ role: "assistant", content: data.answer });
+        if (conversationHistory.length > 8) conversationHistory.splice(0, conversationHistory.length - 8);
       } catch (err) {
-        document.getElementById(loadingId).remove();
+        document.getElementById(loadingId)?.remove();
         chatMessages.innerHTML += `
-          <div class="text-xs text-rose-500 text-center py-2">Lỗi khi gọi API: ${err.message}</div>
+          <div class="text-xs text-rose-500 text-center py-2">Lỗi khi gọi API: ${escapeHtml(err.message)}</div>
         `;
       }
       chatMessages.scrollTop = chatMessages.scrollHeight;
     };
 
     function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function renderMarkdown(markdown) {
+      let text = escapeHtml(markdown);
+      text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a class="text-blue-600 underline" href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      text = text.replace(/`([^`\n]+)`/g, '<code class="rounded bg-white px-1 py-0.5 text-rose-600">$1</code>');
+      text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+      text = text.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+      text = text.replace(/^\s*[-*]\s+/gm, "• ");
+      return text.replace(/\n/g, "<br>");
     }
 
     // Khởi chạy khi load trang
     checkStatus();
-    loadDocuments();
+    initializeAuth();
   </script>
 </body>
 </html>

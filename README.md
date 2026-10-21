@@ -75,6 +75,12 @@ pip install -r requirements.txt
 ollama run qwen2.5:3b
 ```
 
+Để dán ảnh chụp màn hình vào hộp thoại chat và nhờ AI phân tích ảnh, cần tải thêm model vision:
+```bash
+ollama pull qwen2.5vl:3b
+```
+Model này được dùng riêng cho câu hỏi có ảnh; chat văn bản vẫn dùng `qwen2.5:3b`. Tên model vision có thể đổi bằng biến `VISION_MODEL` trong `sourcecode/backend/.env`.
+
 ### Bước 4: Khởi Chạy Ứng Dụng
 * **Cách 1:** Nhấp đúp vào file `start_app.bat` ở thư mục gốc.
 * **Cách 2:** Chạy bằng dòng lệnh:
@@ -93,3 +99,69 @@ python run.py
 * **Thành viên 3 (Frontend & Feature Dev):** Giao diện Web UI, Quản lý Workspace, Citation Viewer, Bộ công cụ học tập (Flashcards/Quiz), Slide thuyết trình.
 
 Chi tiết phân chia 28 công việc theo dõi tại: [`kehoach/Phan_Chia_Cong_Viec_Nhom_3_Nguoi_PBL6.xlsx`](./kehoach/Phan_Chia_Cong_Viec_Nhom_3_Nguoi_PBL6.xlsx).
+
+---
+
+## Backend API (đang triển khai)
+
+Backend nằm trong `sourcecode/backend`. Cài dependencies và khởi chạy:
+
+```bash
+cd sourcecode/backend
+pip install -r requirements.txt
+python run.py
+```
+
+SQLite được lưu tại `sourcecode/backend/data/knowledge.db`; tệp tải lên nằm trong `data/uploads/`. Tài liệu hỗ trợ: PDF, DOCX, PPTX, TXT, MD, PY, JSON và CSV. PDF/DOCX/PPTX được chia chunk theo trang/slide để giữ thông tin hiển thị trong citations.
+
+### API chính
+
+| Method | Endpoint | Mục đích |
+|---|---|---|
+| `GET` | `/api/v1/status` | Trạng thái Ollama, FTS5, embedding và Web Search |
+| `POST` | `/api/v1/auth/register` | Tạo tài khoản email/mật khẩu (mật khẩu tối thiểu 10 ký tự) |
+| `POST` | `/api/v1/auth/login` | Đăng nhập và nhận bearer token |
+| `GET` | `/api/v1/auth/me` | Kiểm tra phiên đăng nhập |
+| `GET` | `/api/v1/auth/google` | Bắt đầu đăng nhập Google OAuth |
+| `GET` / `POST` | `/api/v1/workspaces` | Liệt kê / tạo workspace |
+| `GET` | `/api/v1/workspaces/{id}/documents` | Liệt kê tài liệu |
+| `POST` | `/api/v1/workspaces/{id}/documents/upload` | Upload và lập chỉ mục tài liệu (multipart field `file`) |
+| `DELETE` | `/api/v1/documents/{id}` | Xóa tài liệu và index liên quan |
+| `POST` | `/api/v1/documents/{id}/reindex-vectors` | Tạo lại BGE-M3 vectors khi lúc upload model chưa sẵn sàng |
+| `GET` | `/api/v1/documents/{id}/chunks/{chunk_index}` | Lấy nguyên văn đoạn để Citation Modal hiển thị |
+| `POST` | `/api/v1/chat/query` | Hỏi đáp RAG, citations; có thể bật tìm web |
+| `POST` | `/api/v1/search/web` | Tìm web trực tiếp |
+
+Ví dụ body cho chat:
+
+```json
+{
+  "workspace_id": "default",
+  "query": "Tóm tắt nội dung tài liệu",
+  "web_search": false,
+  "top_k": 4
+}
+```
+
+`citations[]` trả `source_type` (`document` hoặc `web`), `ref_id`, tên tài liệu, trang, `chunk_index`, snippet hoặc URL để frontend dựng Citation Modal. Với citation tài liệu, endpoint chunk trả lại nội dung đầy đủ.
+
+### Cấu hình tùy chọn
+
+Các biến môi trường: `OLLAMA_BASE_URL`, `DEFAULT_LLM_MODEL`, `VISION_MODEL`, `ENABLE_DENSE_RETRIEVAL`, `EMBEDDING_MODEL`, `WEB_SEARCH_ENABLED`, `DUCKDUCKGO_API_URL`, `WEB_SEARCH_TIMEOUT`, `UPLOAD_MAX_BYTES`. Dense retrieval dùng `fastembed` với `BAAI/bge-m3`; lần đầu chạy có thể cần tải model. Nếu embedding không khả dụng, văn bản vẫn được lập chỉ mục bằng FTS5. Chat chạy local qua Ollama; khi Ollama lỗi, API trả các đoạn nguồn trích xuất trực tiếp. Web Search chỉ chạy khi request đặt `web_search: true`; lỗi mạng sẽ được ghi vào `web_search` và pipeline vẫn dùng nguồn local.
+
+### Tài khoản và Google Login
+
+Email/mật khẩu hoạt động sau khi cài requirements. Mật khẩu được lưu bằng PBKDF2; mỗi tài khoản có workspace riêng và các API tài liệu/chat yêu cầu bearer token. Workspace `default` cũ được gán cho tài khoản đầu tiên đăng nhập để giữ dữ liệu prototype hiện có.
+
+Để bật Google Login, tạo OAuth Client ID loại **Web application** trong Google Cloud Console và thêm callback URI `http://localhost:8000/api/v1/auth/google/callback`. Sau đó đặt biến môi trường trước khi chạy server:
+
+```powershell
+$env:GOOGLE_CLIENT_ID="your-client-id"
+$env:GOOGLE_CLIENT_SECRET="your-client-secret"
+$env:APP_SECRET_KEY="a-long-random-secret"
+python run.py
+```
+
+Google Login bị vô hiệu hóa trên giao diện cho đến khi có cả Client ID và Client Secret. Callback mặc định là `http://localhost:8000/api/v1/auth/google/callback` và có thể đổi bằng `GOOGLE_REDIRECT_URI`. Giá trị `APP_SECRET_KEY` mặc định chỉ dành cho phát triển local; hãy đặt secret riêng trước khi triển khai.
+
+Backend cũng tự đọc `sourcecode/backend/.env` khi khởi động. File này được Git bỏ qua; có thể đặt `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` và `APP_SECRET_KEY` tại đó để không phải khai báo lại trong mỗi cửa sổ PowerShell.

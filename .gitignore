@@ -11,6 +11,9 @@ sourcecode/backend/data/uploads/*
 *.sqlite3-journal
 
 # Python Virtual Environments
+.env
+.env.*
+!.env.example
 .venv/
 venv/
 ENV/
