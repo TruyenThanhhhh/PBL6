@@ -171,9 +171,8 @@
           <textarea
             id="chat-input" 
             rows="1"
-            placeholder="Hỏi về tài liệu hoặc dán ảnh bằng Ctrl+V..."
-            class="min-h-11 max-h-32 flex-1 resize-y text-sm bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition"
-            required></textarea>
+            placeholder="Nhập câu hỏi · Enter gửi, Shift+Enter xuống dòng · Ctrl+V dán ảnh"
+            class="min-h-11 max-h-32 flex-1 resize-y text-sm bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition"></textarea>
           <button 
             type="submit" 
             id="send-btn"
@@ -539,6 +538,12 @@
       if (imageFile) {
         event.preventDefault();
         setChatImage(imageFile);
+      }
+    });
+    chatInput.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        chatForm.requestSubmit();
       }
     });
     const citationRegistry = new Map();

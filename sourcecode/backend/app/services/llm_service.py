@@ -162,10 +162,17 @@ async def generate_rag_answer(
     )
     
     user_prompt = f"Dưới đây là các nguồn tham khảo:\n{context_text}\n\nCâu hỏi/Yêu cầu của tôi: {query}\n\nHãy trả lời và gắn nhãn trích dẫn tương ứng:"
+    if image_base64:
+        user_prompt += (
+            "\n\nNgười dùng có đính kèm một ảnh. Hãy quan sát ảnh trực tiếp, trích xuất các chữ/số "
+            "đọc được và trả lời đúng trọng tâm câu hỏi. Nếu ảnh mờ hoặc không đọc được phần nào, hãy nói rõ."
+        )
 
+    image_request_error = None
     if ollama_status["running"] and model_available:
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            timeout = httpx.Timeout(180.0, connect=10.0) if image_base64 else 60.0
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 user_message = {"role": "user", "content": user_prompt}
                 if image_base64:
                     user_message["images"] = [image_base64]
@@ -187,8 +194,24 @@ async def generate_rag_answer(
                         "model_used": model_name,
                         "engine": "ollama_local"
                     }
+                logger.error("Ollama returned HTTP %s while generating an answer", resp.status_code)
+                if image_base64:
+                    image_request_error = f"HTTP {resp.status_code}"
         except Exception as e:
             logger.exception("Ollama generation failed")
+            if image_base64:
+                image_request_error = type(e).__name__
+
+    if image_base64:
+        logger.error("Vision request did not complete successfully (%s)", image_request_error or "Ollama unavailable")
+        return {
+            "answer": "Mình đã nhận ảnh nhưng Ollama chưa phân tích ảnh thành công. Hãy kiểm tra log backend; "
+                      "nếu model vừa được tải hoặc máy thiếu bộ nhớ GPU, chờ model khởi động xong rồi gửi lại.",
+            "citations": citations,
+            "model_used": model_name,
+            "engine": "fallback_pipeline",
+            "fallback_reason": "image_analysis_failed",
+        }
 
     # Fallback should be honest and concise: excerpts are evidence, not a generated summary.
     if citations:
