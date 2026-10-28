@@ -11,6 +11,7 @@ import jwt
 from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from starlette.responses import RedirectResponse
 
 from app.config import APP_SECRET_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
@@ -18,6 +19,9 @@ from app.database import get_db_connection
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
+google_state_signer = URLSafeTimedSerializer(APP_SECRET_KEY, salt="pbl6-google-oauth-state")
+GOOGLE_STATE_COOKIE = "pbl6_google_oauth_state"
+GOOGLE_STATE_COOKIE_PATH = "/api/v1/auth/google/callback"
 oauth = OAuth()
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
     oauth.register(
@@ -160,25 +164,64 @@ def me(user: Dict[str, str] = Depends(get_current_user)):
 async def google_login(request: Request):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=503, detail="Đăng nhập Google chưa được cấu hình")
-    return await oauth.google.authorize_redirect(request, GOOGLE_REDIRECT_URI)
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    response = await oauth.google.authorize_redirect(
+        request, GOOGLE_REDIRECT_URI, state=state, nonce=nonce
+    )
+    response.set_cookie(
+        GOOGLE_STATE_COOKIE,
+        google_state_signer.dumps({"state": state, "nonce": nonce}),
+        max_age=600,
+        httponly=True,
+        secure=SESSION_HTTPS_ONLY,
+        samesite="lax",
+        path=GOOGLE_STATE_COOKIE_PATH,
+    )
+    return response
 
 
 @router.get("/google/callback", name="google_callback")
 async def google_callback(request: Request):
     stage = "đổi authorization code lấy token"
     try:
+        state = request.query_params.get("state", "")
+        signed_flow = request.cookies.get(GOOGLE_STATE_COOKIE, "")
+        try:
+            flow_data = google_state_signer.loads(signed_flow, max_age=600)
+        except (BadSignature, SignatureExpired) as exc:
+            logger.error("Google OAuth thiếu cookie state hợp lệ (%s)", type(exc).__name__)
+            response = RedirectResponse(url=f"{request.base_url}?auth_error=google_auth_failed", status_code=303)
+            response.delete_cookie(GOOGLE_STATE_COOKIE, path=GOOGLE_STATE_COOKIE_PATH)
+            return response
+        if not state or not secrets.compare_digest(state, str(flow_data.get("state", ""))):
+            logger.error("Google OAuth state trên callback không khớp state cookie")
+            response = RedirectResponse(url=f"{request.base_url}?auth_error=google_auth_failed", status_code=303)
+            response.delete_cookie(GOOGLE_STATE_COOKIE, path=GOOGLE_STATE_COOKIE_PATH)
+            return response
+
+        # Restore Authlib's short-lived state data from the signed, HttpOnly
+        # callback cookie in case the browser dropped its session cookie.
+        await oauth.google.framework.set_state_data(
+            request.session, state,
+            {"redirect_uri": GOOGLE_REDIRECT_URI, "nonce": flow_data["nonce"]},
+        )
         token = await oauth.google.authorize_access_token(request)
         stage = "lấy hồ sơ Google"
         profile = token.get("userinfo") or await oauth.google.userinfo(token=token)
     except Exception as exc:
         # Avoid logging the callback URL or exception text: both can contain OAuth credentials.
         logger.error("Google OAuth thất bại ở bước %s (%s)", stage, type(exc).__name__)
-        return RedirectResponse(url=f"{request.base_url}?auth_error=google_auth_failed", status_code=303)
+        response = RedirectResponse(url=f"{request.base_url}?auth_error=google_auth_failed", status_code=303)
+        response.delete_cookie(GOOGLE_STATE_COOKIE, path=GOOGLE_STATE_COOKIE_PATH)
+        return response
     email = str(profile.get("email", "")).strip().lower()
     google_sub = str(profile.get("sub", ""))
     if not email or not google_sub or not profile.get("email_verified"):
         logger.warning("Google OAuth hoàn tất nhưng profile thiếu email/sub hoặc email chưa xác minh")
-        return RedirectResponse(url=f"{request.base_url}?auth_error=google_profile_invalid", status_code=303)
+        response = RedirectResponse(url=f"{request.base_url}?auth_error=google_profile_invalid", status_code=303)
+        response.delete_cookie(GOOGLE_STATE_COOKIE, path=GOOGLE_STATE_COOKIE_PATH)
+        return response
 
     conn = get_db_connection()
     try:
@@ -201,4 +244,6 @@ async def google_callback(request: Request):
     finally:
         conn.close()
     session = _issue_session(row)
-    return RedirectResponse(url=f"{request.base_url}#access_token={session['access_token']}")
+    response = RedirectResponse(url=f"{request.base_url}#access_token={session['access_token']}")
+    response.delete_cookie(GOOGLE_STATE_COOKIE, path=GOOGLE_STATE_COOKIE_PATH)
+    return response

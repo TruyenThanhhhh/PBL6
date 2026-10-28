@@ -350,7 +350,14 @@
       finally { submit.disabled = false; }
     };
 
-    document.getElementById("google-login").onclick = () => { location.href = `${API_BASE}/auth/google`; };
+    document.getElementById("google-login").onclick = (event) => {
+      const button = event.currentTarget;
+      if (button.disabled) return;
+      button.disabled = true;
+      button.classList.add("opacity-60", "cursor-wait");
+      button.querySelector("span").textContent = "Đang chuyển đến Google...";
+      location.href = `${API_BASE}/auth/google`;
+    };
     document.getElementById("logout-btn").onclick = () => {
       localStorage.removeItem("pbl6_access_token");
       location.reload();
