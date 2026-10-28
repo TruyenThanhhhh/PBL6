@@ -13,8 +13,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from starlette.responses import RedirectResponse
+from urllib.parse import urlsplit, urlunsplit
 
-from app.config import APP_SECRET_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
+from app.config import (
+    APP_SECRET_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
+    SESSION_HTTPS_ONLY,
+)
 from app.database import get_db_connection
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
@@ -164,6 +168,21 @@ def me(user: Dict[str, str] = Depends(get_current_user)):
 async def google_login(request: Request):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=503, detail="Đăng nhập Google chưa được cấu hình")
+    callback_parts = urlsplit(GOOGLE_REDIRECT_URI)
+    current_parts = urlsplit(str(request.base_url))
+    loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+    if (current_parts.hostname != callback_parts.hostname
+            and current_parts.hostname in loopback_hosts
+            and callback_parts.hostname in loopback_hosts):
+        # Keep the OAuth state cookie and callback on the same browser host.
+        canonical_login = urlunsplit((
+            callback_parts.scheme,
+            callback_parts.netloc,
+            request.url.path,
+            request.url.query,
+            "",
+        ))
+        return RedirectResponse(canonical_login, status_code=307)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     response = await oauth.google.authorize_redirect(
