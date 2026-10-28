@@ -16,6 +16,10 @@ venv/
 ENV/
 env/
 
+# Frontend
+sourcecode/frontend/node_modules/
+sourcecode/frontend/dist/
+
 # IDE & OS
 .idea/
 .vscode/

@@ -1,0 +1,259 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  /* Motivo-inspired Youthful Mint & Crisp White Palette */
+  --bg: #ffffff;
+  --bg-canvas: #f3f8f7;
+  --bg-secondary: #f4f9f8;
+  --bg-sidebar: #ffffff;
+  --bg-hover: #ebf5f3;
+  --bg-active: #e1f4ef;
+  --ink: #0f1f1c;
+  --muted: #627571;
+  --line: #e4eeec;
+
+  /* Brand Teal & Deep Slate Pill CTA */
+  --primary: #0f172a;
+  --primary-fg: #ffffff;
+  --brand: #1f8f7c;
+  --brand-soft: #e3f5f1;
+  --accent: #1f8f7c;
+  --accent-soft: #e3f5f1;
+
+  /* Semantic Status Colors */
+  --success: #1f8f7c;
+  --success-soft: rgba(31, 143, 124, 0.12);
+  --warning: #d9822b;
+  --warning-soft: rgba(217, 130, 43, 0.12);
+  --error: #dc4c46;
+  --error-soft: rgba(220, 76, 70, 0.12);
+
+  /* Interactive States */
+  --hover: #ebf5f3;
+  --selected: #e1f4ef;
+  --focus-ring: rgba(31, 143, 124, 0.28);
+  --disabled-opacity: 0.48;
+
+  /* Typography Scale */
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.75rem;
+
+  /* Spacing Scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* Radius & Border */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --border-thin: 1px solid var(--line);
+}
+
+.dark {
+  --bg: #111918;
+  --bg-canvas: #0b1110;
+  --bg-secondary: #16211f;
+  --bg-sidebar: #111918;
+  --bg-hover: #1b2926;
+  --bg-active: #1f3530;
+  --ink: #ecf4f2;
+  --muted: #8fa39e;
+  --line: #223330;
+
+  --primary: #27a993;
+  --primary-fg: #081311;
+  --brand: #34b8a2;
+  --brand-soft: rgba(52, 184, 162, 0.16);
+  --accent: #34b8a2;
+  --accent-soft: rgba(52, 184, 162, 0.16);
+
+  --success: #34b8a2;
+  --success-soft: rgba(52, 184, 162, 0.16);
+  --warning: #e5a54b;
+  --warning-soft: rgba(229, 165, 75, 0.15);
+  --error: #e66b66;
+  --error-soft: rgba(230, 107, 102, 0.15);
+
+  --hover: #1b2926;
+  --selected: #1f3530;
+  --focus-ring: rgba(52, 184, 162, 0.35);
+  --disabled-opacity: 0.45;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-canvas: var(--bg-canvas);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-active: var(--bg-active);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-error: var(--error);
+  --color-error-soft: var(--error-soft);
+  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--line);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* Editorial Italic Serif Accent like Motivo ("Achieve more.", "beautifully") */
+.font-editorial {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--brand);
+  letter-spacing: -0.01em;
+}
+
+/* Motivo soft elevated white card */
+.motivo-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 8px 28px -12px rgba(15, 45, 40, 0.05);
+}
+
+/* Subtle ambient mint gradient backdrop */
+.motivo-canvas {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(at 85% 8%, rgba(31, 143, 124, 0.08) 0px, transparent 48%),
+    radial-gradient(at 12% 90%, rgba(56, 189, 248, 0.06) 0px, transparent 50%);
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 1.1em 0 0.45em;
+  color: var(--ink);
+}
+.markdown-body h1 { font-size: 1.3rem; }
+.markdown-body h2 { font-size: 1.125rem; }
+.markdown-body h3 { font-size: 1rem; }
+.markdown-body p { margin: 0.55em 0; }
+.markdown-body ul,
+.markdown-body ol { margin: 0.55em 0; padding-left: 1.25rem; }
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body code {
+  font-size: 0.85em;
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+}
+.markdown-body pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 13px;
+}
+.markdown-body pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 0.75em 0;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+.markdown-body blockquote {
+  border-left: 2px solid var(--brand);
+  margin: 0.75em 0;
+  padding-left: 12px;
+  color: var(--muted);
+}
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 5px;
+  margin: 0 2px;
+  border-radius: 9999px;
+  border: 1px solid rgba(31, 143, 124, 0.25);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: super;
+  line-height: 1;
+  transition: all 120ms ease;
+}
+.citation-chip:hover {
+  background: var(--brand);
+  color: #ffffff;
+}

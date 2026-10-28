@@ -32,6 +32,7 @@ PBL6/
 │   ├── Phan_Chia_Cong_Viec_Nhom_3_Nguoi_PBL6.xlsx   # File Excel phân chia 28 tasks
 │   └── README.md
 ├── sourcecode/
+│   ├── frontend/                   # React + Vite (Knowledge AI UI)
 │   └── backend/                    # Máy chủ FastAPI & Lõi RAG
 │       ├── app/
 │       │   ├── api/                # API Endpoints (Workspaces, Documents, Chat)
@@ -82,8 +83,18 @@ ollama run qwen2.5:3b
 cd sourcecode/backend
 python run.py
 ```
-* Mở trình duyệt Web tại: **http://localhost:8000**
-* Xem Swagger API Docs: **http://localhost:8000/docs**
+* Giao diện MVP HTML cũ: **http://localhost:8000**
+* Swagger API Docs: **http://localhost:8000/docs**
+
+### Bước 5: Frontend React (Knowledge AI)
+```bash
+cd sourcecode/frontend
+npm install
+npm run dev
+```
+* Mở **http://localhost:5173**
+* Hoặc chạy `start_frontend.bat`
+* Chi tiết: [`sourcecode/frontend/README.md`](./sourcecode/frontend/README.md)
 
 ---
 
