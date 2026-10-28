@@ -24,6 +24,7 @@ class ChatQueryRequest(BaseModel):
     model: Optional[str] = None
     web_search: bool = False
     top_k: int = Field(default=4, ge=1, le=20)
+    selected_document_id: Optional[str] = Field(default=None, max_length=100)
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
     image_base64: Optional[str] = Field(default=None, max_length=7_000_000)
     image_mime_type: Optional[Literal["image/png", "image/jpeg", "image/webp"]] = None
@@ -60,9 +61,18 @@ async def query_knowledge_base(req: ChatQueryRequest, user: dict = Depends(get_c
     conn = get_db_connection()
     owned = conn.execute("SELECT 1 FROM workspaces WHERE id = ? AND owner_user_id = ?",
                          (req.workspace_id, user["id"])).fetchone()
-    conn.close()
     if not owned:
+        conn.close()
         raise HTTPException(status_code=404, detail="Không tìm thấy workspace")
+    if req.selected_document_id:
+        selected_document = conn.execute(
+            "SELECT 1 FROM documents WHERE id = ? AND workspace_id = ?",
+            (req.selected_document_id, req.workspace_id),
+        ).fetchone()
+        if not selected_document:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu được chọn trong kho này")
+    conn.close()
     image_bytes = None
     if req.image_base64:
         if not req.image_mime_type:
@@ -77,7 +87,8 @@ async def query_knowledge_base(req: ChatQueryRequest, user: dict = Depends(get_c
         raise HTTPException(status_code=422, detail="Thiếu dữ liệu ảnh")
     return await answer_query(req.workspace_id, req.query, req.model, req.web_search, req.top_k,
                               [turn.model_dump() for turn in req.history],
-                              image_base64=req.image_base64)
+                              image_base64=req.image_base64,
+                              selected_document_id=req.selected_document_id)
 
 
 class WebSearchRequest(BaseModel):

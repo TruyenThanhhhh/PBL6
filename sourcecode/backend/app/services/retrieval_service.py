@@ -1,7 +1,7 @@
 """Workspace-scoped hybrid retrieval: SQLite FTS5 plus optional BGE-M3 and RRF."""
 import math
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.config import TOP_K_RETRIEVAL, EMBEDDING_MODEL
 from app.database import get_db_connection
@@ -15,26 +15,29 @@ def _cosine(left: List[float], right: List[float]) -> float:
     return dot / (norm_left * norm_right) if norm_left and norm_right else 0.0
 
 
-def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RETRIEVAL) -> List[Dict[str, Any]]:
+def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RETRIEVAL,
+                           document_id: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         tokens = [token for token in clean_query.split() if len(token) > 1]
+        document_filter = " AND c.document_id = ?" if document_id else ""
+        document_params = (document_id,) if document_id else ()
         sparse: List[Dict[str, Any]] = []
         if tokens:
             match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
             try:
-                cursor.execute("""
-                    SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
-                           c.page_number, c.chunk_index, d.file_name AS document_name,
-                           bm25(chunks_fts) AS score
+                cursor.execute("""SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name,
+                       bm25(chunks_fts) AS score
                     FROM chunks_fts f
                     JOIN document_chunks c ON c.id = f.chunk_id
                     JOIN documents d ON d.id = c.document_id
-                    WHERE chunks_fts MATCH ? AND c.workspace_id = ?
+                    WHERE chunks_fts MATCH ? AND c.workspace_id = ?{document_filter}
                     ORDER BY score ASC LIMIT ?
-                """, (match_query, workspace_id, max(top_k * 4, top_k)))
+                """.format(document_filter=document_filter),
+                    (match_query, workspace_id, *document_params, max(top_k * 4, top_k)))
                 sparse = [dict(row) for row in cursor.fetchall()]
             except Exception:
                 # FTS syntax differences or a damaged index should not take down chat.
@@ -42,8 +45,8 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
 
         dense: List[Dict[str, Any]] = []
         cursor.execute("SELECT 1 FROM chunk_embeddings e JOIN document_chunks c ON c.id = e.chunk_id "
-                       "WHERE c.workspace_id = ? AND e.model = ? LIMIT 1",
-                       (workspace_id, EMBEDDING_MODEL))
+                       "WHERE c.workspace_id = ? AND e.model = ?" + document_filter + " LIMIT 1",
+                       (workspace_id, EMBEDDING_MODEL, *document_params))
         has_dense_index = cursor.fetchone() is not None
         query_vectors = embed_texts([query]) if has_dense_index else None
         if query_vectors:
@@ -54,8 +57,9 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                 FROM chunk_embeddings e
                 JOIN document_chunks c ON c.id = e.chunk_id
                 JOIN documents d ON d.id = c.document_id
-                WHERE c.workspace_id = ? AND e.model = ?
-            """, (workspace_id, EMBEDDING_MODEL))
+                WHERE c.workspace_id = ? AND e.model = ?{document_filter}
+            """.format(document_filter=document_filter),
+                (workspace_id, EMBEDDING_MODEL, *document_params))
             for row in cursor.fetchall():
                 item = dict(row)
                 vector = unpack_vector(item.pop("vector"), item.pop("dimensions"))
@@ -83,8 +87,10 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                 SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
                        c.page_number, c.chunk_index, d.file_name AS document_name
                 FROM documents d JOIN document_chunks c ON c.document_id = d.id
-                WHERE d.workspace_id = ? ORDER BY d.created_at DESC, c.chunk_index ASC
-            """, (workspace_id,))
+                WHERE d.workspace_id = ?{document_filter}
+                ORDER BY d.created_at DESC, c.chunk_index ASC
+            """.format(document_filter=document_filter.replace("c.document_id", "d.id")),
+                (workspace_id, *document_params))
             named_matches = []
             for row in cursor.fetchall():
                 item = dict(row)
@@ -92,7 +98,6 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                 name_terms = set(re.findall(r"[\w]+", stem, flags=re.UNICODE))
                 if name_terms & query_terms:
                     named_matches.append(item)
-            present = {item["chunk_id"] for item in ranked}
             named_ids = {item["chunk_id"] for item in named_matches}
             ranked = named_matches + [item for item in ranked if item["chunk_id"] not in named_ids]
 
