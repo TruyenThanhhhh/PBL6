@@ -2,7 +2,7 @@ import httpx
 import re
 import logging
 from typing import List, Dict, Any, Optional
-from app.config import OLLAMA_BASE_URL, DEFAULT_LLM_MODEL, VISION_MODEL
+from app.config import OLLAMA_BASE_URL, DEFAULT_LLM_MODEL, VISION_MODEL, VISION_MODEL_FALLBACK
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,13 @@ async def generate_rag_answer(
     """
     ollama_status = await check_ollama_status()
     model_available = model_name in ollama_status["available_models"]
+    if image_base64 and ollama_status["running"] and not model_available:
+        # Prefer the smaller current vision model, but keep existing installations working.
+        for candidate in (VISION_MODEL_FALLBACK, "qwen2.5vl:3b"):
+            if candidate in ollama_status["available_models"]:
+                model_name = candidate
+                model_available = True
+                break
     history_messages = [
         {"role": turn["role"], "content": turn["content"][:3000]}
         for turn in (history or [])[-8:]
@@ -133,8 +140,8 @@ async def generate_rag_answer(
             missing_model_message = "Ollama hiện chưa chạy. Hãy khởi động Ollama rồi gửi lại ảnh."
             fallback_reason = "ollama_offline"
         else:
-            missing_model_message = (f"Đã nhận ảnh, nhưng model phân tích ảnh `{VISION_MODEL}` chưa được cài trong Ollama. "
-                                     f"Hãy chạy `ollama pull {VISION_MODEL}` rồi gửi lại ảnh.")
+            missing_model_message = (f"Đã nhận ảnh, nhưng chưa cài model vision. Hãy chạy `ollama pull {VISION_MODEL}` "
+                                     "rồi gửi lại ảnh.")
             fallback_reason = "vision_model_unavailable"
         return {
             "answer": missing_model_message,
@@ -158,14 +165,15 @@ async def generate_rag_answer(
         "6. Chỉ dùng nguồn được cung cấp làm căn cứ; nếu không đủ bằng chứng, nói rõ điều gì còn thiếu.\n"
         "7. Dùng lịch sử hội thoại để hiểu câu hỏi nối tiếp và giữ các yêu cầu còn hiệu lực của người dùng. "
         "Nếu yêu cầu trước đó và yêu cầu mới mâu thuẫn, ưu tiên yêu cầu mới nhất.\n"
-        "8. Nếu người dùng gửi kèm ảnh, hãy trực tiếp đọc chữ, mô tả biểu đồ/giao diện hoặc phân tích nội dung nhìn thấy trong ảnh."
+        "8. Nếu người dùng gửi kèm ảnh, hãy trực tiếp đọc chữ, mô tả biểu đồ/giao diện hoặc phân tích nội dung nhìn thấy trong ảnh. "
+        "Ảnh đính kèm đã được cung cấp; tuyệt đối không yêu cầu người dùng gửi lại ảnh. Nếu chữ quá nhỏ hoặc mờ, hãy nói rõ phần nào chưa đọc được."
     )
     
     user_prompt = f"Dưới đây là các nguồn tham khảo:\n{context_text}\n\nCâu hỏi/Yêu cầu của tôi: {query}\n\nHãy trả lời và gắn nhãn trích dẫn tương ứng:"
     if image_base64:
         user_prompt += (
-            "\n\nNgười dùng có đính kèm một ảnh. Hãy quan sát ảnh trực tiếp, trích xuất các chữ/số "
-            "đọc được và trả lời đúng trọng tâm câu hỏi. Nếu ảnh mờ hoặc không đọc được phần nào, hãy nói rõ."
+            "\n\nẢnh được gửi kèm trực tiếp trong tin nhắn này. Hãy quan sát ảnh, đọc các tiêu đề/chữ/số "
+            "quan trọng và trả lời đúng trọng tâm câu hỏi; không nói rằng ảnh chưa được gửi."
         )
 
     image_request_error = None
@@ -173,6 +181,8 @@ async def generate_rag_answer(
         try:
             timeout = httpx.Timeout(180.0, connect=10.0) if image_base64 else 60.0
             async with httpx.AsyncClient(timeout=timeout) as client:
+                if image_base64:
+                    logger.info("Vision request: model=%s image_bytes=%d", model_name, len(image_base64) * 3 // 4)
                 user_message = {"role": "user", "content": user_prompt}
                 if image_base64:
                     user_message["images"] = [image_base64]
@@ -183,7 +193,8 @@ async def generate_rag_answer(
                         *history_messages,
                         user_message
                     ],
-                    "stream": False
+                    "stream": False,
+                    "options": {"num_predict": 384 if image_base64 else 512},
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
                 if resp.status_code == 200:

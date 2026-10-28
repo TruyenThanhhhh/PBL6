@@ -19,9 +19,14 @@ async def answer_query(workspace_id: str, query: str, model: Optional[str] = Non
     history = (history or [])[-8:]
     prior_user_context = " ".join(turn["content"] for turn in history if turn.get("role") == "user")
     retrieval_query = f"{prior_user_context} {query}".strip()
-    local_sources = await run_in_threadpool(
-        search_relevant_chunks, workspace_id, retrieval_query, top_k, selected_document_id
-    )
+    if image_base64 and not selected_document_id:
+        # A question about an image does not need to embed/search every workspace document.
+        local_sources = []
+    else:
+        retrieval_limit = min(top_k, 2) if image_base64 else top_k
+        local_sources = await run_in_threadpool(
+            search_relevant_chunks, workspace_id, retrieval_query, retrieval_limit, selected_document_id
+        )
     web_sources = []
     network_status = "not_requested"
     if include_web:

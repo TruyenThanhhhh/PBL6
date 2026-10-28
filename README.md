@@ -75,11 +75,11 @@ pip install -r requirements.txt
 ollama run qwen2.5:3b
 ```
 
-Để dán ảnh chụp màn hình vào hộp thoại chat và nhờ AI phân tích ảnh, cần tải thêm model vision:
+Để dán ảnh chụp màn hình vào hộp thoại chat và nhờ AI phân tích ảnh, tải model vision nhẹ:
 ```bash
-ollama pull qwen2.5vl:3b
+ollama pull qwen3-vl:2b-instruct
 ```
-Model này được dùng riêng cho câu hỏi có ảnh; chat văn bản vẫn dùng `qwen2.5:3b`. Tên model vision có thể đổi bằng biến `VISION_MODEL` trong `sourcecode/backend/.env`.
+Model này được ưu tiên riêng cho câu hỏi có ảnh; chat văn bản vẫn dùng `qwen2.5:3b`. Backend tự dùng `qwen2.5vl:3b` nếu model vision cũ đã có sẵn. Qwen3-VL yêu cầu Ollama 0.12.7 trở lên.
 
 ### Bước 4: Khởi Chạy Ứng Dụng
 * **Cách 1:** Nhấp đúp vào file `start_app.bat` ở thư mục gốc.
@@ -147,7 +147,7 @@ Ví dụ body cho chat:
 
 ### Cấu hình tùy chọn
 
-Các biến môi trường: `OLLAMA_BASE_URL`, `DEFAULT_LLM_MODEL`, `VISION_MODEL`, `ENABLE_DENSE_RETRIEVAL`, `EMBEDDING_MODEL`, `WEB_SEARCH_ENABLED`, `DUCKDUCKGO_API_URL`, `WEB_SEARCH_TIMEOUT`, `UPLOAD_MAX_BYTES`. Dense retrieval dùng `fastembed` với `BAAI/bge-m3`; lần đầu chạy có thể cần tải model. Nếu embedding không khả dụng, văn bản vẫn được lập chỉ mục bằng FTS5. Chat chạy local qua Ollama; khi Ollama lỗi, API trả các đoạn nguồn trích xuất trực tiếp. Web Search chỉ chạy khi request đặt `web_search: true`; lỗi mạng sẽ được ghi vào `web_search` và pipeline vẫn dùng nguồn local.
+Các biến môi trường: `OLLAMA_BASE_URL`, `DEFAULT_LLM_MODEL`, `VISION_MODEL`, `VISION_MODEL_FALLBACK`, `ENABLE_DENSE_RETRIEVAL`, `EMBEDDING_MODEL`, `WEB_SEARCH_ENABLED`, `DUCKDUCKGO_API_URL`, `WEB_SEARCH_TIMEOUT`, `UPLOAD_MAX_BYTES`. Dense retrieval dùng `fastembed` với `BAAI/bge-m3`; lần đầu chạy có thể cần tải model. Nếu embedding không khả dụng, văn bản vẫn được lập chỉ mục bằng FTS5. Chat chạy local qua Ollama; khi Ollama lỗi, API trả các đoạn nguồn trích xuất trực tiếp. Web Search chỉ chạy khi request đặt `web_search: true`; lỗi mạng sẽ được ghi vào `web_search` và pipeline vẫn dùng nguồn local.
 
 ### Tài khoản và Google Login
 
