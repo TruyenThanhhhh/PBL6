@@ -45,7 +45,6 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  // Theo dõi khi người dùng chủ động chọn mục Citation trên Sidebar để chỉ highlight duy nhất 1 mục
   const [citationNavSelected, setCitationNavSelected] = useState(false)
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
@@ -170,16 +169,18 @@ export function AppSidebar() {
       <aside
         aria-label="Thanh điều hướng Workspace Studio"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-[#D4E2DF] bg-[#F0F5F4] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
-          collapsed ? "w-[236px] md:w-[60px]" : "w-[236px]",
+          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-[#DCE7E4] bg-[#F1F6F5] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
+          collapsed
+            ? "w-[220px] md:w-[56px]"
+            : "w-[220px] md:w-[16%] md:min-w-[200px] md:max-w-[250px]",
           mobile ? "translate-x-0" : "-translate-x-full md:translate-x-0",
         )}
       >
-        {/* Nút Hội thoại mới (CTA Primary #087F73) + Nút thu gọn Sidebar */}
+        {/* Nút Hội thoại mới (Nút chính duy nhất) + Nút thu gọn Sidebar */}
         <div
           className={cn(
-            "flex items-center justify-between gap-2 px-3 pt-3 pb-2",
-            collapsed && "md:flex-col md:justify-center md:px-2",
+            "flex items-center justify-between gap-1.5 px-2.5 pt-2.5 pb-2",
+            collapsed && "md:flex-col md:justify-center md:px-1.5",
           )}
         >
           {collapsed ? (
@@ -187,7 +188,7 @@ export function AppSidebar() {
               <button
                 type="button"
                 onClick={toggle}
-                className="hidden h-8 w-8 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29] md:flex"
+                className="hidden h-7 w-7 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29] md:flex"
                 aria-label="Mở rộng Sidebar"
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -195,13 +196,13 @@ export function AppSidebar() {
             </Tooltip>
           ) : null}
 
-          <Tooltip content="Tạo cuộc trò chuyện mới" side={collapsed ? "right" : "bottom"}>
+          <Tooltip content="Bắt đầu hội thoại mới" side={collapsed ? "right" : "bottom"}>
             <button
               type="button"
               onClick={handleNewChat}
               className={cn(
-                "inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#087F73] text-xs font-semibold text-white transition-colors hover:bg-[#06665C]",
-                collapsed ? "h-8 w-8 md:px-0" : "h-8 flex-1 px-3",
+                "inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#087F73] text-xs font-semibold text-white transition-colors hover:bg-[#06665C] shadow-2xs",
+                collapsed ? "h-8 w-8 md:px-0" : "h-8 flex-1 px-2.5",
               )}
               aria-label="Hội thoại mới"
             >
@@ -212,22 +213,21 @@ export function AppSidebar() {
 
           {!collapsed ? (
             <Tooltip content="Thu gọn thanh bên" side="bottom">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden h-8 w-8 shrink-0 text-[#647C79] hover:bg-[#E3ECEA] hover:text-[#172B29] md:inline-flex"
+              <button
+                type="button"
+                className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#647C79] hover:bg-white/80 hover:text-[#172B29] md:inline-flex"
                 onClick={toggle}
                 aria-label="Thu gọn Sidebar"
               >
-                <PanelLeftClose className="h-4 w-4" />
-              </Button>
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              </button>
             </Tooltip>
           ) : null}
 
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 text-[#647C79] md:hidden"
+            className="h-7 w-7 shrink-0 text-[#647C79] md:hidden"
             onClick={() => setMobile(false)}
             aria-label="Đóng menu"
           >
@@ -235,8 +235,8 @@ export function AppSidebar() {
           </Button>
         </div>
 
-        {/* 1. Menu chính: Chỉ highlight duy nhất 1 mục đang active */}
-        <nav className="flex shrink-0 flex-col gap-0.5 px-2.5 py-1.5" aria-label="Chức năng Studio">
+        {/* 1. Menu chính: Giảm padding, chỉ highlight mục đang active */}
+        <nav className="flex shrink-0 flex-col gap-0.5 px-2 py-1" aria-label="Chức năng Studio">
           {navItems.map((item) => {
             const active = activeNavId === item.id
             const btn = (
@@ -245,16 +245,16 @@ export function AppSidebar() {
                 type="button"
                 onClick={item.onClick}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors",
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
                   active
-                    ? "bg-white font-semibold text-[#172B29] shadow-[0_1px_2px_rgba(23,43,41,0.06)] ring-1 ring-[#D4E2DF]"
-                    : "font-medium text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
-                  collapsed && "md:justify-center md:px-2",
+                    ? "bg-white font-semibold text-[#172B29] shadow-2xs border border-[#DCE7E4]"
+                    : "font-medium text-[#647C79] hover:bg-white/60 hover:text-[#172B29]",
+                  collapsed && "md:justify-center md:px-1.5",
                 )}
               >
                 <item.icon
                   className={cn(
-                    "h-4 w-4 shrink-0",
+                    "h-3.5 w-3.5 shrink-0",
                     active ? "text-[#087F73]" : "text-[#647C79]",
                   )}
                 />
@@ -274,32 +274,32 @@ export function AppSidebar() {
           })}
         </nav>
 
-        {/* 2. Lịch sử hội thoại & 3–5 Tài liệu gần đây (Typography nhỏ gọn, sạch sẽ) */}
+        {/* 2. Lịch sử hội thoại & Tài liệu gần đây (Danh sách gọn, không dùng khung rỗng hay card lồng) */}
         <div
           className={cn(
-            "mt-1 flex-1 space-y-5 overflow-y-auto border-t border-[#D4E2DF] px-2.5 py-3",
+            "mt-1 flex-1 space-y-4 overflow-y-auto border-t border-[#DCE7E4] px-2 py-2.5",
             collapsed && "md:hidden",
           )}
         >
           {/* Lịch sử hội thoại */}
           <div>
-            <div className="mb-1 flex items-center justify-between px-2">
-              <span className="text-[11px] font-semibold text-[#647C79]">
-                Lịch sử hội thoại
+            <div className="mb-1 flex items-center justify-between px-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#647C79]">
+                Lịch sử
               </span>
               <button
                 type="button"
                 onClick={handleNewChat}
-                className="rounded p-0.5 text-[#647C79] transition-colors hover:text-[#172B29]"
+                className="text-[#647C79] hover:text-[#087F73]"
                 title="Hội thoại mới"
                 aria-label="Hội thoại mới"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3 w-3" />
               </button>
             </div>
 
             {wsConversations.length === 0 ? (
-              <p className="px-2 py-1 text-xs text-[#647C79]">Chưa có hội thoại</p>
+              <p className="px-1 text-[11px] text-[#647C79]">Chưa có hội thoại</p>
             ) : (
               <ul className="space-y-0.5">
                 {wsConversations.map((c) => {
@@ -308,10 +308,10 @@ export function AppSidebar() {
                     <li
                       key={c.id}
                       className={cn(
-                        "group flex items-center justify-between gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                        "group flex items-center justify-between gap-1 rounded-md px-1.5 py-1 text-xs transition-colors",
                         active
-                          ? "font-semibold text-[#087F73]"
-                          : "text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
+                          ? "bg-white font-semibold text-[#087F73] border border-[#DCE7E4]/80 shadow-2xs"
+                          : "text-[#647C79] hover:bg-white/50 hover:text-[#172B29]",
                       )}
                     >
                       <button
@@ -321,7 +321,7 @@ export function AppSidebar() {
                           navigate(`/chat/${c.id}`)
                           setMobile(false)
                         }}
-                        className="min-w-0 flex-1 truncate text-left"
+                        className="min-w-0 flex-1 truncate text-left text-[11.5px]"
                       >
                         {c.title}
                       </button>
@@ -334,7 +334,7 @@ export function AppSidebar() {
                             aria-label={`Tùy chọn cho ${c.title}`}
                             className="rounded p-0.5 text-[#647C79] opacity-0 transition-opacity hover:text-[#172B29] group-hover:opacity-100 focus:opacity-100"
                           >
-                            <MoreHorizontal className="h-3.5 w-3.5" />
+                            <MoreHorizontal className="h-3 w-3" />
                           </button>
                         }
                       >
@@ -360,11 +360,11 @@ export function AppSidebar() {
             )}
           </div>
 
-          {/* Tài liệu gần đây (3-5 tài liệu) */}
+          {/* Tài liệu gần đây */}
           <div>
-            <div className="mb-1 flex items-center justify-between px-2">
-              <span className="text-[11px] font-semibold text-[#647C79]">
-                Tài liệu gần đây
+            <div className="mb-1 flex items-center justify-between px-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#647C79]">
+                Tài liệu
               </span>
               <button
                 type="button"
@@ -373,14 +373,14 @@ export function AppSidebar() {
                   navigate("/documents")
                   setMobile(false)
                 }}
-                className="text-[11px] font-medium text-[#087F73] hover:underline"
+                className="text-[10px] font-medium text-[#087F73] hover:underline"
               >
-                Xem hết
+                Xem hết ({recentDocuments.length})
               </button>
             </div>
 
             {recentDocuments.length === 0 ? (
-              <p className="px-2 py-1 text-xs text-[#647C79]">Chưa có tài liệu</p>
+              <p className="px-1 text-[11px] text-[#647C79]">Chưa có tài liệu</p>
             ) : (
               <ul className="space-y-0.5">
                 {recentDocuments.map((doc) => {
@@ -396,10 +396,10 @@ export function AppSidebar() {
                         }}
                         title={doc.fileName}
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors",
+                          "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] transition-colors",
                           isDocActive
-                            ? "font-semibold text-[#087F73]"
-                            : "text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
+                            ? "bg-white font-semibold text-[#087F73] border border-[#DCE7E4]/80 shadow-2xs"
+                            : "text-[#647C79] hover:bg-white/50 hover:text-[#172B29]",
                         )}
                       >
                         <FileText className="h-3 w-3 shrink-0 text-[#647C79]" />

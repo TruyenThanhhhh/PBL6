@@ -4,7 +4,9 @@ import {
   ArrowUpRight,
   BookOpen,
   Check,
+  Compass,
   Copy,
+  FileQuestion,
   FileText,
   GraduationCap,
   Layers,
@@ -14,6 +16,7 @@ import {
   Plus,
   Quote,
   RefreshCw,
+  Search,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
@@ -141,69 +144,101 @@ export function ChatPage() {
     [conversation?.messages],
   )
 
-  // 4 Suggestion Cards ngắn gọn, rõ nét dựa trên tài liệu của Workspace
-  const suggestedPrompts = useMemo(() => {
-    const firstDoc = workspaceDocuments[0]
-    const secondDoc = workspaceDocuments[1]
+  const readyDocs = useMemo(
+    () => workspaceDocuments.filter((d) => d.status === "ready"),
+    [workspaceDocuments],
+  )
+
+  // Tối đa 4 suggestion cards, mỗi card có icon, tiêu đề và mô tả ngắn gọn
+  const suggestionCards = useMemo(() => {
+    const firstDoc = readyDocs[0] || workspaceDocuments[0]
+    const secondDoc = readyDocs[1] || workspaceDocuments[1]
+
     if (firstDoc && secondDoc) {
       return [
         {
-          title: "Tóm tắt tài liệu",
-          prompt: `Tóm tắt các luận điểm chính trong "${firstDoc.fileName}".`,
+          icon: FileText,
+          title: "Tóm tắt ý chính",
+          description: `Rút trích các luận điểm cốt lõi trong ${firstDoc.fileName}.`,
+          prompt: `Tóm tắt các luận điểm cốt lõi trong tài liệu "${firstDoc.fileName}" kèm trích dẫn số trang.`,
         },
         {
-          title: "So sánh nguồn",
-          prompt: `Đối chiếu nội dung giữa "${firstDoc.fileName}" và "${secondDoc.fileName}".`,
+          icon: Layers,
+          title: "Đối chiếu tài liệu",
+          description: `So sánh điểm chung & khác biệt giữa 2 tài liệu.`,
+          prompt: `Đối chiếu và so sánh các ý chính giữa "${firstDoc.fileName}" và "${secondDoc.fileName}".`,
         },
         {
-          title: "Khái niệm cốt lõi",
-          prompt: `Liệt kê các thuật ngữ quan trọng nhất trong "${currentWorkspace?.name ?? "Workspace"}".`,
+          icon: Compass,
+          title: "Thuật ngữ trọng tâm",
+          description: `Giải thích các khái niệm quan trọng nhất.`,
+          prompt: `Liệt kê và định nghĩa các thuật ngữ kỹ thuật trọng tâm trong kho tài liệu này.`,
         },
         {
-          title: "Câu hỏi ôn tập",
-          prompt: `Tạo 5 câu hỏi ôn tập kèm đáp án từ tài liệu đã tải lên.`,
+          icon: FileQuestion,
+          title: "Bộ câu hỏi ôn tập",
+          description: `Tạo 5 câu hỏi kiểm tra kèm đáp án đối chiếu.`,
+          prompt: `Tạo 5 câu hỏi ôn tập kèm đáp án dựa trên các tài liệu đã tải lên.`,
         },
       ]
     }
+
     if (firstDoc) {
       return [
         {
+          icon: FileText,
           title: "Tóm tắt nội dung",
-          prompt: `Tóm tắt các ý chính trong "${firstDoc.fileName}" kèm trích dẫn.`,
+          description: `Tổng quan ý chính từ ${firstDoc.fileName}.`,
+          prompt: `Tóm tắt nội dung chính trong tài liệu "${firstDoc.fileName}" kèm trích dẫn.`,
         },
         {
-          title: "Phân tích trọng tâm",
-          prompt: `Các kết luận quan trọng nhất trong "${firstDoc.fileName}" là gì?`,
+          icon: Compass,
+          title: "Phân tích phát hiện",
+          description: `Các kết luận quan trọng nhất được nêu trong tài liệu.`,
+          prompt: `Những kết luận hoặc phương pháp quan trọng nhất trong "${firstDoc.fileName}" là gì?`,
         },
         {
-          title: "Trích xuất thuật ngữ",
-          prompt: `Giải thích các khái niệm chính xuất hiện trong "${firstDoc.fileName}".`,
+          icon: Search,
+          title: "Định nghĩa khái niệm",
+          description: `Tra cứu các thuật ngữ chuyên ngành có trong tệp.`,
+          prompt: `Giải thích các thuật ngữ chuyên ngành xuất hiện trong "${firstDoc.fileName}".`,
         },
         {
-          title: "Tạo câu hỏi kiểm tra",
-          prompt: `Đặt 5 câu hỏi kiểm tra kiến thức từ "${firstDoc.fileName}".`,
+          icon: FileQuestion,
+          title: "Câu hỏi kiểm tra",
+          description: `Đặt câu hỏi trắc nghiệm tự ôn tập.`,
+          prompt: `Đặt 5 câu hỏi ôn tập từ nội dung của "${firstDoc.fileName}".`,
         },
       ]
     }
+
     return [
       {
+        icon: Compass,
         title: "Tổng quan chủ đề",
-        prompt: `Tóm tắt các kiến thức nền tảng trong "${currentWorkspace?.name ?? "Workspace"}".`,
+        description: "Khái quát các kiến thức nền tảng trong không gian.",
+        prompt: `Tóm tắt các kiến thức nền tảng trong không gian làm việc này.`,
       },
       {
-        title: "Phân tích Hybrid RAG",
-        prompt: "So sánh vai trò của Dense Search, BM25 và RRF trong truy xuất tri thức.",
+        icon: Layers,
+        title: "Kiến trúc Hybrid RAG",
+        description: "Dense vector, BM25 và Reciprocal Rank Fusion.",
+        prompt: "Phân tích sự kết hợp giữa Dense Search, BM25 và RRF trong truy xuất tri thức.",
       },
       {
-        title: "Đối chiếu trích dẫn",
-        prompt: "Cách kiểm chứng câu trả lời AI thông qua Citation theo trang tài liệu.",
+        icon: Quote,
+        title: "Kiểm chứng trích dẫn",
+        description: "Đối chiếu câu trả lời với từng chunk và trang.",
+        prompt: "Làm thế nào để kiểm chứng câu trả lời AI thông qua Citation trích dẫn?",
       },
       {
-        title: "Đề cương ôn tập",
-        prompt: `Lập kế hoạch nghiên cứu cho "${currentWorkspace?.name ?? "chủ đề hiện tại"}".`,
+        icon: FileQuestion,
+        title: "Lộ trình ôn tập",
+        description: "Gợi ý kế hoạch đọc hiểu tài liệu hiệu quả.",
+        prompt: "Gợi ý kế hoạch đọc hiểu và ghi chú cho chủ đề nghiên cứu hiện tại.",
       },
     ]
-  }, [workspaceDocuments, currentWorkspace?.name])
+  }, [readyDocs, workspaceDocuments])
 
   const handleModeChange = (nextMode: AIMode) => {
     setAiMode(nextMode)
@@ -494,11 +529,11 @@ export function ChatPage() {
   return (
     <div className="relative flex h-full w-full min-w-0 overflow-hidden bg-white">
       {/* =====================================================================
-          MAIN CHAT AREA (#FFFFFF - Khu vực nổi bật nhất ở trung tâm)
+          MAIN CHAT AREA (64% chiều rộng - Khu vực nổi bật nhất)
       ===================================================================== */}
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        {/* Thanh Sub-header tối giản */}
-        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-[#D4E2DF] bg-white px-4 md:px-6">
+        {/* Header phiên hội thoại: gọn gàng, tinh tế */}
+        <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#DCE7E4] bg-white px-3 md:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {conversation ? (
               <div className="min-w-0 max-w-md flex-1">
@@ -510,17 +545,17 @@ export function ChatPage() {
                     renameConversation(conversation.id, next)
                     toast({ title: "Đã đổi tên hội thoại", tone: "success" })
                   }}
-                  className="truncate text-sm font-semibold text-[#172B29]"
+                  className="truncate text-xs font-semibold text-[#172B29]"
                 />
               </div>
             ) : (
-              <span className="truncate text-sm font-semibold text-[#172B29]">
+              <span className="truncate text-xs font-semibold text-[#172B29]">
                 Hỏi đáp AI
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <ModeSelector value={aiMode} onChange={handleModeChange} />
 
             <Tooltip
@@ -531,15 +566,15 @@ export function ChatPage() {
                 type="button"
                 onClick={() => setCitationOpen(!citationOpen)}
                 className={cn(
-                  "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors",
                   citationOpen
                     ? "border-[#087F73] bg-[#087F73] text-white"
-                    : "border-[#D4E2DF] bg-white text-[#172B29] hover:border-[#087F73]",
+                    : "border-[#DCE7E4] bg-white text-[#172B29] hover:border-[#087F73]",
                 )}
                 aria-label="Đóng/mở Context Panel"
               >
-                <PanelRightOpen className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">
+                <PanelRightOpen className="h-3 w-3" />
+                <span className="hidden sm:inline text-[11px]">
                   {citationCount > 0 ? `Nguồn (${citationCount})` : `Kho (${workspaceDocuments.length})`}
                 </span>
               </button>
@@ -552,10 +587,10 @@ export function ChatPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]"
+                    className="h-7 w-7 text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
                     aria-label="Tùy chọn hội thoại"
                   >
-                    <MoreHorizontal className="h-4 w-4" />
+                    <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>
                 }
               >
@@ -584,49 +619,58 @@ export function ChatPage() {
           </div>
         </header>
 
-        {/* Vùng nội dung Chat trên nền trắng #FFFFFF */}
-        <div className="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-6 md:px-8">
+        {/* Vùng nội dung Chat: Tối ưu chiều cao, ưu tiên diện tích cho câu trả lời */}
+        <div className="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-4 md:px-8">
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col">
             {!conversation || conversation.messages.length === 0 ? (
-              /* EMPTY STATE TINH GIẢN: Icon AI + Tiêu đề rõ nét + 4 Suggestion Cards */
-              <div className="my-auto flex flex-col items-center justify-center py-8 text-center">
-                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#087F73] text-white">
-                  <Sparkles className="h-6 w-6" />
+              /* EMPTY STATE NGẮN GỌN THEO YÊU CẦU:
+                 - Không có tiêu đề workspace quá lớn ở giữa màn hình
+                 - Tiêu đề ngắn gọn: "Bạn muốn tìm hiểu điều gì?"
+                 - Mô tả ngắn về số lượng tài liệu
+                 - Tối đa 4 suggestion cards nhỏ gọn (icon + title + description) */
+              <div className="my-auto flex flex-col items-center justify-center py-4 text-center">
+                <div className="mb-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-[#087F73] text-white shadow-2xs">
+                  <Sparkles className="h-4.5 w-4.5" />
                 </div>
 
-                <h1 className="text-2xl font-bold tracking-tight text-[#172B29] sm:text-3xl">
-                  {currentWorkspace?.name ?? "Workspace Studio"}
-                </h1>
+                <h2 className="text-xl font-bold tracking-tight text-[#172B29] sm:text-2xl">
+                  Bạn muốn tìm hiểu điều gì?
+                </h2>
 
-                <p className="mt-1.5 text-sm text-[#647C79]">
-                  Hỏi đáp trực tiếp trên kho tài liệu với trích dẫn kiểm chứng.
+                <p className="mt-1 text-xs text-[#647C79]">
+                  Đang kết nối {readyDocs.length} tài liệu trong {currentWorkspace?.name ?? "Workspace"}.
                 </p>
 
-                {/* 4 Suggestion Cards có background riêng (#F7FAFA), border rõ (#D4E2DF) và hover tinh tế */}
-                <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-2">
-                  {suggestedPrompts.map((item) => (
+                {/* 4 Suggestion Cards nhỏ gọn */}
+                <div className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2.5 sm:grid-cols-2 text-left">
+                  {suggestionCards.map((item) => (
                     <button
                       key={item.title}
                       type="button"
                       onClick={() => void sendQuery(item.prompt)}
-                      className="group flex flex-col justify-between rounded-xl border border-[#D4E2DF] bg-[#F7FAFA] p-3.5 text-left transition-colors hover:border-[#087F73] hover:bg-white"
+                      className="group flex items-start gap-2.5 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5] p-2.5 transition-colors hover:border-[#087F73] hover:bg-white"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-[#172B29] group-hover:text-[#087F73]">
-                          {item.title}
-                        </span>
-                        <ArrowUpRight className="h-3.5 w-3.5 text-[#647C79] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#087F73]" />
+                      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white text-[#087F73] border border-[#DCE7E4] group-hover:border-[#087F73]">
+                        <item.icon className="h-3.5 w-3.5" />
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#647C79]">
-                        {item.prompt}
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs font-semibold text-[#172B29] group-hover:text-[#087F73] truncate">
+                            {item.title}
+                          </span>
+                          <ArrowUpRight className="h-3 w-3 shrink-0 text-[#647C79] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#087F73]" />
+                        </div>
+                        <p className="mt-0.5 line-clamp-1 text-[11px] text-[#647C79]">
+                          {item.description}
+                        </p>
+                      </div>
                     </button>
                   ))}
                 </div>
               </div>
             ) : (
-              /* LUỒNG HỘI THOẠI: Tăng khoảng trắng & khả năng đọc, tránh đóng khung mọi thứ thành card giống nhau */
-              <div className="space-y-8 pb-6">
+              /* KHI CÓ HỘI THOẠI: ƯU TIÊN DIỆN TÍCH CHO NỘI DUNG CÂU TRẢ LỜI */
+              <div className="space-y-6 pb-4">
                 {conversation.messages.map((m) => {
                   const isUser = m.role === "user"
                   const attachedDocsForMsg = documents.filter((d) =>
@@ -640,38 +684,38 @@ export function ChatPage() {
                       key={m.id}
                       className={
                         isUser
-                          ? "ml-auto max-w-[82%] rounded-2xl bg-[#F0F5F4] px-4 py-3 text-[#172B29]"
-                          : "border-b border-[#E5EEEC] pb-6 last:border-b-0"
+                          ? "ml-auto max-w-[80%] rounded-xl bg-[#F1F6F5] border border-[#DCE7E4] px-3.5 py-2.5 text-[#172B29]"
+                          : "border-b border-[#DCE7E4]/80 pb-5 last:border-b-0"
                       }
                     >
                       {!isUser ? (
-                        <div className="mb-2.5 flex items-center justify-between gap-2 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[#087F73] text-[10px] font-bold text-white">
+                        <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex h-4.5 w-4.5 items-center justify-center rounded bg-[#087F73] text-[9.5px] font-bold text-white">
                               M
                             </span>
-                            <span className="font-semibold text-[#172B29]">Motivo AI</span>
+                            <span className="font-semibold text-[#172B29] text-xs">Motivo AI</span>
                           </div>
-                          <span className="text-[11px] text-[#647C79]">
+                          <span className="text-[10.5px] text-[#647C79]">
                             {formatDate(m.createdAt)}
                           </span>
                         </div>
                       ) : null}
 
                       {isUser && (attachedDocsForMsg.length > 0 || scopeNb) ? (
-                        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+                        <div className="mb-1 flex flex-wrap items-center gap-1">
                           {scopeNb ? (
-                            <span className="inline-flex items-center gap-1 rounded border border-[#D4E2DF] bg-white px-2 py-0.5 text-[11px] text-[#172B29]">
-                              <BookOpen className="h-3 w-3 text-[#087F73]" />
+                            <span className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-white px-1.5 py-0.2 text-[10.5px] text-[#172B29]">
+                              <BookOpen className="h-2.5 w-2.5 text-[#087F73]" />
                               {scopeNb.name}
                             </span>
                           ) : null}
                           {attachedDocsForMsg.map((d) => (
                             <span
                               key={d.id}
-                              className="inline-flex items-center gap-1 rounded border border-[#D4E2DF] bg-white px-2 py-0.5 text-[11px] text-[#172B29]"
+                              className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-white px-1.5 py-0.2 text-[10.5px] text-[#172B29]"
                             >
-                              <FileText className="h-3 w-3 text-[#087F73]" />
+                              <FileText className="h-2.5 w-2.5 text-[#087F73]" />
                               {d.fileName}
                             </span>
                           ))}
@@ -679,11 +723,11 @@ export function ChatPage() {
                       ) : null}
 
                       {isUser ? (
-                        <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-[#172B29]">
+                        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
                           {m.content}
                         </p>
                       ) : m.error ? (
-                        <div className="space-y-3">
+                        <div className="space-y-2.5">
                           <Alert
                             tone="error"
                             title="Không thể tạo câu trả lời"
@@ -692,7 +736,7 @@ export function ChatPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                            leftIcon={<RefreshCw className="h-3 w-3" />}
                             disabled={busy}
                             onClick={() => {
                               const prompt = findPrecedingUserPrompt(m.id)
@@ -703,12 +747,12 @@ export function ChatPage() {
                           </Button>
                         </div>
                       ) : m.streaming && !m.content ? (
-                        <div className="space-y-2 py-2" aria-live="polite">
+                        <div className="space-y-1.5 py-1.5" aria-live="polite">
                           <div className="flex items-center gap-2 text-xs text-[#647C79]">
-                            <span className="h-2 w-2 animate-ping rounded-full bg-[#087F73]" />
+                            <span className="h-1.5 w-1.5 animate-ping rounded-full bg-[#087F73]" />
                             <span>Đang truy xuất tài liệu...</span>
                           </div>
-                          <div className="h-3 w-2/3 animate-pulse rounded bg-[#F0F5F4]" />
+                          <div className="h-2.5 w-1/2 animate-pulse rounded bg-[#F1F6F5]" />
                         </div>
                       ) : (
                         <div className="text-[#172B29]">
@@ -718,11 +762,11 @@ export function ChatPage() {
 
                       {/* Thanh công cụ dưới mỗi câu trả lời AI */}
                       {!isUser && !m.streaming && !m.error ? (
-                        <div className="mt-4 space-y-2.5 pt-1">
+                        <div className="mt-3 space-y-2 pt-1">
                           {m.citations.length > 0 ? (
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#647C79]">
-                                <Quote className="h-3 w-3 text-[#087F73]" />
+                              <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-[#647C79]">
+                                <Quote className="h-2.5 w-2.5 text-[#087F73]" />
                                 Trích dẫn:
                               </span>
                               {m.citations.map((c) => (
@@ -736,10 +780,10 @@ export function ChatPage() {
                                       new CustomEvent("studio-context-tab", { detail: "citations" }),
                                     )
                                   }}
-                                  className="inline-flex items-center gap-1 rounded-md border border-[#D4E2DF] bg-[#F5F8F7] px-2 py-0.5 text-[11px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+                                  className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10.5px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
                                 >
                                   <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
-                                  <span className="max-w-[160px] truncate">{c.documentName}</span>
+                                  <span className="max-w-[140px] truncate">{c.documentName}</span>
                                   {c.pageNumber != null ? (
                                     <span className="text-[10px] text-[#647C79]">· Tr.{c.pageNumber}</span>
                                   ) : null}
@@ -753,14 +797,14 @@ export function ChatPage() {
                               <button
                                 type="button"
                                 onClick={() => void handleCopyMessage(m)}
-                                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29]"
+                                className="inline-flex h-6.5 items-center gap-1 rounded px-1.5 text-xs text-[#647C79] transition-colors hover:bg-[#F1F6F5] hover:text-[#172B29]"
                               >
                                 {copiedMsgId === m.id ? (
-                                  <Check className="h-3.5 w-3.5 text-[#087F73]" />
+                                  <Check className="h-3 w-3 text-[#087F73]" />
                                 ) : (
-                                  <Copy className="h-3.5 w-3.5" />
+                                  <Copy className="h-3 w-3" />
                                 )}
-                                <span>{copiedMsgId === m.id ? "Đã chép" : "Copy"}</span>
+                                <span className="text-[11px]">{copiedMsgId === m.id ? "Đã chép" : "Copy"}</span>
                               </button>
 
                               <button
@@ -770,13 +814,13 @@ export function ChatPage() {
                                   const prompt = findPrecedingUserPrompt(m.id)
                                   if (prompt) void sendQuery(prompt, m.id)
                                 }}
-                                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29] disabled:opacity-40"
+                                className="inline-flex h-6.5 items-center gap-1 rounded px-1.5 text-xs text-[#647C79] transition-colors hover:bg-[#F1F6F5] hover:text-[#172B29] disabled:opacity-40"
                               >
-                                <RefreshCw className="h-3.5 w-3.5" />
-                                <span>Tạo lại</span>
+                                <RefreshCw className="h-3 w-3" />
+                                <span className="text-[11px]">Tạo lại</span>
                               </button>
 
-                              <div className="mx-1 h-3.5 w-px bg-[#D4E2DF]" />
+                              <div className="mx-1 h-3 w-px bg-[#DCE7E4]" />
 
                               <Tooltip content="Hữu ích" side="bottom">
                                 <button
@@ -784,13 +828,13 @@ export function ChatPage() {
                                   onClick={() => handleFeedback(m.id, "up")}
                                   aria-label="Hữu ích"
                                   className={cn(
-                                    "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+                                    "inline-flex h-6.5 w-6.5 items-center justify-center rounded transition-colors",
                                     vote === "up"
                                       ? "text-[#087F73]"
-                                      : "text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]",
+                                      : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
                                   )}
                                 >
-                                  <ThumbsUp className="h-3.5 w-3.5" />
+                                  <ThumbsUp className="h-3 w-3" />
                                 </button>
                               </Tooltip>
 
@@ -800,13 +844,13 @@ export function ChatPage() {
                                   onClick={() => handleFeedback(m.id, "down")}
                                   aria-label="Chưa chính xác"
                                   className={cn(
-                                    "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+                                    "inline-flex h-6.5 w-6.5 items-center justify-center rounded transition-colors",
                                     vote === "down"
                                       ? "text-rose-600"
-                                      : "text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]",
+                                      : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
                                   )}
                                 >
-                                  <ThumbsDown className="h-3.5 w-3.5" />
+                                  <ThumbsDown className="h-3 w-3" />
                                 </button>
                               </Tooltip>
                             </div>
@@ -816,9 +860,9 @@ export function ChatPage() {
                               trigger={
                                 <button
                                   type="button"
-                                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[#D4E2DF] bg-white px-2.5 text-xs font-semibold text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+                                  className="inline-flex h-6.5 items-center gap-1 rounded border border-[#DCE7E4] bg-white px-2 text-[11px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
                                 >
-                                  <GraduationCap className="h-3.5 w-3.5 text-[#087F73]" />
+                                  <GraduationCap className="h-3 w-3 text-[#087F73]" />
                                   <span>Tạo học liệu</span>
                                 </button>
                               }
@@ -881,11 +925,11 @@ export function ChatPage() {
       </div>
 
       {/* =====================================================================
-          CONTEXT PANEL BÊN PHẢI (#F5F8F7)
+          CONTEXT PANEL BÊN PHẢI (20% chiều rộng - Nền #F1F6F5)
       ===================================================================== */}
       {citationOpen ? (
         <>
-          <div className="hidden h-full w-80 shrink-0 xl:flex">
+          <div className="hidden h-full w-[24%] min-w-[260px] max-w-[320px] shrink-0 xl:flex">
             <CitationPanel
               citations={lastAssistant?.citations ?? []}
               workspaceDocuments={workspaceDocuments}
@@ -902,7 +946,7 @@ export function ChatPage() {
               className="fixed inset-0 bg-[#172B29]/30"
               onClick={() => setCitationOpen(false)}
             />
-            <div className="relative z-10 h-full w-80 max-w-[88vw] bg-[#F5F8F7]">
+            <div className="relative z-10 h-full w-80 max-w-[88vw] bg-[#F1F6F5]">
               <CitationPanel
                 citations={lastAssistant?.citations ?? []}
                 workspaceDocuments={workspaceDocuments}
@@ -914,15 +958,15 @@ export function ChatPage() {
           </div>
         </>
       ) : (
-        <aside className="hidden h-full w-10 shrink-0 flex-col items-center border-l border-[#D4E2DF] bg-[#F5F8F7] py-3 xl:flex">
+        <aside className="hidden h-full w-9 shrink-0 flex-col items-center border-l border-[#DCE7E4] bg-[#F1F6F5] py-2.5 xl:flex">
           <Tooltip content="Mở bảng Ngữ cảnh" side="left">
             <button
               type="button"
               onClick={() => setCitationOpen(true)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#D4E2DF] bg-white text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#DCE7E4] bg-white text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
               aria-label="Mở rộng Context Panel"
             >
-              <PanelRightOpen className="h-4 w-4" />
+              <PanelRightOpen className="h-3.5 w-3.5" />
             </button>
           </Tooltip>
         </aside>
