@@ -8,6 +8,7 @@ import { DocumentsPage } from "@/features/documents/DocumentsPage"
 import { ChatPage } from "@/features/chat/ChatPage"
 import { SourceViewerPage } from "@/features/source-viewer/SourceViewerPage"
 import { StudyToolsPage } from "@/features/study-tools/StudyToolsPage"
+import { ResearchPage } from "@/features/research/ResearchPage"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { DesignSystemPage } from "@/features/design-system/DesignSystemPage"
 
@@ -30,8 +31,8 @@ export function AppRouter() {
         <Route path="/documents" element={<DocumentsPage />} />
         <Route path="/documents/:documentId" element={<SourceViewerPage />} />
         <Route path="/study" element={<StudyToolsPage />} />
-        <Route path="/research" element={<Navigate to="/chat" replace />} />
-        <Route path="/research/:projectId" element={<Navigate to="/chat" replace />} />
+        <Route path="/research" element={<ResearchPage />} />
+        <Route path="/research/:projectId" element={<ResearchPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/design-system" element={<DesignSystemPage />} />
         <Route path="/placeholder" element={<PlaceholderPage />} />
