@@ -12,7 +12,6 @@ import {
   Moon,
   MoreHorizontal,
   Pencil,
-  Settings,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -91,13 +90,18 @@ export function AppHeader() {
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[13px]">
             <Link
               to="/hub"
-              className="group inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29]"
+              className="group relative inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-[#647C79] transition-all hover:bg-[#F0F5F4] hover:text-[#172B29]"
+              title="Quay lại Dashboard"
             >
-              <ArrowLeft className="h-3.5 w-3.5 text-[#647C79] transition-transform group-hover:-translate-x-0.5 group-hover:text-[#172B29]" />
-              <span className="font-sans font-bold tracking-tight text-[#172B29]">
-                motivo<span className="text-[#087F73]">.</span>
-              </span>
-              <span className="hidden text-xs text-[#647C79] sm:inline">Dashboard</span>
+              <ArrowLeft className="h-3.5 w-3.5 text-[#647C79] transition-transform duration-200 group-hover:-translate-x-1 group-hover:text-[#087F73]" />
+              <div className="relative flex h-5 items-center overflow-hidden">
+                <span className="font-sans font-bold tracking-tight text-[#172B29] transition-all duration-200 ease-out group-hover:-translate-y-full group-hover:opacity-0">
+                  motivo<span className="text-[#087F73]">.</span>
+                </span>
+                <span className="absolute inset-0 flex items-center font-sans text-xs font-semibold text-[#087F73] translate-y-full opacity-0 transition-all duration-200 ease-out group-hover:translate-y-0 group-hover:opacity-100">
+                  Back
+                </span>
+              </div>
             </Link>
 
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
@@ -184,18 +188,6 @@ export function AppHeader() {
                 {activeModelName}
               </span>
             </button>
-          </Tooltip>
-
-          <Tooltip content="Cài đặt hệ thống" side="bottom">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]"
-              aria-label="Cài đặt"
-              onClick={() => navigate("/settings")}
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
           </Tooltip>
 
           <DropdownMenu

@@ -10,6 +10,7 @@ import {
   Pencil,
   Plus,
   Quote,
+  Settings,
   Trash2,
   X,
 } from "lucide-react"
@@ -32,7 +33,6 @@ export function AppSidebar() {
   const setMobile = useAppStore((s) => s.setMobileNavOpen)
 
   const workspaces = useAppStore((s) => s.workspaces)
-  const documents = useAppStore((s) => s.documents)
   const conversations = useAppStore((s) => s.conversations)
   const current = useAppStore((s) => s.currentWorkspaceId)
   const setCitationOpen = useAppStore((s) => s.setCitationOpen)
@@ -64,15 +64,6 @@ export function AppSidebar() {
   const wsConversations = useMemo(
     () => conversations.filter((c) => c.workspaceId === currentWsId),
     [conversations, currentWsId],
-  )
-
-  const recentDocuments = useMemo(
-    () =>
-      [...documents]
-        .filter((d) => d.workspaceId === currentWsId)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .slice(0, 5),
-    [documents, currentWsId],
   )
 
   const handleNewChat = () => {
@@ -359,58 +350,52 @@ export function AppSidebar() {
               </ul>
             )}
           </div>
+        </div>
 
-          {/* Tài liệu gần đây */}
-          <div>
-            <div className="mb-1 flex items-center justify-between px-1">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#647C79]">
-                Tài liệu
-              </span>
+        {/* Footer Sidebar: Nút Cài đặt hệ thống */}
+        <div className="shrink-0 border-t border-[#DCE7E4] p-2">
+          {collapsed ? (
+            <Tooltip content="Cài đặt hệ thống" side="right">
               <button
                 type="button"
                 onClick={() => {
-                  setCitationNavSelected(false)
-                  navigate("/documents")
+                  navigate("/settings")
                   setMobile(false)
                 }}
-                className="text-[10px] font-medium text-[#087F73] hover:underline"
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29]",
+                  location.pathname.startsWith("/settings") &&
+                    "border border-[#DCE7E4] bg-white font-semibold text-[#087F73] shadow-2xs",
+                )}
+                aria-label="Cài đặt"
               >
-                Xem hết ({recentDocuments.length})
+                <Settings className="h-4 w-4" />
               </button>
-            </div>
-
-            {recentDocuments.length === 0 ? (
-              <p className="px-1 text-[11px] text-[#647C79]">Chưa có tài liệu</p>
-            ) : (
-              <ul className="space-y-0.5">
-                {recentDocuments.map((doc) => {
-                  const isDocActive = location.pathname === `/documents/${doc.id}`
-                  return (
-                    <li key={doc.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCitationNavSelected(false)
-                          navigate(`/documents/${doc.id}`)
-                          setMobile(false)
-                        }}
-                        title={doc.fileName}
-                        className={cn(
-                          "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] transition-colors",
-                          isDocActive
-                            ? "bg-white font-semibold text-[#087F73] border border-[#DCE7E4]/80 shadow-2xs"
-                            : "text-[#647C79] hover:bg-white/50 hover:text-[#172B29]",
-                        )}
-                      >
-                        <FileText className="h-3 w-3 shrink-0 text-[#647C79]" />
-                        <span className="flex-1 truncate">{doc.fileName}</span>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
+            </Tooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                navigate("/settings")
+                setMobile(false)
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                location.pathname.startsWith("/settings")
+                  ? "border border-[#DCE7E4] bg-white font-semibold text-[#172B29] shadow-2xs"
+                  : "font-medium text-[#647C79] hover:bg-white/60 hover:text-[#172B29]",
+              )}
+              aria-label="Cài đặt"
+            >
+              <Settings
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0",
+                  location.pathname.startsWith("/settings") ? "text-[#087F73]" : "text-[#647C79]",
+                )}
+              />
+              <span className="flex-1 truncate">Cài đặt</span>
+            </button>
+          )}
         </div>
       </aside>
 
