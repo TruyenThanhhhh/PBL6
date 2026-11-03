@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 > nul
+set "PYTHONIOENCODING=utf-8"
 echo ========================================================
 echo   KHOI DONG PERSONAL AI KNOWLEDGE PLATFORM (PBL6 MVP)
 echo ========================================================

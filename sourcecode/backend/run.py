@@ -1,5 +1,10 @@
 import logging
 import uvicorn
+import sys
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Cấu hình logging toàn cục cho ứng dụng
 logging.basicConfig(
