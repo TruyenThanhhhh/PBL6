@@ -129,7 +129,10 @@ function replaceCites(text: string, setActive: (n: number) => void, key: number)
         key={`${key}-${i}`}
         type="button"
         className="citation-chip"
-        onClick={() => setActive(n)}
+        onClick={() => {
+          setActive(n)
+          window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
+        }}
         aria-label={`Mở nguồn trích dẫn ${n}`}
       >
         {n}

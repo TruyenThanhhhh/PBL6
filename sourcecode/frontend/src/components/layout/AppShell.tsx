@@ -16,12 +16,12 @@ export function AppShell() {
   }, [theme])
 
   return (
-    <div className="motivo-canvas flex h-screen w-full overflow-hidden text-ink">
-      <AppSidebar />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <AppHeader />
-        <ConnectionBanner />
-        <main id="main-content" className="min-h-0 flex-1 overflow-y-auto">
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-[#F7FAF9] text-ink">
+      <AppHeader />
+      <ConnectionBanner />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <AppSidebar />
+        <main id="main-content" className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-white">
           <Outlet />
         </main>
       </div>

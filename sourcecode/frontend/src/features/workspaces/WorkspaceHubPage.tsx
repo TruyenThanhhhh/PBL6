@@ -197,24 +197,22 @@ export function WorkspaceHubPage() {
     })
   }, [workspaces, searchQuery, sortOption, documents])
 
-  // Actions
-  const handleEnterWorkspace = (w: Workspace, toChat = false) => {
+  // Actions: Mở thẳng Workspace Studio (trung tâm là Chat AI)
+  const handleEnterWorkspace = (w: Workspace, forceNewChat = false) => {
     setCurrent(w.id)
     toast({
-      title: "Đã mở không gian làm việc",
+      title: "Đã mở Workspace Studio",
       description: w.name,
       tone: "info",
     })
-    if (toChat) {
-      const convInWs = conversations.find((c) => c.workspaceId === w.id)
-      if (convInWs) {
-        navigate(`/chat/${convInWs.id}`)
-      } else {
-        const newConv = createConversation(w.id)
-        navigate(`/chat/${newConv.id}`)
-      }
+    const convInWs = conversations.find((c) => c.workspaceId === w.id)
+    if (convInWs && !forceNewChat) {
+      navigate(`/chat/${convInWs.id}`)
+    } else if (forceNewChat && !convInWs) {
+      const newConv = createConversation(w.id)
+      navigate(`/chat/${newConv.id}`)
     } else {
-      navigate("/dashboard")
+      navigate("/chat")
     }
   }
 
