@@ -75,7 +75,7 @@ export function AppHeader() {
 
   return (
     <>
-      <header className="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-slate-200/80 bg-white px-3 md:px-5">
+      <header className="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-[#D4E2DF] bg-white px-4 md:px-5">
         {/* Left: Mobile Menu + Breadcrumb quay lại Dashboard + Tên Workspace & Trạng thái đồng bộ */}
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <Button
@@ -85,35 +85,34 @@ export function AppHeader() {
             aria-label="Mở menu điều hướng"
             onClick={() => setMobile(true)}
           >
-            <Menu className="h-4 w-4" />
+            <Menu className="h-4 w-4 text-[#172B29]" />
           </Button>
 
-          {/* Breadcrumb quay lại Dashboard */}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[13px]">
             <Link
               to="/hub"
-              className="group inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              className="group inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29]"
             >
-              <ArrowLeft className="h-3.5 w-3.5 text-[#2563EB] transition-transform group-hover:-translate-x-0.5" />
-              <span className="font-sans font-bold tracking-tight text-slate-900">
-                motivo<span className="text-[#2563EB]">.</span>
+              <ArrowLeft className="h-3.5 w-3.5 text-[#647C79] transition-transform group-hover:-translate-x-0.5 group-hover:text-[#172B29]" />
+              <span className="font-sans font-bold tracking-tight text-[#172B29]">
+                motivo<span className="text-[#087F73]">.</span>
               </span>
-              <span className="hidden text-xs text-slate-500 sm:inline">Dashboard</span>
+              <span className="hidden text-xs text-[#647C79] sm:inline">Dashboard</span>
             </Link>
 
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-300" />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
 
-            {/* Chọn / Hiển thị Tên Workspace hiện tại */}
+            {/* Tên Workspace hiện tại */}
             <DropdownMenu
               align="start"
               trigger={
                 <button
                   type="button"
-                  className="inline-flex max-w-[220px] items-center gap-1.5 rounded-lg px-2 py-1 text-left font-semibold text-slate-900 transition-colors hover:bg-slate-100 sm:max-w-[320px]"
+                  className="inline-flex max-w-[220px] items-center gap-1.5 rounded-lg px-2 py-1 text-left font-semibold text-[#172B29] transition-colors hover:bg-[#F0F5F4] sm:max-w-[320px]"
                   title="Chuyển nhanh Workspace"
                 >
                   <span className="truncate">{currentWs?.name ?? "Workspace"}</span>
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[#647C79]" />
                 </button>
               }
             >
@@ -125,9 +124,9 @@ export function AppHeader() {
                     key={w.id}
                     icon={
                       isSelected ? (
-                        <Check className="h-3.5 w-3.5 text-[#2563EB]" />
+                        <Check className="h-3.5 w-3.5 text-[#087F73]" />
                       ) : (
-                        <FolderOpen className="h-3.5 w-3.5 text-slate-400" />
+                        <FolderOpen className="h-3.5 w-3.5 text-[#647C79]" />
                       )
                     }
                     onClick={() => {
@@ -140,7 +139,7 @@ export function AppHeader() {
                       })
                     }}
                   >
-                    <span className={cn(isSelected && "font-semibold text-[#2563EB]")}>
+                    <span className={cn(isSelected && "font-semibold text-[#087F73]")}>
                       {w.name}
                     </span>
                   </DropdownMenuItem>
@@ -151,22 +150,22 @@ export function AppHeader() {
                 icon={<ArrowLeft className="h-3.5 w-3.5" />}
                 onClick={() => navigate("/hub")}
               >
-                Quay lại trang Dashboard (Hub)
+                Quay lại Dashboard
               </DropdownMenuItem>
             </DropdownMenu>
 
-            {/* Trạng thái đồng bộ Workspace (chấm xanh lá dành riêng cho trạng thái hệ thống) */}
-            <div className="hidden items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium text-slate-600 md:inline-flex">
+            {/* Trạng thái đồng bộ gọn gàng */}
+            <div className="hidden items-center gap-1.5 rounded-full border border-[#D4E2DF] bg-[#F5F8F7] px-2.5 py-0.5 text-[11px] font-medium text-[#647C79] md:inline-flex">
               <span
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
-                  processingCount > 0 ? "animate-pulse bg-amber-500" : "bg-[#10B981]",
+                  processingCount > 0 ? "animate-pulse bg-amber-500" : "bg-[#087F73]",
                 )}
               />
               <span>
                 {processingCount > 0
                   ? `Đang đồng bộ (${processingCount})`
-                  : `Đã đồng bộ · ${readyCount} tài liệu`}
+                  : `${readyCount} tài liệu`}
               </span>
             </div>
           </nav>
@@ -174,32 +173,24 @@ export function AppHeader() {
 
         {/* Right: Trạng thái Ollama/LLM + Cài đặt + Menu thao tác Workspace */}
         <div className="flex shrink-0 items-center gap-2">
-          {/* Trạng thái Ollama / Local LLM */}
-          <Tooltip
-            content="Trạng thái mô hình ngôn ngữ & kết nối RAG. Bấm để cấu hình."
-            side="bottom"
-          >
+          <Tooltip content="Trạng thái mô hình LLM. Bấm để cấu hình." side="bottom">
             <button
               type="button"
               onClick={() => navigate("/settings?section=status")}
-              className="hidden items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 transition-colors hover:border-[#2563EB]/40 hover:bg-[#EFF6FF] sm:inline-flex"
+              className="hidden items-center gap-1.5 rounded-lg border border-[#D4E2DF] bg-[#F5F8F7] px-2.5 py-1 text-xs text-[#647C79] transition-colors hover:border-[#087F73] hover:text-[#172B29] sm:inline-flex"
             >
-              <span className="relative flex h-2 w-2">
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#10B981]" />
-              </span>
-              <span className="text-[11px] text-slate-500">LLM:</span>
-              <span className="font-mono text-[11px] font-semibold text-slate-900">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#087F73]" />
+              <span className="font-mono text-[11px] font-semibold text-[#172B29]">
                 {activeModelName}
               </span>
             </button>
           </Tooltip>
 
-          {/* Nút Cài đặt */}
-          <Tooltip content="Cài đặt hệ thống & mô hình" side="bottom">
+          <Tooltip content="Cài đặt hệ thống" side="bottom">
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              className="h-8 w-8 text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]"
               aria-label="Cài đặt"
               onClick={() => navigate("/settings")}
             >
@@ -207,65 +198,62 @@ export function AppHeader() {
             </Button>
           </Tooltip>
 
-          {/* Menu thao tác Workspace */}
           <DropdownMenu
             align="end"
             trigger={
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 gap-1.5 border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                className="h-8 border-[#D4E2DF] px-2 text-xs text-[#172B29] hover:bg-[#F0F5F4]"
                 aria-label="Menu thao tác Workspace"
               >
-                <span className="hidden sm:inline">Workspace</span>
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             }
           >
-            <DropdownMenuLabel>{currentWs?.name ?? "Thao tác Workspace"}</DropdownMenuLabel>
+            <DropdownMenuLabel>{currentWs?.name ?? "Workspace"}</DropdownMenuLabel>
             <DropdownMenuItem
               icon={<Pencil className="h-3.5 w-3.5" />}
               onClick={() => setEditOpen(true)}
             >
-              Đổi tên &amp; mô tả Workspace
+              Đổi tên &amp; mô tả
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={<FileUp className="h-3.5 w-3.5" />}
               onClick={() => navigate("/documents")}
             >
-              Quản lý kho tài liệu đầy đủ
+              Quản lý tài liệu
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={<Activity className="h-3.5 w-3.5" />}
               onClick={() => navigate("/settings?section=status")}
             >
-              Kiểm tra trạng thái Ollama / RAG
+              Trạng thái Ollama / RAG
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={theme === "light" ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
               onClick={() => setTheme(theme === "light" ? "dark" : "light")}
             >
-              {theme === "light" ? "Chuyển giao diện tối" : "Chuyển giao diện sáng"}
+              {theme === "light" ? "Giao diện tối" : "Giao diện sáng"}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               icon={<ArrowLeft className="h-3.5 w-3.5" />}
               onClick={() => navigate("/hub")}
             >
-              Về trang Dashboard (Hub)
+              Về Dashboard
             </DropdownMenuItem>
             <DropdownMenuItem
               tone="danger"
               icon={<Trash2 className="h-3.5 w-3.5" />}
               onClick={() => setDeleteOpen(true)}
             >
-              Xóa Workspace này
+              Xóa Workspace
             </DropdownMenuItem>
           </DropdownMenu>
         </div>
       </header>
 
-      {/* Dialog Đổi tên & mô tả Workspace */}
       <NameDialog
         open={editOpen}
         title="Đổi tên &amp; mô tả Workspace"
@@ -283,7 +271,6 @@ export function AppHeader() {
         }}
       />
 
-      {/* Dialog Xóa Workspace */}
       <ConfirmDialog
         open={deleteOpen}
         title="Xóa Workspace?"

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
+  FileText,
   GraduationCap,
   MessageSquare,
   MoreHorizontal,
@@ -8,7 +9,7 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
-  Telescope,
+  Quote,
   Trash2,
   X,
 } from "lucide-react"
@@ -31,8 +32,10 @@ export function AppSidebar() {
   const setMobile = useAppStore((s) => s.setMobileNavOpen)
 
   const workspaces = useAppStore((s) => s.workspaces)
+  const documents = useAppStore((s) => s.documents)
   const conversations = useAppStore((s) => s.conversations)
   const current = useAppStore((s) => s.currentWorkspaceId)
+  const setCitationOpen = useAppStore((s) => s.setCitationOpen)
 
   const createConversation = useAppStore((s) => s.createConversation)
   const renameConversation = useAppStore((s) => s.renameConversation)
@@ -42,6 +45,8 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
 
+  // Theo dõi khi người dùng chủ động chọn mục Citation trên Sidebar để chỉ highlight duy nhất 1 mục
+  const [citationNavSelected, setCitationNavSelected] = useState(false)
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
 
@@ -62,18 +67,41 @@ export function AppSidebar() {
     [conversations, currentWsId],
   )
 
+  const recentDocuments = useMemo(
+    () =>
+      [...documents]
+        .filter((d) => d.workspaceId === currentWsId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 5),
+    [documents, currentWsId],
+  )
+
   const handleNewChat = () => {
+    setCitationNavSelected(false)
     const conv = createConversation(currentWsId, "Cuộc trò chuyện mới")
     navigate(`/chat/${conv.id}`)
     setMobile(false)
   }
 
-  // Chỉ 1 mục được active nền màu tại 1 thời điểm: 1. Chat AI | 2. Học liệu | 3. Nghiên cứu
-  const activeMode: "chat" | "study" | "research" = useMemo(() => {
-    if (location.pathname.startsWith("/study")) return "study"
-    if (location.pathname.startsWith("/research")) return "research"
-    return "chat"
-  }, [location.pathname])
+  const isDocsRoute =
+    location.pathname === "/documents" || location.pathname.startsWith("/documents/")
+  const isStudyRoute = location.pathname === "/study"
+  const isChatRoute =
+    !isDocsRoute &&
+    !isStudyRoute &&
+    (location.pathname === "/chat" ||
+      location.pathname.startsWith("/chat/") ||
+      location.pathname === "/studio" ||
+      location.pathname === "/dashboard")
+
+  // Chỉ highlight duy nhất 1 mục đang active
+  const activeNavId: "chat" | "documents" | "citation" | "study" = isDocsRoute
+    ? "documents"
+    : isStudyRoute
+      ? "study"
+      : citationNavSelected && isChatRoute
+        ? "citation"
+        : "chat"
 
   const navItems = [
     {
@@ -81,25 +109,42 @@ export function AppSidebar() {
       label: "Chat AI",
       icon: MessageSquare,
       onClick: () => {
+        setCitationNavSelected(false)
         navigate("/chat")
         setMobile(false)
       },
     },
     {
-      id: "study" as const,
-      label: "Học liệu (Study Studio)",
-      icon: GraduationCap,
+      id: "documents" as const,
+      label: "Tài liệu",
+      icon: FileText,
       onClick: () => {
-        navigate("/study")
+        setCitationNavSelected(false)
+        navigate("/documents")
         setMobile(false)
       },
     },
     {
-      id: "research" as const,
-      label: "Nghiên cứu (Research)",
-      icon: Telescope,
+      id: "citation" as const,
+      label: "Citation",
+      icon: Quote,
       onClick: () => {
-        navigate("/research")
+        setCitationNavSelected(true)
+        setCitationOpen(true)
+        window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
+        if (!isChatRoute) {
+          navigate("/chat")
+        }
+        setMobile(false)
+      },
+    },
+    {
+      id: "study" as const,
+      label: "Học liệu",
+      icon: GraduationCap,
+      onClick: () => {
+        setCitationNavSelected(false)
+        navigate("/study")
         setMobile(false)
       },
     },
@@ -116,7 +161,7 @@ export function AppSidebar() {
       {mobile ? (
         <button
           type="button"
-          className="fixed inset-0 z-30 bg-slate-900/30 md:hidden"
+          className="fixed inset-0 z-30 bg-[#172B29]/30 md:hidden"
           aria-label="Đóng menu điều hướng"
           onClick={() => setMobile(false)}
         />
@@ -125,15 +170,15 @@ export function AppSidebar() {
       <aside
         aria-label="Thanh điều hướng Workspace Studio"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-slate-200/80 bg-[#F8FAFC] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
-          collapsed ? "w-[238px] md:w-[60px]" : "w-[238px]",
+          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-[#D4E2DF] bg-[#F0F5F4] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
+          collapsed ? "w-[236px] md:w-[60px]" : "w-[236px]",
           mobile ? "translate-x-0" : "-translate-x-full md:translate-x-0",
         )}
       >
-        {/* Nút tạo hội thoại mới + Thu gọn Sidebar */}
+        {/* Nút Hội thoại mới (CTA Primary #087F73) + Nút thu gọn Sidebar */}
         <div
           className={cn(
-            "flex items-center justify-between gap-1.5 px-3 pt-3 pb-2",
+            "flex items-center justify-between gap-2 px-3 pt-3 pb-2",
             collapsed && "md:flex-col md:justify-center md:px-2",
           )}
         >
@@ -142,7 +187,7 @@ export function AppSidebar() {
               <button
                 type="button"
                 onClick={toggle}
-                className="hidden h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:border-[#2563EB] hover:text-[#2563EB] md:flex"
+                className="hidden h-8 w-8 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29] md:flex"
                 aria-label="Mở rộng Sidebar"
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -150,17 +195,17 @@ export function AppSidebar() {
             </Tooltip>
           ) : null}
 
-          <Tooltip content="Bắt đầu cuộc trò chuyện AI mới" side={collapsed ? "right" : "bottom"}>
+          <Tooltip content="Tạo cuộc trò chuyện mới" side={collapsed ? "right" : "bottom"}>
             <button
               type="button"
               onClick={handleNewChat}
               className={cn(
-                "inline-flex items-center justify-center gap-2 rounded-xl bg-[#2563EB] text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-[#1D4ED8]",
-                collapsed ? "h-9 w-9 md:px-0" : "h-9 flex-1 px-3",
+                "inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#087F73] text-xs font-semibold text-white transition-colors hover:bg-[#06665C]",
+                collapsed ? "h-8 w-8 md:px-0" : "h-8 flex-1 px-3",
               )}
               aria-label="Hội thoại mới"
             >
-              <Plus className="h-4 w-4 shrink-0" />
+              <Plus className="h-3.5 w-3.5 shrink-0" />
               <span className={cn("truncate", collapsed && "md:hidden")}>Hội thoại mới</span>
             </button>
           </Tooltip>
@@ -170,7 +215,7 @@ export function AppSidebar() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="hidden h-8 w-8 shrink-0 text-slate-500 hover:bg-slate-200/60 hover:text-slate-900 md:inline-flex"
+                className="hidden h-8 w-8 shrink-0 text-[#647C79] hover:bg-[#E3ECEA] hover:text-[#172B29] md:inline-flex"
                 onClick={toggle}
                 aria-label="Thu gọn Sidebar"
               >
@@ -182,7 +227,7 @@ export function AppSidebar() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 text-slate-500 md:hidden"
+            className="h-8 w-8 shrink-0 text-[#647C79] md:hidden"
             onClick={() => setMobile(false)}
             aria-label="Đóng menu"
           >
@@ -190,27 +235,27 @@ export function AppSidebar() {
           </Button>
         </div>
 
-        {/* 1. Menu chuyển đổi 3 không gian chính: 1. Chat AI | 2. Học liệu | 3. Nghiên cứu */}
-        <nav className="flex shrink-0 flex-col gap-1 px-2.5 py-1.5" aria-label="Chế độ Studio">
+        {/* 1. Menu chính: Chỉ highlight duy nhất 1 mục đang active */}
+        <nav className="flex shrink-0 flex-col gap-0.5 px-2.5 py-1.5" aria-label="Chức năng Studio">
           {navItems.map((item) => {
-            const isActive = activeMode === item.id
+            const active = activeNavId === item.id
             const btn = (
               <button
                 key={item.id}
                 type="button"
                 onClick={item.onClick}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-[13px] transition-all",
-                  isActive
-                    ? "bg-[#EFF6FF] font-semibold text-[#2563EB] ring-1 ring-[#BFDBFE]/80"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors",
+                  active
+                    ? "bg-white font-semibold text-[#172B29] shadow-[0_1px_2px_rgba(23,43,41,0.06)] ring-1 ring-[#D4E2DF]"
+                    : "font-medium text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
                   collapsed && "md:justify-center md:px-2",
                 )}
               >
                 <item.icon
                   className={cn(
                     "h-4 w-4 shrink-0",
-                    isActive ? "text-[#2563EB]" : "text-slate-400",
+                    active ? "text-[#087F73]" : "text-[#647C79]",
                   )}
                 />
                 <span className={cn("flex-1 truncate", collapsed && "md:hidden")}>
@@ -229,107 +274,146 @@ export function AppSidebar() {
           })}
         </nav>
 
-        {/* 2. Vùng Lịch sử hội thoại rộng rãi (chiếm toàn bộ không gian còn lại ở cột trái) */}
+        {/* 2. Lịch sử hội thoại & 3–5 Tài liệu gần đây (Typography nhỏ gọn, sạch sẽ) */}
         <div
           className={cn(
-            "studio-scroll mt-1 flex-1 overflow-y-auto border-t border-slate-200/70 px-2.5 py-3",
+            "mt-1 flex-1 space-y-5 overflow-y-auto border-t border-[#D4E2DF] px-2.5 py-3",
             collapsed && "md:hidden",
           )}
         >
-          <div className="mb-2 flex items-center justify-between px-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              Lịch sử hội thoại ({wsConversations.length})
-            </span>
-            <button
-              type="button"
-              onClick={handleNewChat}
-              className="rounded p-0.5 text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-[#2563EB]"
-              title="Tạo cuộc trò chuyện mới"
-              aria-label="Tạo cuộc trò chuyện mới"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          {wsConversations.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-white/70 p-4 text-center">
-              <p className="text-xs text-slate-500">Chưa có phiên hội thoại nào.</p>
+          {/* Lịch sử hội thoại */}
+          <div>
+            <div className="mb-1 flex items-center justify-between px-2">
+              <span className="text-[11px] font-semibold text-[#647C79]">
+                Lịch sử hội thoại
+              </span>
               <button
                 type="button"
                 onClick={handleNewChat}
-                className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-[#2563EB] hover:underline"
+                className="rounded p-0.5 text-[#647C79] transition-colors hover:text-[#172B29]"
+                title="Hội thoại mới"
+                aria-label="Hội thoại mới"
               >
-                <Plus className="h-3 w-3" />
-                <span>Bắt đầu phiên mới</span>
+                <Plus className="h-3.5 w-3.5" />
               </button>
             </div>
-          ) : (
-            <ul className="space-y-1">
-              {wsConversations.map((c) => {
-                const active = activeMode === "chat" && c.id === activeConvId
-                return (
-                  <li
-                    key={c.id}
-                    className={cn(
-                      "group flex items-center justify-between gap-1 rounded-xl px-2.5 py-2 text-xs transition-colors",
-                      active
-                        ? "bg-white font-semibold text-slate-900 shadow-2xs ring-1 ring-slate-200"
-                        : "text-slate-600 hover:bg-slate-100/90 hover:text-slate-900",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigate(`/chat/${c.id}`)
-                        setMobile(false)
-                      }}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <MessageSquare
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0",
-                          active ? "text-[#2563EB]" : "text-slate-400",
-                        )}
-                      />
-                      <span className="truncate">{c.title}</span>
-                    </button>
 
-                    <DropdownMenu
-                      align="end"
-                      trigger={
-                        <button
-                          type="button"
-                          aria-label={`Tùy chọn cho ${c.title}`}
-                          className="rounded p-0.5 text-slate-400 opacity-0 transition-opacity hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100 focus:opacity-100"
-                        >
-                          <MoreHorizontal className="h-3.5 w-3.5" />
-                        </button>
-                      }
+            {wsConversations.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-[#647C79]">Chưa có hội thoại</p>
+            ) : (
+              <ul className="space-y-0.5">
+                {wsConversations.map((c) => {
+                  const active = isChatRoute && c.id === activeConvId
+                  return (
+                    <li
+                      key={c.id}
+                      className={cn(
+                        "group flex items-center justify-between gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                        active
+                          ? "font-semibold text-[#087F73]"
+                          : "text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
+                      )}
                     >
-                      <DropdownMenuItem
-                        icon={<Pencil className="h-3.5 w-3.5" />}
-                        onClick={() => setRenameTarget(c)}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCitationNavSelected(false)
+                          navigate(`/chat/${c.id}`)
+                          setMobile(false)
+                        }}
+                        className="min-w-0 flex-1 truncate text-left"
                       >
-                        Đổi tên
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        tone="danger"
-                        icon={<Trash2 className="h-3.5 w-3.5" />}
-                        onClick={() => setDeleteTarget(c)}
+                        {c.title}
+                      </button>
+
+                      <DropdownMenu
+                        align="end"
+                        trigger={
+                          <button
+                            type="button"
+                            aria-label={`Tùy chọn cho ${c.title}`}
+                            className="rounded p-0.5 text-[#647C79] opacity-0 transition-opacity hover:text-[#172B29] group-hover:opacity-100 focus:opacity-100"
+                          >
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </button>
+                        }
                       >
-                        Xóa
-                      </DropdownMenuItem>
-                    </DropdownMenu>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+                        <DropdownMenuItem
+                          icon={<Pencil className="h-3.5 w-3.5" />}
+                          onClick={() => setRenameTarget(c)}
+                        >
+                          Đổi tên
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          tone="danger"
+                          icon={<Trash2 className="h-3.5 w-3.5" />}
+                          onClick={() => setDeleteTarget(c)}
+                        >
+                          Xóa
+                        </DropdownMenuItem>
+                      </DropdownMenu>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+
+          {/* Tài liệu gần đây (3-5 tài liệu) */}
+          <div>
+            <div className="mb-1 flex items-center justify-between px-2">
+              <span className="text-[11px] font-semibold text-[#647C79]">
+                Tài liệu gần đây
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setCitationNavSelected(false)
+                  navigate("/documents")
+                  setMobile(false)
+                }}
+                className="text-[11px] font-medium text-[#087F73] hover:underline"
+              >
+                Xem hết
+              </button>
+            </div>
+
+            {recentDocuments.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-[#647C79]">Chưa có tài liệu</p>
+            ) : (
+              <ul className="space-y-0.5">
+                {recentDocuments.map((doc) => {
+                  const isDocActive = location.pathname === `/documents/${doc.id}`
+                  return (
+                    <li key={doc.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCitationNavSelected(false)
+                          navigate(`/documents/${doc.id}`)
+                          setMobile(false)
+                        }}
+                        title={doc.fileName}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors",
+                          isDocActive
+                            ? "font-semibold text-[#087F73]"
+                            : "text-[#647C79] hover:bg-[#E5EEEC] hover:text-[#172B29]",
+                        )}
+                      >
+                        <FileText className="h-3 w-3 shrink-0 text-[#647C79]" />
+                        <span className="flex-1 truncate">{doc.fileName}</span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
         </div>
       </aside>
 
-      {/* Dialog đổi tên hội thoại */}
       <NameDialog
         open={Boolean(renameTarget)}
         title="Đổi tên cuộc trò chuyện"
@@ -344,7 +428,6 @@ export function AppSidebar() {
         }}
       />
 
-      {/* Dialog xóa hội thoại */}
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Xóa cuộc trò chuyện?"

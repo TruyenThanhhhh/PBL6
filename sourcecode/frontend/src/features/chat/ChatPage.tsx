@@ -6,11 +6,8 @@ import {
   Check,
   Copy,
   FileText,
-  Globe,
   GraduationCap,
   Layers,
-  Loader2,
-  MessageSquare,
   MoreHorizontal,
   PanelRightOpen,
   Pencil,
@@ -21,7 +18,6 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  UploadCloud,
 } from "lucide-react"
 import { InlineEdit } from "@/components/common/InlineEdit"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
@@ -35,8 +31,6 @@ import {
   Tooltip,
 } from "@/components/ui"
 import { CitationMarkdown } from "@/features/citations/CitationMarkdown"
-import { readPlainTextIfPossible } from "@/features/documents/document-utils"
-import { fetchDocuments, uploadDocumentWithProgress } from "@/services/api"
 import {
   getModeDescriptor,
   sendChatMessageService,
@@ -46,10 +40,11 @@ import {
   generateStudyQuiz,
   type StudySourceContext,
 } from "@/services/study-service"
-import { buildUploadedDocument, useAppStore } from "@/store/app-store"
-import { ACCEPTED_EXTENSIONS, formatDate, nowIso, uid } from "@/utils/format"
+import { useAppStore } from "@/store/app-store"
+import { formatDate, nowIso, uid } from "@/utils/format"
 import type { AIMode, ChatMessage, Conversation, Flashcard } from "@/types"
 import { cn } from "@/utils/cn"
+import { ModeSelector } from "./ModeSelector"
 import { CitationPanel } from "./CitationPanel"
 import { ChatComposer } from "./ChatComposer"
 
@@ -67,8 +62,6 @@ export function ChatPage() {
   const deleteConversation = useAppStore((s) => s.deleteConversation)
   const appendMessage = useAppStore((s) => s.appendMessage)
   const updateMessage = useAppStore((s) => s.updateMessage)
-  const addDocument = useAppStore((s) => s.addDocument)
-  const replaceDocs = useAppStore((s) => s.replaceDocumentsFromBackend)
 
   const saveNote = useAppStore((s) => s.saveNote)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
@@ -90,20 +83,15 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false)
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, "up" | "down">>({})
-  const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const [uploadingEmptyState, setUploadingEmptyState] = useState(false)
 
-  // Phạm vi tri thức & đính kèm tài liệu trong Composer
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([])
 
-  // Dialog đổi tên & xóa hội thoại
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const dropzoneFileInputRef = useRef<HTMLInputElement>(null)
 
   const currentWorkspace = workspaces.find((w) => w.id === currentWs) ?? workspaces[0]
   const currentWsId = currentWorkspace?.id ?? "ws_default"
@@ -115,10 +103,6 @@ export function ChatPage() {
   const workspaceDocuments = useMemo(
     () => documents.filter((d) => d.workspaceId === currentWsId),
     [documents, currentWsId],
-  )
-  const readyWorkspaceDocuments = useMemo(
-    () => workspaceDocuments.filter((d) => d.status === "ready"),
-    [workspaceDocuments],
   )
 
   const wsConversations = useMemo(
@@ -157,122 +141,69 @@ export function ChatPage() {
     [conversation?.messages],
   )
 
-  // Sinh 4 thẻ gợi ý câu hỏi khi đã có >= 1 tài liệu lập chỉ mục xong
+  // 4 Suggestion Cards ngắn gọn, rõ nét dựa trên tài liệu của Workspace
   const suggestedPrompts = useMemo(() => {
-    const firstDoc = readyWorkspaceDocuments[0]
-    const secondDoc = readyWorkspaceDocuments[1]
+    const firstDoc = workspaceDocuments[0]
+    const secondDoc = workspaceDocuments[1]
     if (firstDoc && secondDoc) {
       return [
         {
-          title: "Tóm tắt luận điểm chính",
-          prompt: `Tóm tắt các nội dung cốt lõi trong tài liệu "${firstDoc.fileName}" kèm trích dẫn trang cụ thể.`,
+          title: "Tóm tắt tài liệu",
+          prompt: `Tóm tắt các luận điểm chính trong "${firstDoc.fileName}".`,
         },
         {
-          title: "So sánh & Đối chiếu nguồn",
-          prompt: `So sánh các điểm chính giữa "${firstDoc.fileName}" và "${secondDoc.fileName}".`,
+          title: "So sánh nguồn",
+          prompt: `Đối chiếu nội dung giữa "${firstDoc.fileName}" và "${secondDoc.fileName}".`,
         },
         {
-          title: "Giải thích khái niệm trọng tâm",
-          prompt: `Liệt kê và giải thích các thuật ngữ hoặc công thức quan trọng nhất trong kho tài liệu "${currentWorkspace?.name ?? "Workspace"}".`,
+          title: "Khái niệm cốt lõi",
+          prompt: `Liệt kê các thuật ngữ quan trọng nhất trong "${currentWorkspace?.name ?? "Workspace"}".`,
         },
         {
-          title: "Tổng hợp câu hỏi ôn tập",
-          prompt: `Tạo 5 câu hỏi ôn tập trọng tâm kèm đáp án trích xuất từ các tài liệu trong "${currentWorkspace?.name ?? "Workspace"}".`,
+          title: "Câu hỏi ôn tập",
+          prompt: `Tạo 5 câu hỏi ôn tập kèm đáp án từ tài liệu đã tải lên.`,
         },
       ]
     }
     if (firstDoc) {
       return [
         {
-          title: "Tóm tắt tài liệu",
-          prompt: `Tóm tắt có cấu trúc các ý chính trong "${firstDoc.fileName}" kèm trích dẫn.`,
+          title: "Tóm tắt nội dung",
+          prompt: `Tóm tắt các ý chính trong "${firstDoc.fileName}" kèm trích dẫn.`,
         },
         {
-          title: "Phân tích chi tiết",
-          prompt: `Những phát hiện hoặc phương pháp quan trọng nhất được trình bày trong "${firstDoc.fileName}" là gì?`,
+          title: "Phân tích trọng tâm",
+          prompt: `Các kết luận quan trọng nhất trong "${firstDoc.fileName}" là gì?`,
         },
         {
-          title: "Trích xuất khái niệm",
-          prompt: `Liệt kê các thuật ngữ chuyên ngành và định nghĩa của chúng từ "${firstDoc.fileName}".`,
+          title: "Trích xuất thuật ngữ",
+          prompt: `Giải thích các khái niệm chính xuất hiện trong "${firstDoc.fileName}".`,
         },
         {
-          title: "Câu hỏi kiểm tra",
-          prompt: `Đặt 5 câu hỏi kiểm tra mức độ hiểu bài dựa trên nội dung của "${firstDoc.fileName}".`,
+          title: "Tạo câu hỏi kiểm tra",
+          prompt: `Đặt 5 câu hỏi kiểm tra kiến thức từ "${firstDoc.fileName}".`,
         },
       ]
     }
     return [
       {
-        title: "Tìm kiếm tổng quan trên Web",
-        prompt: `Tổng hợp các thông tin và xu hướng mới nhất liên quan đến "${currentWorkspace?.name ?? "chủ đề này"}".`,
+        title: "Tổng quan chủ đề",
+        prompt: `Tóm tắt các kiến thức nền tảng trong "${currentWorkspace?.name ?? "Workspace"}".`,
       },
       {
-        title: "So sánh kiến trúc Hybrid RAG",
-        prompt: "Phân tích sự kết hợp giữa Dense Retrieval, BM25 và Reciprocal Rank Fusion (RRF) trong hệ thống RAG.",
+        title: "Phân tích Hybrid RAG",
+        prompt: "So sánh vai trò của Dense Search, BM25 và RRF trong truy xuất tri thức.",
       },
       {
-        title: "Giải thích khái niệm chuyên sâu",
-        prompt: `Giải thích chi tiết các thuật ngữ cốt lõi trong lĩnh vực "${currentWorkspace?.name ?? "nghiên cứu"}".`,
+        title: "Đối chiếu trích dẫn",
+        prompt: "Cách kiểm chứng câu trả lời AI thông qua Citation theo trang tài liệu.",
       },
       {
-        title: "Lập đề cương nghiên cứu",
-        prompt: `Gợi ý lộ trình đọc hiểu và ghi chú cho chủ đề "${currentWorkspace?.name ?? "nghiên cứu"}".`,
+        title: "Đề cương ôn tập",
+        prompt: `Lập kế hoạch nghiên cứu cho "${currentWorkspace?.name ?? "chủ đề hiện tại"}".`,
       },
     ]
-  }, [readyWorkspaceDocuments, currentWorkspace?.name])
-
-  const handleDropzoneUpload = async (files: FileList | File[]) => {
-    const list = Array.from(files)
-    if (!list.length || uploadingEmptyState) return
-    setUploadingEmptyState(true)
-    let uploadedCount = 0
-
-    for (const file of list) {
-      try {
-        if (status.backendOnline) {
-          await uploadDocumentWithProgress(currentWsId, file, { notebookId: null })
-          uploadedCount += 1
-        } else {
-          const localDoc = buildUploadedDocument(file, currentWsId, null)
-          const plain = await readPlainTextIfPossible(file)
-          if (plain) {
-            localDoc.extractedText = plain
-            localDoc.pageCount = Math.max(1, Math.ceil(plain.length / 1200))
-            localDoc.totalChunks = Math.max(1, Math.ceil(plain.length / 400))
-          } else {
-            localDoc.extractedText = `Nội dung trích xuất từ tài liệu "${file.name}". Hệ thống Hybrid RAG sử dụng văn bản này để chia đoạn (chunking) và đối chiếu trích dẫn theo từng trang.`
-          }
-          addDocument(localDoc)
-          uploadedCount += 1
-        }
-      } catch (err) {
-        toast({
-          title: `Không thể tải tệp ${file.name}`,
-          description: err instanceof Error ? err.message : String(err),
-          tone: "error",
-        })
-      }
-    }
-
-    if (status.backendOnline && uploadedCount > 0) {
-      try {
-        const refreshed = await fetchDocuments(currentWsId)
-        replaceDocs(refreshed)
-      } catch {
-        // Giữ nguyên nếu lỗi
-      }
-    }
-
-    if (uploadedCount > 0) {
-      toast({
-        title: `Đã lập chỉ mục ${uploadedCount} tài liệu mới`,
-        description: "Các câu hỏi gợi ý đã sẵn sàng cho bạn.",
-        tone: "success",
-      })
-      window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "overview" }))
-    }
-    setUploadingEmptyState(false)
-  }
+  }, [workspaceDocuments, currentWorkspace?.name])
 
   const handleModeChange = (nextMode: AIMode) => {
     setAiMode(nextMode)
@@ -414,7 +345,6 @@ export function ChatPage() {
       if (message.citations[0]) {
         setActiveCitation(message.citations[0].refId)
         setCitationOpen(true)
-        window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -472,12 +402,11 @@ export function ChatPage() {
   const handleFeedback = (msgId: string, vote: "up" | "down") => {
     setFeedbackMap((prev) => ({ ...prev, [msgId]: vote }))
     toast({
-      title: vote === "up" ? "Cảm ơn phản hồi tích cực của bạn" : "Đã ghi nhận phản hồi để cải thiện",
+      title: vote === "up" ? "Cảm ơn phản hồi của bạn" : "Đã ghi nhận phản hồi",
       tone: "info",
     })
   }
 
-  // Tạo học liệu trực tiếp từ câu trả lời AI (Summary / Note, Quiz, Flashcards)
   const handleCreateStudyFromMessage = (
     msg: ChatMessage,
     kind: "summary" | "quiz" | "flashcards",
@@ -503,8 +432,7 @@ export function ChatPage() {
         updatedAt: nowIso(),
       })
       toast({
-        title: "Đã lưu vào Học liệu (Ghi chú & Tóm tắt)",
-        description: "Đang mở công cụ Học liệu...",
+        title: "Đã lưu vào Học liệu",
         tone: "success",
       })
       navigate("/study?tab=notes")
@@ -515,11 +443,10 @@ export function ChatPage() {
       const quiz = generateStudyQuiz(ctx, "medium", 5)
       upsertQuiz({
         ...quiz,
-        title: `Quiz từ hội thoại: ${promptTitle.slice(0, 40)}`,
+        title: `Quiz: ${promptTitle.slice(0, 40)}`,
       })
       toast({
-        title: "Đã tạo bộ câu hỏi Quiz từ câu trả lời",
-        description: "Đang chuyển tới tab Quiz...",
+        title: "Đã tạo bộ câu hỏi Quiz",
         tone: "success",
       })
       navigate("/study?tab=quiz")
@@ -538,7 +465,7 @@ export function ChatPage() {
           id: uid("fc"),
           workspaceId: currentWsId,
           documentId: citedDocId,
-          front: `${promptTitle.slice(0, 52)} — Ý trọng tâm #${i + 1}`,
+          front: `${promptTitle.slice(0, 52)} — Ý #${i + 1}`,
           back: line,
           status: "new",
           isMock: true,
@@ -549,8 +476,7 @@ export function ChatPage() {
 
       addFlashcards(cards)
       toast({
-        title: `Đã tạo ${cards.length} thẻ Flashcards từ câu trả lời`,
-        description: "Đang chuyển tới tab Flashcards...",
+        title: `Đã tạo ${cards.length} Flashcards`,
         tone: "success",
       })
       navigate("/study?tab=flashcards")
@@ -563,20 +489,17 @@ export function ChatPage() {
     )
   }
 
-  // Kiểm tra xem có hiển thị 4 thẻ gợi ý câu hỏi hay hiển thị Dropzone (khi 0 tài liệu và chưa bật chế độ Web)
-  const hasIndexedDocuments = readyWorkspaceDocuments.length >= 1
-  const showSuggestedPrompts = hasIndexedDocuments || aiMode === "web"
+  const citationCount = lastAssistant?.citations.length ?? 0
 
   return (
     <div className="relative flex h-full w-full min-w-0 overflow-hidden bg-white">
       {/* =====================================================================
-          3. MAIN CHAT AREA (Chiếm 65-70% trung tâm màn hình)
+          MAIN CHAT AREA (#FFFFFF - Khu vực nổi bật nhất ở trung tâm)
       ===================================================================== */}
-      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Thanh tiêu đề phiên làm việc đã được tinh gọn (Bỏ cụm Tự động & Kho (0)) */}
-        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-4 md:px-6">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-white">
+        {/* Thanh Sub-header tối giản */}
+        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-[#D4E2DF] bg-white px-4 md:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <MessageSquare className="h-4 w-4 shrink-0 text-[#2563EB]" />
             {conversation ? (
               <div className="min-w-0 max-w-md flex-1">
                 <InlineEdit
@@ -587,29 +510,40 @@ export function ChatPage() {
                     renameConversation(conversation.id, next)
                     toast({ title: "Đã đổi tên hội thoại", tone: "success" })
                   }}
-                  className="truncate text-sm font-semibold text-slate-900"
+                  className="truncate text-sm font-semibold text-[#172B29]"
                 />
               </div>
             ) : (
-              <span className="truncate text-sm font-semibold text-slate-900">
-                Phiên làm việc mới
+              <span className="truncate text-sm font-semibold text-[#172B29]">
+                Hỏi đáp AI
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {/* Chỉ hiển thị nút mở Cột Phải trên màn hình nhỏ (< xl) khi Cột Phải đang ẩn */}
-            {!citationOpen ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-slate-500 hover:bg-slate-100 hover:text-slate-900 xl:hidden"
-                aria-label="Mở bảng Nguồn & Kho tài liệu"
-                onClick={() => setCitationOpen(true)}
+          <div className="flex items-center gap-2">
+            <ModeSelector value={aiMode} onChange={handleModeChange} />
+
+            <Tooltip
+              content={citationOpen ? "Ẩn bảng ngữ cảnh" : "Mở bảng ngữ cảnh"}
+              side="bottom"
+            >
+              <button
+                type="button"
+                onClick={() => setCitationOpen(!citationOpen)}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+                  citationOpen
+                    ? "border-[#087F73] bg-[#087F73] text-white"
+                    : "border-[#D4E2DF] bg-white text-[#172B29] hover:border-[#087F73]",
+                )}
+                aria-label="Đóng/mở Context Panel"
               >
-                <PanelRightOpen className="h-4 w-4" />
-              </Button>
-            ) : null}
+                <PanelRightOpen className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">
+                  {citationCount > 0 ? `Nguồn (${citationCount})` : `Kho (${workspaceDocuments.length})`}
+                </span>
+              </button>
+            </Tooltip>
 
             {conversation ? (
               <DropdownMenu
@@ -618,7 +552,7 @@ export function ChatPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                    className="h-8 w-8 text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]"
                     aria-label="Tùy chọn hội thoại"
                   >
                     <MoreHorizontal className="h-4 w-4" />
@@ -650,121 +584,49 @@ export function ChatPage() {
           </div>
         </header>
 
-        {/* Vùng cuộn nội dung Chat với custom scrollbar mảnh (.studio-scroll) */}
-        <div className="studio-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-8">
+        {/* Vùng nội dung Chat trên nền trắng #FFFFFF */}
+        <div className="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-6 md:px-8">
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col">
             {!conversation || conversation.messages.length === 0 ? (
-              /* EMPTY STATE */
-              <div className="my-auto flex flex-col items-center justify-center py-4 text-center">
-                <span className="mb-2.5 inline-flex items-center gap-1.5 rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-3 py-1 text-xs font-semibold text-[#2563EB]">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  <span>Workspace Studio · {currentWorkspace?.name ?? "Kho tri thức"}</span>
-                </span>
+              /* EMPTY STATE TINH GIẢN: Icon AI + Tiêu đề rõ nét + 4 Suggestion Cards */
+              <div className="my-auto flex flex-col items-center justify-center py-8 text-center">
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#087F73] text-white">
+                  <Sparkles className="h-6 w-6" />
+                </div>
 
-                <h1 className="font-editorial-serif text-3xl font-medium tracking-tight text-slate-900 sm:text-4xl">
-                  Hỏi đáp chuyên sâu trên{" "}
-                  <span className="italic text-[#2563EB]">tài liệu của bạn.</span>
+                <h1 className="text-2xl font-bold tracking-tight text-[#172B29] sm:text-3xl">
+                  {currentWorkspace?.name ?? "Workspace Studio"}
                 </h1>
 
-                <p className="mt-1.5 max-w-lg text-sm leading-relaxed text-slate-500">
-                  Mọi câu trả lời đều được tổng hợp bằng Hybrid RAG và đính kèm trích dẫn đối chiếu
-                  trực tiếp tới từng trang tài liệu trong không gian làm việc này.
+                <p className="mt-1.5 text-sm text-[#647C79]">
+                  Hỏi đáp trực tiếp trên kho tài liệu với trích dẫn kiểm chứng.
                 </p>
 
-                {showSuggestedPrompts ? (
-                  /* KHI CÓ >= 1 TÀI LIỆU ĐÃ LẬP CHỈ MỤC (HOẶC ĐANG BẬT CHẾ ĐỘ WEB): HIỂN THỊ 4 THẺ GỢI Ý CÂU HỎI */
-                  <div className="mt-6 grid w-full max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-2">
-                    {suggestedPrompts.map((item) => (
-                      <button
-                        key={item.title}
-                        type="button"
-                        onClick={() => void sendQuery(item.prompt)}
-                        className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5 text-left transition-all duration-150 hover:border-[#2563EB] hover:bg-white hover:shadow-sm"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-slate-900 group-hover:text-[#2563EB]">
-                            {item.title}
-                          </span>
-                          <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#2563EB]" />
-                        </div>
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500">
-                          {item.prompt}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  /* KHI 0 TÀI LIỆU: HIỂN THỊ KHUNG KÉO THẢ TÀI LIỆU (DROPZONE) HOẶC CHỌN CHẾ ĐỘ HỎI ĐÁP WEB */
-                  <div className="mt-6 w-full max-w-xl">
-                    <input
-                      ref={dropzoneFileInputRef}
-                      type="file"
-                      multiple
-                      accept={ACCEPTED_EXTENSIONS.join(",")}
-                      className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files) {
-                          void handleDropzoneUpload(e.target.files)
-                          e.target.value = ""
-                        }
-                      }}
-                    />
-
-                    <div
-                      onDragOver={(e) => {
-                        e.preventDefault()
-                        setIsDraggingOver(true)
-                      }}
-                      onDragLeave={() => setIsDraggingOver(false)}
-                      onDrop={(e) => {
-                        e.preventDefault()
-                        setIsDraggingOver(false)
-                        if (e.dataTransfer.files?.length) {
-                          void handleDropzoneUpload(e.dataTransfer.files)
-                        }
-                      }}
-                      onClick={() => dropzoneFileInputRef.current?.click()}
-                      className={cn(
-                        "flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-6 text-center transition-all",
-                        isDraggingOver
-                          ? "border-[#2563EB] bg-[#EFF6FF]"
-                          : "border-slate-300 bg-slate-50/70 hover:border-[#2563EB] hover:bg-[#EFF6FF]/40",
-                      )}
+                {/* 4 Suggestion Cards có background riêng (#F7FAFA), border rõ (#D4E2DF) và hover tinh tế */}
+                <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-2">
+                  {suggestedPrompts.map((item) => (
+                    <button
+                      key={item.title}
+                      type="button"
+                      onClick={() => void sendQuery(item.prompt)}
+                      className="group flex flex-col justify-between rounded-xl border border-[#D4E2DF] bg-[#F7FAFA] p-3.5 text-left transition-colors hover:border-[#087F73] hover:bg-white"
                     >
-                      <div className="mb-2.5 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#EFF6FF] text-[#2563EB]">
-                        {uploadingEmptyState ? (
-                          <Loader2 className="h-5 w-5 animate-spin" />
-                        ) : (
-                          <UploadCloud className="h-5 w-5" />
-                        )}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-[#172B29] group-hover:text-[#087F73]">
+                          {item.title}
+                        </span>
+                        <ArrowUpRight className="h-3.5 w-3.5 text-[#647C79] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#087F73]" />
                       </div>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {uploadingEmptyState
-                          ? "Đang tải lên và lập chỉ mục tài liệu..."
-                          : "Kéo thả tài liệu vào đây hoặc bấm để chọn tệp"}
+                      <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#647C79]">
+                        {item.prompt}
                       </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Hỗ trợ PDF, DOCX, TXT, Markdown — Tự động chia đoạn (Chunking) &amp; gắn trích dẫn.
-                      </p>
-                    </div>
-
-                    <div className="mt-3.5 flex items-center justify-center gap-2 text-xs text-slate-500">
-                      <span>Hoặc chưa cần tải tệp:</span>
-                      <button
-                        type="button"
-                        onClick={() => handleModeChange("web")}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[#BFDBFE] bg-[#EFF6FF] px-3 py-1 font-semibold text-[#2563EB] transition-colors hover:bg-blue-100"
-                      >
-                        <Globe className="h-3.5 w-3.5" />
-                        <span>Chọn chế độ Hỏi đáp Web</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
-              /* LUỒNG HỘI THOẠI GIỮA NGƯỜI DÙNG & AI */
-              <div className="space-y-6 pb-4">
+              /* LUỒNG HỘI THOẠI: Tăng khoảng trắng & khả năng đọc, tránh đóng khung mọi thứ thành card giống nhau */
+              <div className="space-y-8 pb-6">
                 {conversation.messages.map((m) => {
                   const isUser = m.role === "user"
                   const attachedDocsForMsg = documents.filter((d) =>
@@ -778,24 +640,19 @@ export function ChatPage() {
                       key={m.id}
                       className={
                         isUser
-                          ? "ml-auto max-w-[85%] rounded-2xl border border-[#BFDBFE]/80 bg-[#EFF6FF] px-4 py-3 text-slate-900"
-                          : "rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_2px_12px_-4px_rgba(15,23,42,0.05)]"
+                          ? "ml-auto max-w-[82%] rounded-2xl bg-[#F0F5F4] px-4 py-3 text-[#172B29]"
+                          : "border-b border-[#E5EEEC] pb-6 last:border-b-0"
                       }
                     >
                       {!isUser ? (
-                        <div className="mb-3 flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5 text-xs">
+                        <div className="mb-2.5 flex items-center justify-between gap-2 text-xs">
                           <div className="flex items-center gap-2">
-                            <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#2563EB] text-[11px] font-bold text-white">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[#087F73] text-[10px] font-bold text-white">
                               M
                             </span>
-                            <span className="font-semibold text-slate-900">Motivo RAG</span>
-                            {m.modeRequested ? (
-                              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
-                                {getModeDescriptor(m.modeRequested).label}
-                              </span>
-                            ) : null}
+                            <span className="font-semibold text-[#172B29]">Motivo AI</span>
                           </div>
-                          <span className="text-[11px] text-slate-400">
+                          <span className="text-[11px] text-[#647C79]">
                             {formatDate(m.createdAt)}
                           </span>
                         </div>
@@ -804,17 +661,17 @@ export function ChatPage() {
                       {isUser && (attachedDocsForMsg.length > 0 || scopeNb) ? (
                         <div className="mb-1.5 flex flex-wrap items-center gap-1">
                           {scopeNb ? (
-                            <span className="inline-flex items-center gap-1 rounded-md border border-[#BFDBFE] bg-white px-2 py-0.5 text-[11px] text-slate-700">
-                              <BookOpen className="h-3 w-3 text-[#2563EB]" />
+                            <span className="inline-flex items-center gap-1 rounded border border-[#D4E2DF] bg-white px-2 py-0.5 text-[11px] text-[#172B29]">
+                              <BookOpen className="h-3 w-3 text-[#087F73]" />
                               {scopeNb.name}
                             </span>
                           ) : null}
                           {attachedDocsForMsg.map((d) => (
                             <span
                               key={d.id}
-                              className="inline-flex items-center gap-1 rounded-md border border-[#BFDBFE] bg-white px-2 py-0.5 text-[11px] text-slate-700"
+                              className="inline-flex items-center gap-1 rounded border border-[#D4E2DF] bg-white px-2 py-0.5 text-[11px] text-[#172B29]"
                             >
-                              <FileText className="h-3 w-3 text-[#2563EB]" />
+                              <FileText className="h-3 w-3 text-[#087F73]" />
                               {d.fileName}
                             </span>
                           ))}
@@ -822,7 +679,7 @@ export function ChatPage() {
                       ) : null}
 
                       {isUser ? (
-                        <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-900">
+                        <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-[#172B29]">
                           {m.content}
                         </p>
                       ) : m.error ? (
@@ -847,25 +704,26 @@ export function ChatPage() {
                         </div>
                       ) : m.streaming && !m.content ? (
                         <div className="space-y-2 py-2" aria-live="polite">
-                          <div className="flex items-center gap-2 text-xs text-slate-500">
-                            <span className="h-2 w-2 animate-ping rounded-full bg-[#2563EB]" />
-                            <span>Đang truy xuất tài liệu &amp; tổng hợp câu trả lời...</span>
+                          <div className="flex items-center gap-2 text-xs text-[#647C79]">
+                            <span className="h-2 w-2 animate-ping rounded-full bg-[#087F73]" />
+                            <span>Đang truy xuất tài liệu...</span>
                           </div>
-                          <div className="h-3 w-2/3 animate-pulse rounded bg-slate-100" />
+                          <div className="h-3 w-2/3 animate-pulse rounded bg-[#F0F5F4]" />
                         </div>
                       ) : (
-                        <CitationMarkdown content={m.content} />
+                        <div className="text-[#172B29]">
+                          <CitationMarkdown content={m.content} />
+                        </div>
                       )}
 
-                      {/* Thanh công cụ dưới mỗi câu trả lời AI: Copy, Regenerate, Feedback, Tạo Học liệu & Chips Citation */}
+                      {/* Thanh công cụ dưới mỗi câu trả lời AI */}
                       {!isUser && !m.streaming && !m.error ? (
-                        <div className="mt-4 space-y-2.5 border-t border-slate-100 pt-3">
-                          {/* Dải các nguồn trích dẫn inline của câu trả lời */}
+                        <div className="mt-4 space-y-2.5 pt-1">
                           {m.citations.length > 0 ? (
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
-                                <Quote className="h-3 w-3 text-[#2563EB]" />
-                                Nguồn:
+                              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#647C79]">
+                                <Quote className="h-3 w-3 text-[#087F73]" />
+                                Trích dẫn:
                               </span>
                               {m.citations.map((c) => (
                                 <button
@@ -878,79 +736,74 @@ export function ChatPage() {
                                       new CustomEvent("studio-context-tab", { detail: "citations" }),
                                     )
                                   }}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-[#BFDBFE] bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#2563EB] transition-colors hover:border-[#2563EB] hover:bg-blue-100"
+                                  className="inline-flex items-center gap-1 rounded-md border border-[#D4E2DF] bg-[#F5F8F7] px-2 py-0.5 text-[11px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
                                 >
-                                  <span className="font-mono font-bold">[{c.refId}]</span>
+                                  <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
                                   <span className="max-w-[160px] truncate">{c.documentName}</span>
                                   {c.pageNumber != null ? (
-                                    <span className="text-[10px] text-slate-500">· Tr.{c.pageNumber}</span>
+                                    <span className="text-[10px] text-[#647C79]">· Tr.{c.pageNumber}</span>
                                   ) : null}
                                 </button>
                               ))}
                             </div>
                           ) : null}
 
-                          {/* Hàng nút thao tác: Copy, Regenerate, Feedback & Tạo học liệu trực tiếp */}
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-1">
-                              <Tooltip content="Sao chép câu trả lời" side="bottom">
-                                <button
-                                  type="button"
-                                  onClick={() => void handleCopyMessage(m)}
-                                  className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                                >
-                                  {copiedMsgId === m.id ? (
-                                    <Check className="h-3.5 w-3.5 text-[#10B981]" />
-                                  ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                  )}
-                                  <span>{copiedMsgId === m.id ? "Đã chép" : "Copy"}</span>
-                                </button>
-                              </Tooltip>
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyMessage(m)}
+                                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29]"
+                              >
+                                {copiedMsgId === m.id ? (
+                                  <Check className="h-3.5 w-3.5 text-[#087F73]" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                                <span>{copiedMsgId === m.id ? "Đã chép" : "Copy"}</span>
+                              </button>
 
-                              <Tooltip content="Tạo lại câu trả lời" side="bottom">
-                                <button
-                                  type="button"
-                                  disabled={busy}
-                                  onClick={() => {
-                                    const prompt = findPrecedingUserPrompt(m.id)
-                                    if (prompt) void sendQuery(prompt, m.id)
-                                  }}
-                                  className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
-                                >
-                                  <RefreshCw className="h-3.5 w-3.5" />
-                                  <span>Regenerate</span>
-                                </button>
-                              </Tooltip>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => {
+                                  const prompt = findPrecedingUserPrompt(m.id)
+                                  if (prompt) void sendQuery(prompt, m.id)
+                                }}
+                                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-[#647C79] transition-colors hover:bg-[#F0F5F4] hover:text-[#172B29] disabled:opacity-40"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                <span>Tạo lại</span>
+                              </button>
 
-                              <div className="mx-1 h-3.5 w-px bg-slate-200" />
+                              <div className="mx-1 h-3.5 w-px bg-[#D4E2DF]" />
 
-                              <Tooltip content="Câu trả lời hữu ích" side="bottom">
+                              <Tooltip content="Hữu ích" side="bottom">
                                 <button
                                   type="button"
                                   onClick={() => handleFeedback(m.id, "up")}
                                   aria-label="Hữu ích"
                                   className={cn(
-                                    "inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
+                                    "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
                                     vote === "up"
-                                      ? "bg-[#EFF6FF] text-[#2563EB]"
-                                      : "text-slate-400 hover:bg-slate-100 hover:text-slate-900",
+                                      ? "text-[#087F73]"
+                                      : "text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]",
                                   )}
                                 >
                                   <ThumbsUp className="h-3.5 w-3.5" />
                                 </button>
                               </Tooltip>
 
-                              <Tooltip content="Câu trả lời cần cải thiện" side="bottom">
+                              <Tooltip content="Chưa chính xác" side="bottom">
                                 <button
                                   type="button"
                                   onClick={() => handleFeedback(m.id, "down")}
                                   aria-label="Chưa chính xác"
                                   className={cn(
-                                    "inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
+                                    "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
                                     vote === "down"
-                                      ? "bg-rose-50 text-rose-600"
-                                      : "text-slate-400 hover:bg-slate-100 hover:text-slate-900",
+                                      ? "text-rose-600"
+                                      : "text-[#647C79] hover:bg-[#F0F5F4] hover:text-[#172B29]",
                                   )}
                                 >
                                   <ThumbsDown className="h-3.5 w-3.5" />
@@ -958,31 +811,30 @@ export function ChatPage() {
                               </Tooltip>
                             </div>
 
-                            {/* Nút tạo học liệu trực tiếp từ câu trả lời AI */}
                             <DropdownMenu
                               align="end"
                               trigger={
                                 <button
                                   type="button"
-                                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[#BFDBFE] bg-[#EFF6FF] px-2.5 text-xs font-semibold text-[#2563EB] transition-colors hover:bg-blue-100"
+                                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[#D4E2DF] bg-white px-2.5 text-xs font-semibold text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
                                 >
-                                  <GraduationCap className="h-3.5 w-3.5" />
+                                  <GraduationCap className="h-3.5 w-3.5 text-[#087F73]" />
                                   <span>Tạo học liệu</span>
                                 </button>
                               }
                             >
-                              <DropdownMenuLabel>Tạo học liệu từ câu trả lời này</DropdownMenuLabel>
+                              <DropdownMenuLabel>Tạo học liệu từ câu trả lời</DropdownMenuLabel>
                               <DropdownMenuItem
                                 icon={<FileText className="h-3.5 w-3.5" />}
                                 onClick={() => handleCreateStudyFromMessage(m, "summary")}
                               >
-                                Lưu làm Tóm tắt / Ghi chú
+                                Lưu Tóm tắt / Ghi chú
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 icon={<Sparkles className="h-3.5 w-3.5" />}
                                 onClick={() => handleCreateStudyFromMessage(m, "quiz")}
                               >
-                                Tạo bộ câu hỏi Quiz
+                                Tạo Quiz trắc nghiệm
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 icon={<Layers className="h-3.5 w-3.5" />}
@@ -1029,7 +881,7 @@ export function ChatPage() {
       </div>
 
       {/* =====================================================================
-          4. CỘT PHẢI: TRUNG TÂM NGUỒN & KIỂM CHỨNG CITATION DUY NHẤT
+          CONTEXT PANEL BÊN PHẢI (#F5F8F7)
       ===================================================================== */}
       {citationOpen ? (
         <>
@@ -1043,15 +895,14 @@ export function ChatPage() {
             />
           </div>
 
-          {/* Drawer trên màn hình nhỏ (< xl) */}
           <div className="fixed inset-0 z-40 flex justify-end xl:hidden">
             <button
               type="button"
               aria-label="Đóng bảng ngữ cảnh"
-              className="fixed inset-0 bg-slate-900/30"
+              className="fixed inset-0 bg-[#172B29]/30"
               onClick={() => setCitationOpen(false)}
             />
-            <div className="relative z-10 h-full w-80 max-w-[88vw] bg-white">
+            <div className="relative z-10 h-full w-80 max-w-[88vw] bg-[#F5F8F7]">
               <CitationPanel
                 citations={lastAssistant?.citations ?? []}
                 workspaceDocuments={workspaceDocuments}
@@ -1063,13 +914,12 @@ export function ChatPage() {
           </div>
         </>
       ) : (
-        /* Thanh thu gọn của Cột Phải trên màn hình lớn */
-        <aside className="hidden h-full w-10 shrink-0 flex-col items-center border-l border-slate-200/80 bg-[#F8FAFC] py-3 xl:flex">
-          <Tooltip content="Mở rộng bảng Nguồn & Kho tài liệu" side="left">
+        <aside className="hidden h-full w-10 shrink-0 flex-col items-center border-l border-[#D4E2DF] bg-[#F5F8F7] py-3 xl:flex">
+          <Tooltip content="Mở bảng Ngữ cảnh" side="left">
             <button
               type="button"
               onClick={() => setCitationOpen(true)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-[#2563EB] transition-colors hover:border-[#2563EB] hover:bg-[#EFF6FF]"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#D4E2DF] bg-white text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
               aria-label="Mở rộng Context Panel"
             >
               <PanelRightOpen className="h-4 w-4" />
@@ -1078,7 +928,6 @@ export function ChatPage() {
         </aside>
       )}
 
-      {/* Dialog đổi tên hội thoại */}
       <NameDialog
         open={Boolean(renameTarget)}
         title="Đổi tên cuộc trò chuyện"
@@ -1093,7 +942,6 @@ export function ChatPage() {
         }}
       />
 
-      {/* Dialog xác nhận xóa hội thoại */}
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Xóa cuộc trò chuyện?"

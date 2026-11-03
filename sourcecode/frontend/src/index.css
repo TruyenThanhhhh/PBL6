@@ -280,9 +280,9 @@ select {
   padding: 0 5px;
   margin: 0 2px;
   border-radius: 9999px;
-  border: 1px solid #BFDBFE;
-  background: #EFF6FF;
-  color: #2563EB;
+  border: 1px solid rgba(31, 143, 124, 0.25);
+  background: var(--brand-soft);
+  color: var(--brand);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -291,30 +291,6 @@ select {
   transition: all 120ms ease;
 }
 .citation-chip:hover {
-  background: #2563EB;
-  border-color: #2563EB;
+  background: var(--brand);
   color: #ffffff;
-}
-
-/* Custom scrollbar tinh gọn, ẩn thanh cuộn thô mặc định của trình duyệt */
-.studio-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-.studio-scroll:hover {
-  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
-}
-.studio-scroll::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-.studio-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.studio-scroll::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 9999px;
-}
-.studio-scroll:hover::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
 }
