@@ -98,7 +98,7 @@ export function ChatComposer({
     <div className="bg-white px-4 pt-1.5 pb-3.5 md:px-8 border-t border-[#DCE7E4]/70">
       <div className="mx-auto max-w-3xl">
         {/* Khung nhập liệu với border rõ (#DCE7E4 -> focus #087F73) và shadow rất nhẹ */}
-        <div className="overflow-hidden rounded-xl border border-[#DCE7E4] bg-white shadow-2xs transition-all focus-within:border-[#087F73] focus-within:ring-1 focus-within:ring-[#087F73]/20">
+        <div className="rounded-xl border border-[#DCE7E4] bg-white shadow-2xs transition-all focus-within:border-[#087F73] focus-within:ring-1 focus-within:ring-[#087F73]/20">
           {/* Chip tài liệu đính kèm (chỉ hiển thị khi có đính kèm) */}
           {attachedDocs.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-[#DCE7E4] bg-[#F1F6F5] px-3 py-1.5 text-xs">
@@ -155,24 +155,22 @@ export function ChatComposer({
               {/* Chọn nguồn tài liệu truy xuất (Kiểu NotebookLM: chọn tất cả hoặc từng tài liệu cụ thể) */}
               <DropdownMenu
                 align="start"
+                side="top"
                 trigger={
-                  <span>
-                    <Tooltip content="Chọn phạm vi tài liệu trong không gian" side="top">
-                      <button
-                        type="button"
-                        className={cn(
-                          "inline-flex h-6.5 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
-                          attachedDocs.length > 0
-                            ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
-                            : "border-[#DCE7E4] bg-[#F1F6F5] text-[#172B29] hover:border-[#087F73]",
-                        )}
-                      >
-                        <FileText className="h-3 w-3 text-[#087F73]" />
-                        <span className="max-w-[200px] truncate">{scopeLabel}</span>
-                        <ChevronDown className="h-2.5 w-2.5 text-[#647C79]" />
-                      </button>
-                    </Tooltip>
-                  </span>
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex h-6.5 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                      attachedDocs.length > 0
+                        ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
+                        : "border-[#DCE7E4] bg-[#F1F6F5] text-[#172B29] hover:border-[#087F73]",
+                    )}
+                    aria-label="Chọn nguồn tài liệu"
+                  >
+                    <FileText className="h-3 w-3 text-[#087F73]" />
+                    <span className="max-w-[200px] truncate">{scopeLabel}</span>
+                    <ChevronDown className="h-2.5 w-2.5 text-[#647C79]" />
+                  </button>
                 }
               >
                 <DropdownMenuLabel>Phạm vi tài liệu ({workspaceDocuments.length})</DropdownMenuLabel>
@@ -259,26 +257,24 @@ export function ChatComposer({
               {/* Đính kèm tài liệu */}
               <DropdownMenu
                 align="start"
+                side="top"
                 trigger={
-                  <span>
-                    <Tooltip content="Đính kèm tài liệu" side="top">
-                      <button
-                        type="button"
-                        aria-label="Đính kèm tài liệu"
-                        className={cn(
-                          "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
-                          attachedDocIds.length > 0
-                            ? "bg-[#087F73]/10 font-semibold text-[#087F73]"
-                            : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
-                        )}
-                      >
-                        <Paperclip className="h-3.5 w-3.5" />
-                        {attachedDocIds.length > 0 ? (
-                          <span className="text-[10px]">{attachedDocIds.length}</span>
-                        ) : null}
-                      </button>
-                    </Tooltip>
-                  </span>
+                  <button
+                    type="button"
+                    aria-label="Đính kèm tài liệu"
+                    title="Đính kèm tài liệu"
+                    className={cn(
+                      "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
+                      attachedDocIds.length > 0
+                        ? "bg-[#087F73]/10 font-semibold text-[#087F73]"
+                        : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
+                    )}
+                  >
+                    <Paperclip className="h-3.5 w-3.5" />
+                    {attachedDocIds.length > 0 ? (
+                      <span className="text-[10px]">{attachedDocIds.length}</span>
+                    ) : null}
+                  </button>
                 }
               >
                 <DropdownMenuLabel>Đính kèm tài liệu ({workspaceDocuments.length})</DropdownMenuLabel>
@@ -327,21 +323,19 @@ export function ChatComposer({
               {/* Chọn mô hình LLM */}
               <DropdownMenu
                 align="start"
+                side="top"
                 trigger={
-                  <span>
-                    <Tooltip content={`Mô hình: ${currentModelOption?.label ?? modelId}`} side="top">
-                      <button
-                        type="button"
-                        aria-label="Chọn mô hình LLM"
-                        className="inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs text-[#647C79] transition-colors hover:bg-[#F1F6F5] hover:text-[#172B29]"
-                      >
-                        <Cpu className="h-3.5 w-3.5" />
-                        <span className="hidden font-mono text-[10.5px] sm:inline">
-                          {currentModelOption?.label ?? modelId}
-                        </span>
-                      </button>
-                    </Tooltip>
-                  </span>
+                  <button
+                    type="button"
+                    aria-label="Chọn mô hình LLM"
+                    title={`Mô hình: ${currentModelOption?.label ?? modelId}`}
+                    className="inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs text-[#647C79] transition-colors hover:bg-[#F1F6F5] hover:text-[#172B29]"
+                  >
+                    <Cpu className="h-3.5 w-3.5" />
+                    <span className="hidden font-mono text-[10.5px] sm:inline">
+                      {currentModelOption?.label ?? modelId}
+                    </span>
+                  </button>
                 }
               >
                 <DropdownMenuLabel>Mô hình LLM</DropdownMenuLabel>
@@ -362,6 +356,7 @@ export function ChatComposer({
               {onModeChange ? (
                 <DropdownMenu
                   align="start"
+                  side="top"
                   trigger={
                     <button
                       type="button"
