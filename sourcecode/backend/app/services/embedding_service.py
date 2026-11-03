@@ -1,28 +1,33 @@
-import torch
-from sentence_transformers import SentenceTransformer
-from typing import List, Union
-from app.config import settings
+"""Optional BGE-M3 dense embeddings, stored as packed float32 in SQLite."""
+import logging
+import struct
+from functools import lru_cache
+from typing import List, Optional
 
-class EmbeddingService:
-    def __init__(self, model_name: str = "BAAI/bge-m3"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # Load mô hình BGE-M3
-        self.model = SentenceTransformer(model_name, device=self.device)
+from app.config import EMBEDDING_MODEL, ENABLE_DENSE_RETRIEVAL
 
-    def generate_embeddings(self, texts: Union[str, List[str]]) -> List[List[float]]:
-        """
-        Sinh Vector Embeddings (Dense) cho văn bản hoặc danh sách văn bản.
-        """
-        if isinstance(texts, str):
-            texts = [texts]
-        
-        # BGE-M3 khuyến nghị normalize_embeddings=True cho cos_sim
-        embeddings = self.model.encode(
-            texts, 
-            batch_size=16, 
-            show_progress_bar=False, 
-            normalize_embeddings=True
-        )
-        return embeddings.tolist()
+logger = logging.getLogger(__name__)
 
-embedding_service = EmbeddingService()
+
+@lru_cache(maxsize=1)
+def _get_model():
+    from fastembed import TextEmbedding
+    return TextEmbedding(model_name=EMBEDDING_MODEL)
+
+
+def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
+    if not ENABLE_DENSE_RETRIEVAL or not texts:
+        return None
+    try:
+        return [list(map(float, vector)) for vector in _get_model().embed(texts)]
+    except Exception:
+        logger.exception("Dense embedding unavailable; continuing with FTS5")
+        return None
+
+
+def pack_vector(vector: List[float]) -> bytes:
+    return struct.pack(f"{len(vector)}f", *vector)
+
+
+def unpack_vector(blob: bytes, dimensions: int) -> List[float]:
+    return list(struct.unpack(f"{dimensions}f", blob))

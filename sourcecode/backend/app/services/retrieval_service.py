@@ -1,192 +1,106 @@
+"""Workspace-scoped hybrid retrieval: SQLite FTS5 plus optional BGE-M3 and RRF."""
+import math
 import re
-import json
-import logging
-import numpy as np
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 
+from app.config import TOP_K_RETRIEVAL, EMBEDDING_MODEL
 from app.database import get_db_connection
-from app.config import TOP_K_RETRIEVAL
-from app.services.embedding_service import embedding_service
-from app.services.reranker_service import reranker_service
+from app.services.embedding_service import embed_texts, unpack_vector
 
-logger = logging.getLogger(__name__)
 
-class RetrievalService:
-    def __init__(self, rrf_k: int = 60):
-        self.rrf_k = rrf_k
+def _cosine(left: List[float], right: List[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_left = math.sqrt(sum(a * a for a in left))
+    norm_right = math.sqrt(sum(b * b for b in right))
+    return dot / (norm_left * norm_right) if norm_left and norm_right else 0.0
 
-    def hybrid_search(self, workspace_id: str, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-        """
-        Thực hiện Hybrid Search kết hợp Dense Vector Search (BGE-M3) và Sparse Search (FTS5 BM25)
-        thông qua thuật toán Reciprocal Rank Fusion (RRF).
-        """
-        # 1. Dense Search (Cosine Similarity từ BGE-M3 vectors)
-        dense_results = self._dense_search(workspace_id, query, top_k=top_k)
 
-        # 2. Sparse Search (BM25 qua FTS5)
-        sparse_results = self._sparse_search(workspace_id, query, top_k=top_k)
-
-        # 3. Kết hợp bằng Reciprocal Rank Fusion (RRF)
-        fused_results = self._apply_rrf(dense_results, sparse_results, top_k=top_k)
-        return fused_results
-
-    def _dense_search(self, workspace_id: str, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-        """
-        Dense vector search: tính cosine similarity giữa query embedding và chunk embeddings.
-        Chỉ load chunk_ids cần thiết thay vì toàn bộ DB để tránh OOM.
-        """
-        conn = get_db_connection()
+def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RETRIEVAL,
+                           document_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
         cursor = conn.cursor()
-
-        # Lấy số lượng embeddings để ước tính bộ nhớ
-        cursor.execute(
-            "SELECT COUNT(*) as cnt FROM chunk_embeddings WHERE workspace_id = ?",
-            (workspace_id,)
-        )
-        count = cursor.fetchone()["cnt"]
-
-        if count == 0:
-            conn.close()
-            return []
-
-        # Sinh vector cho query trước
-        query_emb = np.array(embedding_service.generate_embeddings(query)[0], dtype=np.float32)
-        norm_q = np.linalg.norm(query_emb) + 1e-8
-
-        # Xử lý theo batch để tránh OOM khi DB lớn
-        BATCH_SIZE = 500
-        scores = []
-
-        for offset in range(0, count, BATCH_SIZE):
-            cursor.execute("""
-                SELECT e.chunk_id, e.embedding_json, c.document_id, c.content, c.page_number, c.chunk_index, d.file_name
-                FROM chunk_embeddings e
-                JOIN document_chunks c ON e.chunk_id = c.id
-                JOIN documents d ON c.document_id = d.id
-                WHERE e.workspace_id = ?
-                LIMIT ? OFFSET ?
-            """, (workspace_id, BATCH_SIZE, offset))
-
-            for r in cursor.fetchall():
-                emb = np.array(json.loads(r["embedding_json"]), dtype=np.float32)
-                sim = float(np.dot(query_emb, emb) / (norm_q * (np.linalg.norm(emb) + 1e-8)))
-                scores.append({
-                    "chunk_id": r["chunk_id"],
-                    "document_id": r["document_id"],
-                    "document_name": r["file_name"],
-                    "page_number": r["page_number"],
-                    "chunk_index": r["chunk_index"],
-                    "content": r["content"],
-                    "dense_score": sim
-                })
-
-        conn.close()
-        scores.sort(key=lambda x: x["dense_score"], reverse=True)
-        logger.debug(f"Dense search: {len(scores)} chunks scored, returning top {top_k}")
-        return scores[:top_k]
-
-    def _sparse_search(self, workspace_id: str, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        clean_query = re.sub(r'[^\w\s]', ' ', query)
-        tokens = [t for t in clean_query.split() if len(t) > 1]
-        results = []
-
+        clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
+        tokens = [token for token in clean_query.split() if len(token) > 1]
+        document_filter = " AND c.document_id = ?" if document_id else ""
+        document_params = (document_id,) if document_id else ()
+        sparse: List[Dict[str, Any]] = []
         if tokens:
-            fts_match_query = " OR ".join(tokens)
+            match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
             try:
-                cursor.execute("""
-                SELECT f.chunk_id, f.content, bm25(chunks_fts) as rank_score,
-                       c.page_number, c.chunk_index, d.file_name, d.id as document_id
-                FROM chunks_fts f
-                JOIN document_chunks c ON f.chunk_id = c.id
-                JOIN documents d ON c.document_id = d.id
-                WHERE chunks_fts MATCH ? AND f.workspace_id = ?
-                ORDER BY rank_score ASC
-                LIMIT ?
-                """, (fts_match_query, workspace_id, top_k))
-                for row in cursor.fetchall():
-                    results.append({
-                        "chunk_id": row["chunk_id"],
-                        "document_id": row["document_id"],
-                        "document_name": row["file_name"],
-                        "page_number": row["page_number"],
-                        "chunk_index": row["chunk_index"],
-                        "content": row["content"],
-                        "sparse_score": float(row["rank_score"])
-                    })
-            except Exception as e:
-                logger.error(f"Lỗi FTS5 BM25 match: {e}")
+                cursor.execute("""SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name,
+                       bm25(chunks_fts) AS score
+                    FROM chunks_fts f
+                    JOIN document_chunks c ON c.id = f.chunk_id
+                    JOIN documents d ON d.id = c.document_id
+                    WHERE chunks_fts MATCH ? AND c.workspace_id = ?{document_filter}
+                    ORDER BY score ASC LIMIT ?
+                """.format(document_filter=document_filter),
+                    (match_query, workspace_id, *document_params, max(top_k * 4, top_k)))
+                sparse = [dict(row) for row in cursor.fetchall()]
+            except Exception:
+                # FTS syntax differences or a damaged index should not take down chat.
+                sparse = []
 
-        # Fallback LIKE nếu không có kết quả FTS
-        if not results:
-            logger.info("FTS5 không có kết quả, dùng fallback ORDER BY created_at")
+        dense: List[Dict[str, Any]] = []
+        cursor.execute("SELECT 1 FROM chunk_embeddings e JOIN document_chunks c ON c.id = e.chunk_id "
+                       "WHERE c.workspace_id = ? AND e.model = ?" + document_filter + " LIMIT 1",
+                       (workspace_id, EMBEDDING_MODEL, *document_params))
+        has_dense_index = cursor.fetchone() is not None
+        query_vectors = embed_texts([query]) if has_dense_index else None
+        if query_vectors:
             cursor.execute("""
-            SELECT c.id as chunk_id, c.content, c.page_number, c.chunk_index,
-                   d.file_name, d.id as document_id
-            FROM document_chunks c
-            JOIN documents d ON c.document_id = d.id
-            WHERE c.workspace_id = ?
-            ORDER BY c.created_at DESC
-            LIMIT ?
-            """, (workspace_id, top_k))
+                SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name,
+                       e.vector, e.dimensions
+                FROM chunk_embeddings e
+                JOIN document_chunks c ON c.id = e.chunk_id
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.workspace_id = ? AND e.model = ?{document_filter}
+            """.format(document_filter=document_filter),
+                (workspace_id, EMBEDDING_MODEL, *document_params))
             for row in cursor.fetchall():
-                results.append({
-                    "chunk_id": row["chunk_id"],
-                    "document_id": row["document_id"],
-                    "document_name": row["file_name"],
-                    "page_number": row["page_number"],
-                    "chunk_index": row["chunk_index"],
-                    "content": row["content"],
-                    "sparse_score": 1.0
-                })
+                item = dict(row)
+                vector = unpack_vector(item.pop("vector"), item.pop("dimensions"))
+                item["score"] = _cosine(query_vectors[0], vector)
+                dense.append(item)
+            dense.sort(key=lambda item: item["score"], reverse=True)
+            dense = dense[:max(top_k * 4, top_k)]
 
+        # Reciprocal Rank Fusion keeps scores from the two retrieval systems comparable.
+        merged: Dict[str, Dict[str, Any]] = {}
+        for ranking in (sparse, dense):
+            for rank, item in enumerate(ranking, start=1):
+                chunk_id = item["chunk_id"]
+                if chunk_id not in merged:
+                    merged[chunk_id] = {key: value for key, value in item.items() if key != "score"}
+                    merged[chunk_id]["rrf_score"] = 0.0
+                merged[chunk_id]["rrf_score"] += 1.0 / (60 + rank)
+        ranked = sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
+
+        # A direct question about a named file (for example, "Data.txt chứa gì?")
+        # should retrieve that file even when its name is absent from extracted text.
+        query_terms = {term.lower() for term in tokens if len(term) > 2}
+        if query_terms:
+            cursor.execute("""
+                SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name
+                FROM documents d JOIN document_chunks c ON c.document_id = d.id
+                WHERE d.workspace_id = ?{document_filter}
+                ORDER BY d.created_at DESC, c.chunk_index ASC
+            """.format(document_filter=document_filter.replace("c.document_id", "d.id")),
+                (workspace_id, *document_params))
+            named_matches = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                stem = re.sub(r"\.[^.]+$", "", item["document_name"]).lower()
+                name_terms = set(re.findall(r"[\w]+", stem, flags=re.UNICODE))
+                if name_terms & query_terms:
+                    named_matches.append(item)
+            named_ids = {item["chunk_id"] for item in named_matches}
+            ranked = named_matches + [item for item in ranked if item["chunk_id"] not in named_ids]
+
+        return ranked[:top_k]
+    finally:
         conn.close()
-        logger.debug(f"Sparse search: {len(results)} chunks returned")
-        return results
-
-    def _apply_rrf(self, dense_list: List[Dict], sparse_list: List[Dict], top_k: int) -> List[Dict]:
-        """
-        Reciprocal Rank Fusion: RRF(d) = sum(1 / (k + rank_i(d)))
-        """
-        rrf_scores = {}
-        doc_map = {}
-
-        for rank, doc in enumerate(dense_list):
-            cid = doc["chunk_id"]
-            doc_map[cid] = doc
-            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + (1.0 / (self.rrf_k + rank + 1))
-
-        for rank, doc in enumerate(sparse_list):
-            cid = doc["chunk_id"]
-            doc_map[cid] = doc
-            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + (1.0 / (self.rrf_k + rank + 1))
-
-        sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)
-        results = []
-        for cid in sorted_ids[:top_k]:
-            item = dict(doc_map[cid])
-            item["rrf_score"] = rrf_scores[cid]
-            results.append(item)
-
-        logger.debug(f"RRF fusion: {len(results)} chunks after fusion")
-        return results
-
-retrieval_service = RetrievalService()
-
-def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RETRIEVAL) -> List[Dict[str, Any]]:
-    """
-    Hàm truy xuất chính:
-    1. Hybrid Search (Dense BGE-M3 + Sparse FTS5 BM25 + RRF) lấy Top-20 candidates
-    2. Cross-Encoder Reranker (bge-reranker-v2-m3) chấm điểm và chọn Top-K chất lượng nhất
-    """
-    candidates = retrieval_service.hybrid_search(workspace_id=workspace_id, query=query, top_k=20)
-    if not candidates:
-        logger.info(f"Không tìm thấy chunk nào cho workspace='{workspace_id}', query='{query[:50]}...'")
-        return []
-
-    # Tiến hành Re-ranking qua Cross-Encoder
-    reranked = reranker_service.rerank(query=query, documents=candidates, top_k=top_k)
-    logger.info(f"Retrieval hoàn tất: {len(reranked)} chunks sau rerank")
-    return reranked

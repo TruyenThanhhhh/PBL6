@@ -1,16 +1,15 @@
-import os
 import uuid
 import re
-import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
-from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR
+from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR, EMBEDDING_MODEL
 from app.database import get_db_connection
-from app.services.embedding_service import embedding_service
+from app.services.embedding_service import embed_texts, pack_vector
 
 logger = logging.getLogger(__name__)
+SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv"}
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
     """
@@ -27,7 +26,8 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if extracted.strip():
                     results.append({"page": i + 1, "text": extracted})
         except Exception as e:
-            logger.error(f"Lỗi đọc PDF: {e}")
+            logger.exception("PDF extraction failed")
+            raise ValueError("Không thể trích xuất nội dung PDF") from e
             
     elif file_type == "docx":
         try:
@@ -37,9 +37,10 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
             if full_text.strip():
                 results.append({"page": 1, "text": full_text})
         except Exception as e:
-            logger.error(f"Lỗi đọc DOCX: {e}")
+            logger.exception("DOCX extraction failed")
+            raise ValueError("Không thể trích xuất nội dung DOCX") from e
 
-    elif file_type in ["pptx", "ppt"]:
+    elif file_type == "pptx":
         try:
             from pptx import Presentation
             prs = Presentation(str(file_path))
@@ -51,7 +52,8 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if slide_texts:
                     results.append({"page": i + 1, "text": "\n".join(slide_texts)})
         except Exception as e:
-            logger.error(f"Lỗi đọc PPTX: {e}")
+            logger.exception("PPTX extraction failed")
+            raise ValueError("Không thể trích xuất nội dung PPTX") from e
             
     elif file_type in ["txt", "md", "py", "json", "csv"]:
         try:
@@ -60,7 +62,8 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if content.strip():
                     results.append({"page": 1, "text": content})
         except Exception as e:
-            logger.error(f"Lỗi đọc text/md: {e}")
+            logger.exception("Text extraction failed")
+            raise ValueError("Không thể đọc tệp văn bản") from e
             
     return results
 
@@ -107,8 +110,11 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
     và lưu đồng bộ vào SQLite (document_chunks, chunks_fts, chunk_embeddings).
     """
     doc_id = str(uuid.uuid4())
-    ext = file_name.split(".")[-1].lower() if "." in file_name else "txt"
-    saved_path = UPLOAD_DIR / f"{doc_id}_{file_name}"
+    safe_name = Path(file_name or "upload.txt").name
+    ext = Path(safe_name).suffix.lower().lstrip(".") or "txt"
+    if ext not in SUPPORTED_TYPES:
+        raise ValueError(f"Định dạng không hỗ trợ: {ext}")
+    saved_path = UPLOAD_DIR / f"{doc_id}_{safe_name}"
     
     with open(saved_path, "wb") as f:
         f.write(file_bytes)
@@ -116,13 +122,21 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
     file_size = len(file_bytes)
     
     # 1. Trích xuất text sạch
-    pages = extract_text_from_file(saved_path, ext)
+    try:
+        pages = extract_text_from_file(saved_path, ext)
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        raise
     if not pages:
         if ext in ["txt", "md", "csv", "json"]:
             text = file_bytes.decode("utf-8", errors="ignore")
             if text.strip():
                 pages = [{"page": 1, "text": text}]
                 
+    if not pages:
+        saved_path.unlink(missing_ok=True)
+        raise ValueError("Không trích xuất được văn bản từ tài liệu")
+
     # 2. Chunking
     all_chunks = []
     chunk_index = 0
@@ -139,76 +153,83 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
                 "content": c
             })
             chunk_index += 1
+            
+    vectors = embed_texts([chunk["content"] for chunk in all_chunks])
 
-    # 3. Sinh Dense Embeddings (BGE-M3) cho toàn bộ chunks
-    embeddings = []
-    if all_chunks:
-        chunk_texts = [c["content"] for c in all_chunks]
-        try:
-            embeddings = embedding_service.generate_embeddings(chunk_texts)
-        except Exception as e:
-            logger.warning(f"Cảnh báo: Không thể sinh embedding BGE-M3: {e}")
-            embeddings = [[] for _ in all_chunks]
-
-    # 4. Lưu vào Database
+    # 3. Lưu vào Database
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
+    try:
+        cursor.execute("""
     INSERT INTO documents (id, workspace_id, file_name, file_type, file_size, file_path, total_chunks, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (doc_id, workspace_id, file_name, ext, file_size, str(saved_path), len(all_chunks), "indexed"))
+    """, (doc_id, workspace_id, safe_name, ext, file_size, str(saved_path), len(all_chunks), "indexed"))
     
-    for c, emb in zip(all_chunks, embeddings):
-        cursor.execute("""
+        for c in all_chunks:
+            cursor.execute("""
         INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content)
         VALUES (?, ?, ?, ?, ?, ?)
         """, (c["id"], c["document_id"], c["workspace_id"], c["chunk_index"], c["page_number"], c["content"]))
         
-        # Đánh chỉ mục Full-Text Search (FTS5 BM25)
-        clean_fts_content = re.sub(r'["\']', '', c["content"])
-        cursor.execute("""
+        # Đánh chỉ mục Full-Text Search (FTS5)
+            clean_fts_content = re.sub(r'["\']', '', c["content"])
+            cursor.execute("""
         INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content)
         VALUES (?, ?, ?, ?)
         """, (c["id"], c["document_id"], c["workspace_id"], clean_fts_content))
 
-        # Lưu Dense Vector Embedding
-        if emb:
-            cursor.execute("""
-            INSERT INTO chunk_embeddings (chunk_id, document_id, workspace_id, embedding_json)
-            VALUES (?, ?, ?, ?)
-            """, (c["id"], c["document_id"], c["workspace_id"], json.dumps(emb)))
+        if vectors:
+            for chunk, vector in zip(all_chunks, vectors):
+                cursor.execute(
+                    "INSERT INTO chunk_embeddings (chunk_id, model, dimensions, vector) VALUES (?, ?, ?, ?)",
+                    (chunk["id"], EMBEDDING_MODEL, len(vector), pack_vector(vector)),
+                )
         
-    conn.commit()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        saved_path.unlink(missing_ok=True)
+        raise
     conn.close()
     
     return {
         "document_id": doc_id,
-        "file_name": file_name,
+        "file_name": safe_name,
         "file_type": ext,
         "total_chunks": len(all_chunks),
+        "dense_indexed": bool(vectors),
         "status": "indexed"
     }
 
-class DocumentServiceWrapper:
-    """Wrapper tương thích ngược hướng đối tượng"""
-    def process_and_store_document(self, doc_id: str, content: str, metadata: dict = None):
-        chunks = recursive_chunk_text(content)
-        embeddings = embedding_service.generate_embeddings(chunks) if chunks else []
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            chunk_id = str(uuid.uuid4())
-            cursor.execute(
-                "INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content) VALUES (?, ?, ?, ?, ?, ?)",
-                (chunk_id, doc_id, "default", idx, 1, chunk)
-            )
-            cursor.execute(
-                "INSERT INTO chunk_embeddings (chunk_id, document_id, workspace_id, embedding_json) VALUES (?, ?, ?, ?)",
-                (chunk_id, doc_id, "default", json.dumps(emb))
+
+def reindex_document_embeddings(document_id: str) -> Dict[str, Any]:
+    """Build or refresh BGE-M3 vectors for a document that was indexed FTS-only."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index",
+            (document_id,),
+        ).fetchall()
+        if not rows:
+            exists = conn.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
+            if not exists:
+                raise ValueError("Không tìm thấy tài liệu")
+        vectors = embed_texts([row["content"] for row in rows])
+        if vectors is None:
+            raise RuntimeError("BGE-M3 chưa sẵn sàng; hãy kiểm tra fastembed và kết nối tải model")
+        conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id IN "
+                     "(SELECT id FROM document_chunks WHERE document_id = ?)", (document_id,))
+        for row, vector in zip(rows, vectors):
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, model, dimensions, vector) VALUES (?, ?, ?, ?)",
+                (row["id"], EMBEDDING_MODEL, len(vector), pack_vector(vector)),
             )
         conn.commit()
+        return {"document_id": document_id, "dense_indexed": len(vectors), "total_chunks": len(rows)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
-        return len(chunks)
-
-document_service = DocumentServiceWrapper()

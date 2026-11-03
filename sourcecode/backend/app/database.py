@@ -3,14 +3,27 @@ from typing import Generator
 from app.config import DATABASE_PATH
 
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        name TEXT NOT NULL,
+        password_hash TEXT,
+        google_sub TEXT UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     # 1. Bảng Workspace
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS workspaces (
@@ -20,6 +33,10 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+
+    workspace_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(workspaces)").fetchall()}
+    if "owner_user_id" not in workspace_columns:
+        cursor.execute("ALTER TABLE workspaces ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE")
     
     # Tạo workspace mặc định nếu chưa có
     cursor.execute("SELECT id FROM workspaces WHERE id = 'default'")
@@ -69,19 +86,18 @@ def init_db():
     );
     """)
 
-    # 5. Bảng Chunk Embeddings (Dense Vectors 1024 dims lưu dưới dạng JSON array)
+    # BGE-M3 vectors are stored separately from FTS so dense search remains optional.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chunk_embeddings (
         chunk_id TEXT PRIMARY KEY,
-        document_id TEXT NOT NULL,
-        workspace_id TEXT NOT NULL,
-        embedding_json TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        vector BLOB NOT NULL,
         FOREIGN KEY (chunk_id) REFERENCES document_chunks(id) ON DELETE CASCADE
     );
     """)
 
-    # 6. Bảng Chat Sessions
+    # 5. Bảng Chat Sessions
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_sessions (
         id TEXT PRIMARY KEY,
