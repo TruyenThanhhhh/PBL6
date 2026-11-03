@@ -3,19 +3,16 @@ import { Link, useNavigate } from "react-router-dom"
 import {
   Activity,
   ArrowLeft,
-  Check,
-  ChevronDown,
   ChevronRight,
   FileUp,
-  FolderOpen,
   Menu,
   Moon,
   MoreHorizontal,
-  Pencil,
   Sun,
   Trash2,
 } from "lucide-react"
-import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
+import { ConfirmDialog } from "@/components/common/NameDialog"
+import { InlineEdit } from "@/components/common/InlineEdit"
 import {
   Button,
   DropdownMenu,
@@ -39,12 +36,10 @@ export function AppHeader() {
   const workspaces = useAppStore((s) => s.workspaces)
   const documents = useAppStore((s) => s.documents)
   const currentWorkspaceId = useAppStore((s) => s.currentWorkspaceId)
-  const setCurrentWorkspace = useAppStore((s) => s.setCurrentWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
   const toast = useAppStore((s) => s.toast)
 
-  const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const currentWs = useMemo(
@@ -106,57 +101,21 @@ export function AppHeader() {
 
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
 
-            {/* Tên Workspace hiện tại */}
-            <DropdownMenu
-              align="start"
-              trigger={
-                <button
-                  type="button"
-                  className="inline-flex max-w-[220px] items-center gap-1.5 rounded-lg px-2 py-1 text-left font-semibold text-[#172B29] transition-colors hover:bg-[#F0F5F4] sm:max-w-[320px]"
-                  title="Chuyển nhanh Workspace"
-                >
-                  <span className="truncate">{currentWs?.name ?? "Workspace"}</span>
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[#647C79]" />
-                </button>
-              }
-            >
-              <DropdownMenuLabel>Chuyển đổi Workspace</DropdownMenuLabel>
-              {workspaces.map((w) => {
-                const isSelected = w.id === currentWs?.id
-                return (
-                  <DropdownMenuItem
-                    key={w.id}
-                    icon={
-                      isSelected ? (
-                        <Check className="h-3.5 w-3.5 text-[#087F73]" />
-                      ) : (
-                        <FolderOpen className="h-3.5 w-3.5 text-[#647C79]" />
-                      )
-                    }
-                    onClick={() => {
-                      setCurrentWorkspace(w.id)
-                      navigate("/chat")
-                      toast({
-                        title: "Đã chuyển Workspace",
-                        description: w.name,
-                        tone: "info",
-                      })
-                    }}
-                  >
-                    <span className={cn(isSelected && "font-semibold text-[#087F73]")}>
-                      {w.name}
-                    </span>
-                  </DropdownMenuItem>
-                )
-              })}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                icon={<ArrowLeft className="h-3.5 w-3.5" />}
-                onClick={() => navigate("/hub")}
-              >
-                Quay lại Dashboard
-              </DropdownMenuItem>
-            </DropdownMenu>
+            {/* Tên Workspace hiện tại: Click để đổi tên trực tiếp, tự lưu khi out focus */}
+            <div className="max-w-[200px] sm:max-w-[320px]">
+              <InlineEdit
+                value={currentWs?.name ?? "Workspace"}
+                ariaLabel="Tên Workspace"
+                validate={validateWorkspaceName}
+                onSave={(next) => {
+                  if (!currentWs || next === currentWs.name) return
+                  updateWorkspace(currentWs.id, { name: next })
+                  toast({ title: "Đã đổi tên Workspace", description: next, tone: "success" })
+                }}
+                className="truncate font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md"
+                inputClassName="text-xs font-semibold text-[#172B29]"
+              />
+            </div>
 
             {/* Trạng thái đồng bộ gọn gàng */}
             <div className="hidden items-center gap-1.5 rounded-full border border-[#D4E2DF] bg-[#F5F8F7] px-2.5 py-0.5 text-[11px] font-medium text-[#647C79] md:inline-flex">
@@ -205,12 +164,6 @@ export function AppHeader() {
           >
             <DropdownMenuLabel>{currentWs?.name ?? "Workspace"}</DropdownMenuLabel>
             <DropdownMenuItem
-              icon={<Pencil className="h-3.5 w-3.5" />}
-              onClick={() => setEditOpen(true)}
-            >
-              Đổi tên &amp; mô tả
-            </DropdownMenuItem>
-            <DropdownMenuItem
               icon={<FileUp className="h-3.5 w-3.5" />}
               onClick={() => navigate("/documents")}
             >
@@ -245,23 +198,6 @@ export function AppHeader() {
           </DropdownMenu>
         </div>
       </header>
-
-      <NameDialog
-        open={editOpen}
-        title="Đổi tên &amp; mô tả Workspace"
-        initialName={currentWs?.name ?? ""}
-        initialDescription={currentWs?.description ?? ""}
-        showDescription
-        validate={validateWorkspaceName}
-        confirmLabel="Lưu thay đổi"
-        onClose={() => setEditOpen(false)}
-        onSubmit={(name, description) => {
-          if (!currentWs) return
-          updateWorkspace(currentWs.id, { name, description })
-          toast({ title: "Đã cập nhật Workspace", tone: "success" })
-          setEditOpen(false)
-        }}
-      />
 
       <ConfirmDialog
         open={deleteOpen}

@@ -135,6 +135,11 @@ export function ChatPage() {
     }
   }, [conversationId, currentWsId, conversations, wsConversations, navigate])
 
+  const scopedAttachedDocIds = useMemo(
+    () => attachedDocIds.filter((id) => workspaceDocuments.some((d) => d.id === id)),
+    [attachedDocIds, workspaceDocuments],
+  )
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [conversation?.messages.length, busy])
@@ -314,7 +319,7 @@ export function ChatPage() {
         createdAt: nowIso(),
         citations: [],
         modeRequested: mode,
-        attachedDocumentIds: attachedDocIds.length ? [...attachedDocIds] : undefined,
+        attachedDocumentIds: scopedAttachedDocIds.length ? [...scopedAttachedDocIds] : undefined,
         notebookScopeId: selectedNotebookId,
       })
       if (activeConv.title === "Cuộc trò chuyện mới") {
@@ -628,8 +633,8 @@ export function ChatPage() {
                  - Tiêu đề ngắn gọn: "Bạn muốn tìm hiểu điều gì?"
                  - Mô tả ngắn về số lượng tài liệu
                  - Tối đa 4 suggestion cards nhỏ gọn (icon + title + description) */
-              <div className="my-auto flex flex-col items-center justify-center py-4 text-center">
-                <div className="mb-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-[#087F73] text-white shadow-2xs">
+              <div className="my-auto flex flex-col items-center justify-center py-6 text-center">
+                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-[#087F73] text-white shadow-2xs">
                   <Sparkles className="h-4.5 w-4.5" />
                 </div>
 
@@ -637,33 +642,24 @@ export function ChatPage() {
                   Bạn muốn tìm hiểu điều gì?
                 </h2>
 
-                <p className="mt-1 text-xs text-[#647C79]">
-                  Đang kết nối {readyDocs.length} tài liệu trong {currentWorkspace?.name ?? "Workspace"}.
-                </p>
-
-                {/* 4 Suggestion Cards nhỏ gọn */}
+                {/* 4 Suggestion Cards nhỏ gọn: chỉ giữ lại dòng mô tả chính các câu hỏi nhanh */}
                 <div className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2.5 sm:grid-cols-2 text-left">
                   {suggestionCards.map((item) => (
                     <button
                       key={item.title}
                       type="button"
                       onClick={() => void sendQuery(item.prompt)}
-                      className="group flex items-start gap-2.5 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5] p-2.5 transition-colors hover:border-[#087F73] hover:bg-white"
+                      className="group flex items-center justify-between gap-2.5 rounded-xl border border-[#DCE7E4] bg-[#F1F6F5] px-3.5 py-3 transition-all hover:border-[#087F73] hover:bg-white shadow-2xs"
                     >
-                      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white text-[#087F73] border border-[#DCE7E4] group-hover:border-[#087F73]">
-                        <item.icon className="h-3.5 w-3.5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-semibold text-[#172B29] group-hover:text-[#087F73] truncate">
-                            {item.title}
-                          </span>
-                          <ArrowUpRight className="h-3 w-3 shrink-0 text-[#647C79] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#087F73]" />
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-lg bg-white text-[#087F73] border border-[#DCE7E4] group-hover:border-[#087F73]">
+                          <item.icon className="h-3.5 w-3.5" />
                         </div>
-                        <p className="mt-0.5 line-clamp-1 text-[11px] text-[#647C79]">
-                          {item.description}
-                        </p>
+                        <span className="text-xs font-semibold text-[#172B29] group-hover:text-[#087F73] truncate">
+                          {item.title}
+                        </span>
                       </div>
+                      <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#647C79] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#087F73]" />
                     </button>
                   ))}
                 </div>
@@ -916,7 +912,7 @@ export function ChatPage() {
             selectedNotebookId={selectedNotebookId}
             onSelectNotebook={setSelectedNotebookId}
             workspaceDocuments={workspaceDocuments}
-            attachedDocIds={attachedDocIds}
+            attachedDocIds={scopedAttachedDocIds}
             onToggleAttachDoc={toggleAttachDoc}
             onClearAttachedDocs={() => setAttachedDocIds([])}
             backendOnline={status.backendOnline}
@@ -933,7 +929,7 @@ export function ChatPage() {
             <CitationPanel
               citations={lastAssistant?.citations ?? []}
               workspaceDocuments={workspaceDocuments}
-              attachedDocIds={attachedDocIds}
+              attachedDocIds={scopedAttachedDocIds}
               onToggleAttachDoc={toggleAttachDoc}
               onClose={() => setCitationOpen(false)}
             />
@@ -950,7 +946,7 @@ export function ChatPage() {
               <CitationPanel
                 citations={lastAssistant?.citations ?? []}
                 workspaceDocuments={workspaceDocuments}
-                attachedDocIds={attachedDocIds}
+                attachedDocIds={scopedAttachedDocIds}
                 onToggleAttachDoc={toggleAttachDoc}
                 onClose={() => setCitationOpen(false)}
               />

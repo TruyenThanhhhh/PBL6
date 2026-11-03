@@ -2,10 +2,10 @@ import { useRef } from "react"
 import {
   ArrowUp,
   BookOpen,
+  Check,
   ChevronDown,
   Cpu,
   FileText,
-  FolderOpen,
   Loader2,
   Paperclip,
   Square,
@@ -21,6 +21,8 @@ import {
 } from "@/components/ui"
 import type { AIMode, KnowledgeDocument, Notebook, Workspace } from "@/types"
 import { AI_MODEL_OPTIONS, getModeDescriptor } from "@/services/chat-service"
+import { formatBytes } from "@/utils/format"
+import { cn } from "@/utils/cn"
 
 export function ChatComposer({
   value,
@@ -32,7 +34,6 @@ export function ChatComposer({
   onModeChange,
   modelId,
   onModelChange,
-  currentWorkspace,
   notebooks,
   selectedNotebookId,
   onSelectNotebook,
@@ -61,9 +62,7 @@ export function ChatComposer({
   backendOnline?: boolean
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const selectedNotebook = notebooks.find((n) => n.id === selectedNotebookId)
   const attachedDocs = workspaceDocuments.filter((d) => attachedDocIds.includes(d.id))
-  const readyDocCount = workspaceDocuments.filter((d) => d.status === "ready").length
   const currentModelOption =
     AI_MODEL_OPTIONS.find((m) => m.id === modelId) ?? AI_MODEL_OPTIONS[0]
 
@@ -89,11 +88,11 @@ export function ChatComposer({
   }
 
   const scopeLabel =
-    attachedDocs.length > 0
-      ? `${attachedDocs.length} tài liệu đã chọn`
-      : selectedNotebook
-        ? selectedNotebook.name
-        : `${currentWorkspace?.name ?? "Workspace"} (${readyDocCount} tài liệu)`
+    attachedDocs.length === 0
+      ? `Tất cả tài liệu (${workspaceDocuments.length})`
+      : attachedDocs.length === 1
+        ? attachedDocs[0].fileName
+        : `${attachedDocs.length}/${workspaceDocuments.length} tài liệu đã chọn`
 
   return (
     <div className="bg-white px-4 pt-1.5 pb-3.5 md:px-8 border-t border-[#DCE7E4]/70">
@@ -153,45 +152,108 @@ export function ChatComposer({
           {/* Thanh công cụ dưới: Scope, Attach, Model & Send Button */}
           <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-0.5">
             <div className="flex flex-wrap items-center gap-1">
-              {/* Chọn phạm vi tài liệu truy xuất */}
+              {/* Chọn nguồn tài liệu truy xuất (Kiểu NotebookLM: chọn tất cả hoặc từng tài liệu cụ thể) */}
               <DropdownMenu
                 align="start"
                 trigger={
                   <span>
-                    <Tooltip content="Phạm vi tài liệu truy xuất" side="top">
+                    <Tooltip content="Chọn phạm vi tài liệu trong không gian" side="top">
                       <button
                         type="button"
-                        className="inline-flex h-6.5 items-center gap-1 rounded-md border border-[#DCE7E4] bg-[#F1F6F5] px-2 text-[11px] font-medium text-[#172B29] transition-colors hover:border-[#087F73]"
+                        className={cn(
+                          "inline-flex h-6.5 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                          attachedDocs.length > 0
+                            ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
+                            : "border-[#DCE7E4] bg-[#F1F6F5] text-[#172B29] hover:border-[#087F73]",
+                        )}
                       >
-                        <FolderOpen className="h-3 w-3 text-[#087F73]" />
-                        <span className="max-w-[180px] truncate">{scopeLabel}</span>
+                        <FileText className="h-3 w-3 text-[#087F73]" />
+                        <span className="max-w-[200px] truncate">{scopeLabel}</span>
                         <ChevronDown className="h-2.5 w-2.5 text-[#647C79]" />
                       </button>
                     </Tooltip>
                   </span>
                 }
               >
-                <DropdownMenuLabel>Phạm vi truy xuất</DropdownMenuLabel>
+                <DropdownMenuLabel>Phạm vi tài liệu ({workspaceDocuments.length})</DropdownMenuLabel>
                 <DropdownMenuItem
-                  shortcut={!selectedNotebookId && attachedDocs.length === 0 ? "Đang chọn" : undefined}
+                  icon={
+                    <Check
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        attachedDocs.length === 0 ? "text-[#087F73]" : "opacity-0",
+                      )}
+                    />
+                  }
                   onClick={() => {
                     onSelectNotebook(null)
                     onClearAttachedDocs()
                   }}
                 >
-                  Toàn bộ {currentWorkspace?.name ?? "Workspace"} ({readyDocCount} tài liệu)
+                  <span className={cn(attachedDocs.length === 0 && "font-semibold text-[#087F73]")}>
+                    Tất cả tài liệu ({workspaceDocuments.length})
+                  </span>
                 </DropdownMenuItem>
-                {notebooks.length > 0 ? <DropdownMenuSeparator /> : null}
-                {notebooks.map((nb) => (
-                  <DropdownMenuItem
-                    key={nb.id}
-                    icon={<BookOpen className="h-3.5 w-3.5" />}
-                    shortcut={selectedNotebookId === nb.id ? "Đang chọn" : undefined}
-                    onClick={() => onSelectNotebook(nb.id)}
-                  >
-                    {nb.name}
-                  </DropdownMenuItem>
-                ))}
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Tài liệu trong không gian</DropdownMenuLabel>
+                {workspaceDocuments.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-[#647C79]">
+                    Chưa có tài liệu nào trong không gian này.
+                  </div>
+                ) : (
+                  workspaceDocuments.map((doc) => {
+                    const isAttached = attachedDocIds.includes(doc.id)
+                    return (
+                      <DropdownMenuItem
+                        key={doc.id}
+                        icon={
+                          <span
+                            className={cn(
+                              "flex h-3.5 w-3.5 items-center justify-center rounded border",
+                              isAttached
+                                ? "border-[#087F73] bg-[#087F73] text-white"
+                                : "border-[#DCE7E4]",
+                            )}
+                          >
+                            {isAttached ? <Check className="h-2.5 w-2.5 stroke-[3]" /> : null}
+                          </span>
+                        }
+                        onClick={() => onToggleAttachDoc(doc.id)}
+                        className="flex items-center justify-between gap-3"
+                      >
+                        <span
+                          className={cn(
+                            "truncate text-xs",
+                            isAttached && "font-semibold text-[#087F73]",
+                          )}
+                        >
+                          {doc.fileName}
+                        </span>
+                        <span className="shrink-0 text-[10.5px] text-[#647C79]">
+                          {formatBytes(doc.fileSize)}
+                        </span>
+                      </DropdownMenuItem>
+                    )
+                  })
+                )}
+
+                {notebooks.length > 0 ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>Phân loại Notebook</DropdownMenuLabel>
+                    {notebooks.map((nb) => (
+                      <DropdownMenuItem
+                        key={nb.id}
+                        icon={<BookOpen className="h-3.5 w-3.5 text-[#647C79]" />}
+                        shortcut={selectedNotebookId === nb.id ? "Đang chọn" : undefined}
+                        onClick={() => onSelectNotebook(nb.id)}
+                      >
+                        {nb.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                ) : null}
               </DropdownMenu>
 
               {/* Đính kèm tài liệu */}
@@ -203,11 +265,12 @@ export function ChatComposer({
                       <button
                         type="button"
                         aria-label="Đính kèm tài liệu"
-                        className={`inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors ${
+                        className={cn(
+                          "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
                           attachedDocIds.length > 0
-                            ? "font-semibold text-[#087F73] bg-[#087F73]/10"
-                            : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
-                        }`}
+                            ? "bg-[#087F73]/10 font-semibold text-[#087F73]"
+                            : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
+                        )}
                       >
                         <Paperclip className="h-3.5 w-3.5" />
                         {attachedDocIds.length > 0 ? (
@@ -218,10 +281,10 @@ export function ChatComposer({
                   </span>
                 }
               >
-                <DropdownMenuLabel>Đính kèm tài liệu</DropdownMenuLabel>
+                <DropdownMenuLabel>Đính kèm tài liệu ({workspaceDocuments.length})</DropdownMenuLabel>
                 {workspaceDocuments.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-[#647C79]">
-                    Chưa có tài liệu trong Workspace.
+                    Chưa có tài liệu trong không gian này.
                   </div>
                 ) : (
                   workspaceDocuments.map((doc) => {
@@ -229,11 +292,32 @@ export function ChatComposer({
                     return (
                       <DropdownMenuItem
                         key={doc.id}
-                        icon={<FileText className="h-3.5 w-3.5" />}
-                        shortcut={isAttached ? "Đã chọn" : undefined}
+                        icon={
+                          <span
+                            className={cn(
+                              "flex h-3.5 w-3.5 items-center justify-center rounded border",
+                              isAttached
+                                ? "border-[#087F73] bg-[#087F73] text-white"
+                                : "border-[#DCE7E4]",
+                            )}
+                          >
+                            {isAttached ? <Check className="h-2.5 w-2.5 stroke-[3]" /> : null}
+                          </span>
+                        }
                         onClick={() => onToggleAttachDoc(doc.id)}
+                        className="flex items-center justify-between gap-3"
                       >
-                        {doc.fileName}
+                        <span
+                          className={cn(
+                            "truncate text-xs",
+                            isAttached && "font-semibold text-[#087F73]",
+                          )}
+                        >
+                          {doc.fileName}
+                        </span>
+                        <span className="shrink-0 text-[10.5px] text-[#647C79]">
+                          {formatBytes(doc.fileSize)}
+                        </span>
                       </DropdownMenuItem>
                     )
                   })
