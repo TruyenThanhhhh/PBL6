@@ -26,6 +26,8 @@ export interface Workspace {
   id: string
   name: string
   description: string
+  category?: string
+  icon?: string
   createdAt: string
   updatedAt: string
 }

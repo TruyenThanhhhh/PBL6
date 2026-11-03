@@ -105,6 +105,21 @@
   --color-primary-fg: var(--primary-fg);
   --color-brand: var(--brand);
   --color-brand-soft: var(--brand-soft);
+  --color-brand-50: #f0fdf9;
+  --color-brand-100: #ccfbf1;
+  --color-brand-200: #99f6e4;
+  --color-brand-300: #5eead4;
+  --color-brand-400: #2dd4bf;
+  --color-brand-500: #14b8a6;
+  --color-brand-600: #0d9488;
+  --color-brand-700: #0f766e;
+  --color-brand-800: #115e59;
+  --color-brand-900: #134e4a;
+  --color-canvas: #fbfbfa;
+  --color-surface: #ffffff;
+  --shadow-soft: 0 8px 30px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 20px 40px -15px rgba(13, 148, 136, 0.12);
+  --shadow-pill: 0 2px 8px rgba(0, 0, 0, 0.04);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
   --color-success: var(--success);
@@ -115,6 +130,7 @@
   --color-error-soft: var(--error-soft);
   --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Instrument Serif", Georgia, serif;
+  --font-editorial-serif: "Newsreader", "Playfair Display", "Merriweather", "Georgia", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -158,6 +174,27 @@ select {
   font-weight: 400;
   color: var(--brand);
   letter-spacing: -0.01em;
+}
+
+.font-editorial-serif {
+  font-family: var(--font-editorial-serif);
+}
+
+.glass-nav {
+  background: rgba(251, 251, 250, 0.85);
+  backdrop-filter: blur(12px);
+}
+.dark .glass-nav {
+  background: rgba(17, 25, 24, 0.85);
+  backdrop-filter: blur(12px);
+}
+
+.gradient-mint-subtle {
+  background: linear-gradient(135deg, rgba(204, 251, 241, 0.45) 0%, rgba(240, 253, 249, 0.2) 100%);
+}
+
+.dashed-border {
+  background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='16' ry='16' stroke='%230D948840' stroke-width='2' stroke-dasharray='8%2c 8' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
 }
 
 /* Motivo soft elevated white card */

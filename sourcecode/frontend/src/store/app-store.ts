@@ -120,9 +120,14 @@ interface AppState {
   dismissToast: (id: string) => void
   log: (text: string, kind: Activity["kind"]) => void
 
-  createWorkspace: (name: string, description: string) => Workspace
+  createWorkspace: (
+    name: string,
+    description: string,
+    category?: string,
+    icon?: string,
+  ) => Workspace
   renameWorkspace: (id: string, name: string) => void
-  updateWorkspace: (id: string, patch: Partial<Pick<Workspace, "name" | "description">>) => void
+  updateWorkspace: (id: string, patch: Partial<Workspace>) => void
   deleteWorkspace: (id: string) => void
   createNotebook: (workspaceId: string, name: string) => Notebook
   renameNotebook: (id: string, name: string) => void
@@ -161,7 +166,7 @@ interface AppState {
   clearLocalData: () => void
 }
 
-const SEED_VERSION = 3
+const SEED_VERSION = 4
 
 const emptyStatus: SystemStatus = {
   backendOnline: false,
@@ -234,11 +239,13 @@ export const useAppStore = create<AppState>()(
           ),
         }),
 
-      createWorkspace: (name, description) => {
+      createWorkspace: (name, description, category, icon) => {
         const ws: Workspace = {
           id: uid("ws"),
           name,
           description,
+          category: category || "Dự án",
+          icon: icon || "folders",
           createdAt: nowIso(),
           updatedAt: nowIso(),
         }
@@ -443,24 +450,16 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "knowledge-ai-store",
-      version: 3,
+      version: 4,
       migrate: (persistedState: unknown, version: number) => {
         const state = (persistedState ?? {}) as Record<string, unknown>
-        if (version < 3) {
-          const workspaces = Array.isArray(state.workspaces) ? state.workspaces : []
-          const hasDefault = workspaces.some((w: any) => w.id === "ws_default")
-          const defaultWs = {
-            id: "ws_default",
-            name: "Không gian mặc định",
-            description: "Không gian làm việc cá nhân của bạn. Bắt đầu bằng việc tải tài liệu hoặc tạo cuộc trò chuyện AI mới.",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }
+        if (version < 4) {
           return {
             ...state,
-            workspaces: hasDefault ? workspaces : [defaultWs, ...workspaces],
-            currentWorkspaceId: "ws_default",
-            seedVersion: 3,
+            workspaces: seedWorkspaces,
+            documents: seedDocuments,
+            currentWorkspaceId: (state.currentWorkspaceId as string) || "ws_default",
+            seedVersion: 4,
           }
         }
         return state

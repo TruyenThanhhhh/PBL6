@@ -2,7 +2,6 @@ import { useEffect } from "react"
 import { Outlet } from "react-router-dom"
 import { AppSidebar } from "./Sidebar"
 import { AppHeader } from "./Header"
-import { Toasts } from "@/components/common/Toasts"
 import { ConnectionBanner } from "@/components/common/ConnectionBanner"
 import { GlobalSearch } from "@/features/search/GlobalSearch"
 import { useAppStore } from "@/store/app-store"
@@ -26,7 +25,6 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
-      <Toasts />
       <GlobalSearch />
     </div>
   )

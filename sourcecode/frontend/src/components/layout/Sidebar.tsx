@@ -32,9 +32,9 @@ import { NameDialog } from "@/components/common/NameDialog"
 import { cn } from "@/utils/cn"
 
 const NAV_ITEMS = [
-  { to: "/dashboard", matchPaths: ["/", "/dashboard"], label: "Trang chủ", icon: Home },
+  { to: "/dashboard", matchPaths: ["/dashboard"], label: "Trang chủ", icon: Home },
   { to: "/chat", matchPaths: ["/chat"], label: "Hỏi đáp AI", icon: MessageSquare },
-  { to: "/knowledge", matchPaths: ["/knowledge"], label: "Kho tri thức", icon: FolderOpen },
+  { to: "/hub", matchPaths: ["/hub", "/knowledge"], label: "Workspace Hub", icon: FolderOpen },
   { to: "/documents", matchPaths: ["/documents"], label: "Tài liệu", icon: BookOpen },
   { to: "/study", matchPaths: ["/study"], label: "Học tập", icon: GraduationCap },
   { to: "/settings", matchPaths: ["/settings"], label: "Cài đặt", icon: Settings },
@@ -284,12 +284,12 @@ export function AppSidebar() {
               <DropdownMenuItem
                 icon={<Layers className="h-3.5 w-3.5 text-muted" />}
                 onClick={() => {
-                  navigate("/knowledge")
+                  navigate("/hub")
                   setMobile(false)
                 }}
                 className="rounded-xl px-2.5 py-1.5 text-xs text-muted hover:text-ink"
               >
-                Quản lý tất cả không gian
+                Quản lý tất cả không gian (Hub)
               </DropdownMenuItem>
             </DropdownMenu>
           </div>
