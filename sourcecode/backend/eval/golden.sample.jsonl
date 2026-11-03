@@ -1,0 +1,10 @@
+{"id":"stack-01","question":"PBL6 dùng backend và frontend công nghệ gì?","reference":"PBL6 dùng backend FastAPI và frontend React + Vite.","notes":"Kiến trúc tổng quan"}
+{"id":"stack-02","question":"Cơ sở dữ liệu của PBL6 là gì và lưu những gì?","reference":"PBL6 dùng SQLite để lưu tài liệu, chunk, chỉ mục FTS5 và vector BGE-M3.","notes":"Stack và lưu trữ"}
+{"id":"retrieval-01","question":"Hybrid RAG của PBL6 kết hợp những phương pháp truy hồi nào?","reference":"Hybrid RAG kết hợp Sparse Search bằng SQLite FTS5/BM25 với Dense Search bằng BGE-M3.","notes":"Thành phần retrieval"}
+{"id":"retrieval-02","question":"RRF trong PBL6 dùng công thức và giá trị k mặc định là bao nhiêu?","reference":"RRF cộng điểm 1/(k+rank) cho từng chunk, với k mặc định bằng 60.","notes":"RRF"}
+{"id":"rerank-01","question":"Reranker mặc định của PBL6 là model nào và chạy bằng công nghệ gì?","reference":"Reranker mặc định là jinaai/jina-reranker-v2-base-multilingual, chạy bằng fastembed ONNX.","notes":"Reranker"}
+{"id":"rerank-02","question":"Sau RRF, hệ thống lấy bao nhiêu ứng viên để rerank và chọn bao nhiêu chunk cuối cùng?","reference":"Hệ thống lấy tối đa 24 ứng viên để rerank và chọn top_k chunk cuối cùng, mặc định top_k bằng 4.","notes":"Rerank candidates"}
+{"id":"chunking-01","question":"Chunking tài liệu dùng CHUNK_SIZE và CHUNK_OVERLAP mặc định là bao nhiêu?","reference":"CHUNK_SIZE mặc định là 800 ký tự và CHUNK_OVERLAP mặc định là 150.","notes":"Chunking"}
+{"id":"generation-01","question":"Model LLM mặc định của PBL6 qua Ollama là gì?","reference":"Model LLM mặc định là qwen2.5:3b.","notes":"Generation"}
+{"id":"evaluation-01","question":"Benchmark Ragas của PBL6 dùng những chỉ số nào?","reference":"Ragas đo context_precision, context_recall, faithfulness, answer_relevancy và answer_correctness.","notes":"Evaluation"}
+{"id":"auth-01","question":"Frontend PBL6 lưu JWT token ở đâu và gửi token như thế nào?","reference":"Frontend lưu token trong localStorage với key pbl6_access_token và gửi header Authorization cho các API workspace, tài liệu và chat.","notes":"Authentication"}

@@ -15,10 +15,6 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 DATABASE_PATH = DATA_DIR / "knowledge.db"
 
-    # Cấu hình AI & LLM
-    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    DEFAULT_LLM_MODEL: str = os.getenv("DEFAULT_LLM_MODEL", "qwen2.5:3b")
-
 # Cấu hình AI & LLM
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "qwen2.5:3b")
@@ -30,9 +26,19 @@ CHUNK_SIZE = 800       # ký tự mỗi chunk
 CHUNK_OVERLAP = 150    # độ gối đầu giữa các chunk
 TOP_K_RETRIEVAL = 4    # số chunk lấy ra đưa vào LLM
 
+# Hybrid retrieval: lấy rộng rồi fuse bằng RRF, sau đó rerank.
+RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "6"))
+RRF_K = int(os.getenv("RRF_K", "60"))
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+RERANK_MODEL = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "24"))
+RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
+
 # Search, embedding and network fallback
 ENABLE_DENSE_RETRIEVAL = os.getenv("ENABLE_DENSE_RETRIEVAL", "true").lower() == "true"
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence_transformers")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
 WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "true").lower() == "true"
 DUCKDUCKGO_API_URL = os.getenv("DUCKDUCKGO_API_URL", "https://api.duckduckgo.com/")
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", "5"))

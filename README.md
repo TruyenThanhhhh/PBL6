@@ -83,8 +83,9 @@ ollama pull qwen3-vl:2b-instruct
 Model này được ưu tiên riêng cho câu hỏi có ảnh; chat văn bản vẫn dùng `qwen2.5:3b`. Backend tự dùng `qwen2.5vl:3b` nếu model vision cũ đã có sẵn. Qwen3-VL yêu cầu Ollama 0.12.7 trở lên.
 
 ### Bước 4: Khởi Chạy Ứng Dụng
-* **Cách 1:** Nhấp đúp vào file `start_app.bat` ở thư mục gốc.
-* **Cách 2:** Chạy bằng dòng lệnh:
+* **Cách 1 (khuyến nghị):** Nhấp đúp vào file `start_all.bat` ở thư mục gốc để chạy cả backend và frontend.
+* **Cách 2:** Chạy riêng backend bằng `start_app.bat`.
+* **Cách 3:** Chạy bằng dòng lệnh:
 ```bash
 cd sourcecode/backend
 python run.py
@@ -98,7 +99,7 @@ cd sourcecode/frontend
 npm install
 npm run dev
 ```
-* Mở **http://localhost:5173**
+* Mở **http://localhost:5174**
 * Hoặc chạy `start_frontend.bat`
 * Chi tiết: [`sourcecode/frontend/README.md`](./sourcecode/frontend/README.md)
 

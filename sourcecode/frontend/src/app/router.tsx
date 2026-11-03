@@ -10,10 +10,13 @@ import { SourceViewerPage } from "@/features/source-viewer/SourceViewerPage"
 import { StudyToolsPage } from "@/features/study-tools/StudyToolsPage"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { DesignSystemPage } from "@/features/design-system/DesignSystemPage"
+import { LoginPage } from "@/features/auth/LoginPage"
 
 export function AppRouter() {
   return (
     <Routes>
+      <Route path="/login" element={<LoginPage />} />
+
       {/* Workspace Hub (Dashboard) - Trang danh sách không gian làm việc */}
       <Route path="/" element={<WorkspaceHubPage />} />
       <Route path="/hub" element={<WorkspaceHubPage />} />

@@ -12,7 +12,7 @@ npm install
 npm run dev
 ```
 
-Mở http://localhost:5173
+Mở http://localhost:5174
 
 Backend FastAPI (tuỳ chọn, cổng 8000):
 

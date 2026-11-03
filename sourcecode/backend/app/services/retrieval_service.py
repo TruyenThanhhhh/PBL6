@@ -3,9 +3,16 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from app.config import TOP_K_RETRIEVAL, EMBEDDING_MODEL
+from app.config import (
+    EMBEDDING_MODEL,
+    RERANK_MAX_CANDIDATES,
+    RETRIEVAL_CANDIDATE_MULTIPLIER,
+    RRF_K,
+    TOP_K_RETRIEVAL,
+)
 from app.database import get_db_connection
 from app.services.embedding_service import embed_texts, unpack_vector
+from app.services.reranker_service import rerank_documents
 
 
 def _cosine(left: List[float], right: List[float]) -> float:
@@ -22,6 +29,7 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
         cursor = conn.cursor()
         clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         tokens = [token for token in clean_query.split() if len(token) > 1]
+        candidate_limit = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
         document_filter = " AND c.document_id = ?" if document_id else ""
         document_params = (document_id,) if document_id else ()
         sparse: List[Dict[str, Any]] = []
@@ -37,7 +45,7 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                     WHERE chunks_fts MATCH ? AND c.workspace_id = ?{document_filter}
                     ORDER BY score ASC LIMIT ?
                 """.format(document_filter=document_filter),
-                    (match_query, workspace_id, *document_params, max(top_k * 4, top_k)))
+                    (match_query, workspace_id, *document_params, candidate_limit))
                 sparse = [dict(row) for row in cursor.fetchall()]
             except Exception:
                 # FTS syntax differences or a damaged index should not take down chat.
@@ -66,7 +74,7 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                 item["score"] = _cosine(query_vectors[0], vector)
                 dense.append(item)
             dense.sort(key=lambda item: item["score"], reverse=True)
-            dense = dense[:max(top_k * 4, top_k)]
+            dense = dense[:candidate_limit]
 
         # Reciprocal Rank Fusion keeps scores from the two retrieval systems comparable.
         merged: Dict[str, Dict[str, Any]] = {}
@@ -76,12 +84,13 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
                 if chunk_id not in merged:
                     merged[chunk_id] = {key: value for key, value in item.items() if key != "score"}
                     merged[chunk_id]["rrf_score"] = 0.0
-                merged[chunk_id]["rrf_score"] += 1.0 / (60 + rank)
+                merged[chunk_id]["rrf_score"] += 1.0 / (RRF_K + rank)
         ranked = sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
 
         # A direct question about a named file (for example, "Data.txt chứa gì?")
         # should retrieve that file even when its name is absent from extracted text.
         query_terms = {term.lower() for term in tokens if len(term) > 2}
+        named_ids: set[str] = set()
         if query_terms:
             cursor.execute("""
                 SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
@@ -101,6 +110,26 @@ def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RET
             named_ids = {item["chunk_id"] for item in named_matches}
             ranked = named_matches + [item for item in ranked if item["chunk_id"] not in named_ids]
 
-        return ranked[:top_k]
+        if named_ids:
+            pinned = [item for item in ranked if item["chunk_id"] in named_ids][:top_k]
+            pinned = rerank_documents(query, pinned, len(pinned), max_candidates=len(pinned))
+            remaining = [item for item in ranked if item["chunk_id"] not in named_ids]
+            if len(pinned) < top_k:
+                remaining = rerank_documents(
+                    query,
+                    remaining,
+                    top_k - len(pinned),
+                    max_candidates=RERANK_MAX_CANDIDATES,
+                )
+            else:
+                remaining = []
+            return pinned + remaining
+
+        return rerank_documents(
+            query,
+            ranked,
+            top_k,
+            max_candidates=RERANK_MAX_CANDIDATES,
+        )
     finally:
         conn.close()

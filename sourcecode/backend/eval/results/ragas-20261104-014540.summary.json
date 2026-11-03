@@ -1,0 +1,11 @@
+{
+  "judge_model": "qwen2.5:3b",
+  "samples": 1,
+  "metrics": {
+    "faithfulness": NaN,
+    "answer_relevancy": NaN,
+    "llm_context_precision_with_reference": NaN,
+    "context_recall": NaN,
+    "answer_correctness": NaN
+  }
+}

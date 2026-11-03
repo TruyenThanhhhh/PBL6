@@ -1,0 +1,11 @@
+{
+  "judge_model": "qwen2.5:3b",
+  "samples": 1,
+  "metrics": {
+    "faithfulness": 0.75,
+    "answer_relevancy": 0.6118148285127479,
+    "llm_context_precision_with_reference": 0.9999999999,
+    "context_recall": 1.0,
+    "answer_correctness": 0.557843459308653
+  }
+}

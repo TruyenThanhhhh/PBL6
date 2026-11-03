@@ -1,12 +1,16 @@
 import type { AIMode, KnowledgeDocument, SystemStatus, Workspace } from "@/types"
 import { MOCK_ANSWER } from "@/store/app-store"
+import { authHeaders, clearSession } from "@/services/auth-service"
 import { nowIso, uid } from "@/utils/format"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init)
+  const headers = new Headers(init?.headers)
+  Object.entries(authHeaders()).forEach(([key, value]) => headers.set(key, value))
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   if (!res.ok) {
+    if (res.status === 401) clearSession()
     const text = await res.text()
     throw new Error(text || `HTTP ${res.status}`)
   }
@@ -37,6 +41,39 @@ export async function fetchWorkspaces(): Promise<Workspace[]> {
     createdAt: w.created_at ?? nowIso(),
     updatedAt: w.created_at ?? nowIso(),
   }))
+}
+
+export async function createWorkspaceApi(name: string, description = ""): Promise<Workspace> {
+  const data = await request<{ workspace: { id: string; name: string; description?: string } }>(
+    "/api/v1/workspaces",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    },
+  )
+  return {
+    id: data.workspace.id,
+    name: data.workspace.name,
+    description: data.workspace.description ?? "",
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }
+}
+
+export async function updateWorkspaceApi(workspaceId: string, name: string, description = "") {
+  return request<{ workspace: { id: string; name: string; description?: string } }>(
+    `/api/v1/workspaces/${workspaceId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    },
+  )
+}
+
+export async function deleteWorkspaceApi(workspaceId: string) {
+  return request<{ message: string }>(`/api/v1/workspaces/${workspaceId}`, { method: "DELETE" })
 }
 
 export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocument[]> {
@@ -95,6 +132,7 @@ export function uploadDocumentWithProgress(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${API_BASE}/api/v1/workspaces/${workspaceId}/documents/upload`)
+    Object.entries(authHeaders()).forEach(([key, value]) => xhr.setRequestHeader(key, value))
 
     if (options?.signal) {
       if (options.signal.aborted) {

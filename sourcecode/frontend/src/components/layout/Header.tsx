@@ -8,6 +8,8 @@ import {
   ChevronRight,
   FileUp,
   FolderOpen,
+  LogIn,
+  LogOut,
   Menu,
   Moon,
   MoreHorizontal,
@@ -26,11 +28,15 @@ import {
   Tooltip,
 } from "@/components/ui"
 import { hasDuplicateName } from "@/features/workspaces/workspace-utils"
+import { useAuthSession } from "@/hooks/useAuthSession"
+import { deleteWorkspaceApi, updateWorkspaceApi } from "@/services/api"
+import { logout } from "@/services/auth-service"
 import { useAppStore } from "@/store/app-store"
 import { cn } from "@/utils/cn"
 
 export function AppHeader() {
   const navigate = useNavigate()
+  const { user, authenticated } = useAuthSession()
   const setMobile = useAppStore((s) => s.setMobileNavOpen)
   const status = useAppStore((s) => s.status)
   const theme = useAppStore((s) => s.theme)
@@ -194,6 +200,39 @@ export function AppHeader() {
             </button>
           </Tooltip>
 
+          {/* Tài khoản: đăng nhập hoặc đăng xuất */}
+          <Tooltip
+            content={authenticated ? `Đang đăng nhập: ${user?.email ?? ""}` : "Đăng nhập để dùng backend"}
+            side="bottom"
+          >
+            {authenticated ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2 text-xs text-[#526B68] hover:bg-[#F1F8F6] hover:text-[#0B1716]"
+                onClick={() => {
+                  logout()
+                  navigate("/login")
+                }}
+                aria-label="Đăng xuất"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Đăng xuất</span>
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2 text-xs text-[#0F766E] hover:bg-[#F1F8F6]"
+                onClick={() => navigate("/login")}
+                aria-label="Đăng nhập"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Đăng nhập</span>
+              </Button>
+            )}
+          </Tooltip>
+
           {/* Nút Cài đặt */}
           <Tooltip content="Cài đặt hệ thống & mô hình" side="bottom">
             <Button
@@ -275,11 +314,20 @@ export function AppHeader() {
         validate={validateWorkspaceName}
         confirmLabel="Lưu thay đổi"
         onClose={() => setEditOpen(false)}
-        onSubmit={(name, description) => {
+        onSubmit={async (name, description) => {
           if (!currentWs) return
-          updateWorkspace(currentWs.id, { name, description })
-          toast({ title: "Đã cập nhật Workspace", tone: "success" })
-          setEditOpen(false)
+          try {
+            if (authenticated) await updateWorkspaceApi(currentWs.id, name, description)
+            updateWorkspace(currentWs.id, { name, description })
+            toast({ title: "Đã cập nhật Workspace", tone: "success" })
+            setEditOpen(false)
+          } catch (err) {
+            toast({
+              title: "Không thể cập nhật Workspace",
+              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+              tone: "error",
+            })
+          }
         }}
       />
 
@@ -290,12 +338,26 @@ export function AppHeader() {
         description={`Bạn có chắc muốn xóa "${currentWs?.name}"? Toàn bộ tài liệu và lịch sử hội thoại trong không gian này sẽ bị xóa.`}
         confirmLabel="Xóa Workspace"
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!currentWs) return
-          deleteWorkspace(currentWs.id)
-          toast({ title: "Đã xóa Workspace", description: currentWs.name, tone: "info" })
-          setDeleteOpen(false)
-          navigate("/hub")
+          if (currentWs.id === "default") {
+            toast({ title: "Không thể xóa workspace mặc định", tone: "error" })
+            setDeleteOpen(false)
+            return
+          }
+          try {
+            if (authenticated) await deleteWorkspaceApi(currentWs.id)
+            deleteWorkspace(currentWs.id)
+            toast({ title: "Đã xóa Workspace", description: currentWs.name, tone: "info" })
+            setDeleteOpen(false)
+            navigate("/hub")
+          } catch (err) {
+            toast({
+              title: "Không thể xóa Workspace",
+              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+              tone: "error",
+            })
+          }
         }}
       />
     </>
