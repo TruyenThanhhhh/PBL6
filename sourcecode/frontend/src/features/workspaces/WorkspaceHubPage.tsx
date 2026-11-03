@@ -4,15 +4,7 @@ import {
   Activity,
   ArrowRight,
   ArrowUpDown,
-  Bot,
-  BrainCircuit,
-  Clock,
-  FileCheck2,
-  FileText,
   FolderKanban,
-  FolderPlus,
-  Folders,
-  Languages,
   Layers,
   MessageSquare,
   Moon,
@@ -21,7 +13,6 @@ import {
   Plus,
   Search,
   Settings,
-  ShieldCheck,
   Sliders,
   Sun,
   Trash2,
@@ -45,55 +36,96 @@ import { cn } from "@/utils/cn"
 
 type SortOption = "updated" | "name" | "documents"
 
+/* ============================================================================
+   BỘ ICON SVG TỐI GIẢN, CHUYÊN NGHIỆP (STROKE 1.65PX CHUẨN EDITORIAL / MOTIVO)
+============================================================================ */
+
+function IconStatWorkspace() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4.5 w-4.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7.5" height="7.5" rx="2" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="2" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="2" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" />
+    </svg>
+  )
+}
+
+function IconStatDocuments() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4.5 w-4.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.5 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5L14.5 2Z" />
+      <path d="M14 2v5h5" />
+      <path d="M9 13h6" />
+      <path d="M9 17h4" />
+    </svg>
+  )
+}
+
+function IconStatChunks() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4.5 w-4.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3 8.5 4.75L12 12.5 3.5 7.75 12 3Z" />
+      <path d="m3.5 12.25 8.5 4.75 8.5-4.75" />
+      <path d="m3.5 16.75 8.5 4.75 8.5-4.75" />
+    </svg>
+  )
+}
+
+function IconStatStorage() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4.5 w-4.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  )
+}
+
 /**
- * Bảng màu nhận diện cho từng thẻ Workspace để tạo điểm nhấn thị giác rõ nét,
- * lấy cảm hứng từ sắc xanh Teal, Ice Blue, Indigo và Mint của Motivo.
+ * Icon chuyên nghiệp cho từng thẻ Workspace (nét mảnh, hình học hiện đại)
  */
-function getWorkspaceVisualMeta(category?: string, index = 0) {
+function WorkspaceGlyph({ category, index }: { category?: string; index: number }) {
   const key = category || ["Dự án", "Kỹ thuật", "Nghiên cứu", "Đại học"][index % 4]
   switch (key) {
     case "Kỹ thuật":
-      return {
-        accentBar: "from-[#0284C7] to-[#38BDF8]",
-        iconBoxClass: "bg-[#0284C7] text-white shadow-sm shadow-[#0284C7]/25",
-        badgeClass: "bg-[#E0F2FE] text-[#0369A1] border-[#BAE6FD]",
-        Icon: Activity,
-      }
+      return (
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="16 18 22 12 16 6" />
+          <polyline points="8 6 2 12 8 18" />
+          <line x1="13.5" y1="4" x2="10.5" y2="20" />
+        </svg>
+      )
     case "Nghiên cứu":
-      return {
-        accentBar: "from-[#4F46E5] to-[#818CF8]",
-        iconBoxClass: "bg-[#4F46E5] text-white shadow-sm shadow-[#4F46E5]/25",
-        badgeClass: "bg-[#EEF2FF] text-[#4338CA] border-[#C7D2FE]",
-        Icon: Bot,
-      }
+      return (
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+          <path d="M8.5 11h5" />
+          <path d="M11 8.5v5" />
+        </svg>
+      )
     case "Ngoại ngữ":
-      return {
-        accentBar: "from-[#0D9488] to-[#2DD4BF]",
-        iconBoxClass: "bg-[#0D9488] text-white shadow-sm shadow-[#0D9488]/25",
-        badgeClass: "bg-[#CCFBF1] text-[#0F766E] border-[#99F6E4]",
-        Icon: Languages,
-      }
+      return (
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a2.5 2.5 0 0 1 0-5H20" />
+          <path d="M8.5 7h7" />
+          <path d="M8.5 11h4" />
+        </svg>
+      )
     case "Đại học":
-      return {
-        accentBar: "from-[#0F766E] to-[#14B8A6]",
-        iconBoxClass: "bg-[#0F766E] text-white shadow-sm shadow-[#0F766E]/25",
-        badgeClass: "bg-[#DFF5F0] text-[#0F766E] border-[#99F6E4]",
-        Icon: ShieldCheck,
-      }
-    case "Dự án":
-      return {
-        accentBar: "from-[#115E59] to-[#0D9488]",
-        iconBoxClass: "bg-[#115E59] text-white shadow-sm shadow-[#115E59]/25",
-        badgeClass: "bg-[#E0F5F0] text-[#115E59] border-[#A7F3D0]",
-        Icon: FolderKanban,
-      }
+      return (
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 6a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4a2 2 0 0 1-2-2V6Z" />
+          <path d="M22 6a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h5a2 2 0 0 0 2-2V6Z" />
+        </svg>
+      )
     default:
-      return {
-        accentBar: "from-[#0D9488] to-[#34D399]",
-        iconBoxClass: "bg-[#0D9488] text-white shadow-sm shadow-[#0D9488]/25",
-        badgeClass: "bg-[#E4F5F2] text-[#0F766E] border-[#A7F3D0]",
-        Icon: Folders,
-      }
+      return (
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4.17a2 2 0 0 1 1.41.59l1.34 1.34a2 2 0 0 0 1.41.59H18.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-10Z" />
+        </svg>
+      )
   }
 }
 
@@ -195,7 +227,7 @@ export function WorkspaceHubPage() {
       : null
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#EEF4F3] text-[#0B1716] antialiased selection:bg-[#BCECE0] selection:text-[#0B1716]">
+    <div className="flex min-h-screen flex-col bg-[#F1F5F4] text-[#0B1716] antialiased selection:bg-[#BCECE0] selection:text-[#0B1716]">
       {/* =====================================================================
           PHẦN 1: THANH DASHBOARD (TOP HEADER)
       ===================================================================== */}
@@ -323,9 +355,10 @@ export function WorkspaceHubPage() {
 
       {/* =====================================================================
           PHẦN 2: KHUNG CHÀO MỪNG (TRÁI) & 4 Ô THỐNG KÊ HÌNH VUÔNG 2x2 (PHẢI)
+          Giữ nguyên chiều cao vùng nền như cũ, tăng nhẹ kích thước 4 ô thống kê
       ===================================================================== */}
       <section
-        className="relative overflow-hidden border-b border-[#D2E5E1] bg-gradient-to-br from-[#DCF2EE] via-[#E8F6F3] to-[#DFF0FA] py-10"
+        className="relative flex min-h-[212px] items-center overflow-hidden border-b border-[#D2E5E1] bg-gradient-to-br from-[#DCF2EE] via-[#E8F6F3] to-[#DFF0FA] py-8"
         data-purpose="hero-and-metrics-section"
       >
         {/* Hiệu ứng ánh sáng nền kiểu Motivo */}
@@ -338,7 +371,7 @@ export function WorkspaceHubPage() {
           className="pointer-events-none absolute right-10 bottom-0 h-64 w-64 rounded-full bg-[#BAE6FD]/45 blur-3xl"
         />
 
-        <div className="relative mx-auto max-w-6xl px-6">
+        <div className="relative mx-auto w-full max-w-6xl px-6">
           <div className="grid grid-cols-1 items-center gap-8 lg:grid-cols-12">
             {/* Bên trái: Lời chào với Tên nổi bật + Slogan ngắn gọn */}
             <div className="space-y-3.5 lg:col-span-7">
@@ -355,63 +388,63 @@ export function WorkspaceHubPage() {
               </p>
             </div>
 
-            {/* Bên phải: 4 ô thống kê tối giản (Icon + ít chữ, kích thước nhỏ gọn 2x2) */}
-            <div className="grid w-full max-w-[310px] grid-cols-2 gap-2.5 lg:col-span-5 lg:ml-auto">
+            {/* Bên phải: 4 ô thống kê 2x2 được tăng kích thước vừa vặn, cân đối */}
+            <div className="grid w-full max-w-[376px] grid-cols-2 gap-3 lg:col-span-5 lg:ml-auto">
               {/* Ô 1: Workspace */}
-              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#DFF5F0] text-[#0F766E]">
-                  <Folders className="h-4 w-4" />
+              <div className="flex items-center gap-3.5 rounded-2xl border border-white/95 bg-white/92 px-4 py-3 shadow-[0_6px_20px_-6px_rgba(11,35,32,0.06)] backdrop-blur-xs">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#DFF5F0] text-[#0F766E]">
+                  <IconStatWorkspace />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
+                  <div className="font-sans text-lg leading-tight font-bold text-[#0B1716] sm:text-[19px]">
                     {workspaces.length}
                   </div>
-                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                  <div className="mt-0.5 truncate text-xs font-medium text-[#5C7875]">
                     Workspace
                   </div>
                 </div>
               </div>
 
               {/* Ô 2: Tài liệu */}
-              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#E0F2FE] text-[#0284C7]">
-                  <FileCheck2 className="h-4 w-4" />
+              <div className="flex items-center gap-3.5 rounded-2xl border border-white/95 bg-white/92 px-4 py-3 shadow-[0_6px_20px_-6px_rgba(11,35,32,0.06)] backdrop-blur-xs">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#E0F2FE] text-[#0284C7]">
+                  <IconStatDocuments />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
+                  <div className="font-sans text-lg leading-tight font-bold text-[#0B1716] sm:text-[19px]">
                     {totalDocs}
                   </div>
-                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                  <div className="mt-0.5 truncate text-xs font-medium text-[#5C7875]">
                     Tài liệu
                   </div>
                 </div>
               </div>
 
               {/* Ô 3: Chunks */}
-              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#EEF2FF] text-[#4F46E5]">
-                  <BrainCircuit className="h-4 w-4" />
+              <div className="flex items-center gap-3.5 rounded-2xl border border-white/95 bg-white/92 px-4 py-3 shadow-[0_6px_20px_-6px_rgba(11,35,32,0.06)] backdrop-blur-xs">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#EEF2FF] text-[#4F46E5]">
+                  <IconStatChunks />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
+                  <div className="font-sans text-lg leading-tight font-bold text-[#0B1716] sm:text-[19px]">
                     {formattedChunks}
                   </div>
-                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                  <div className="mt-0.5 truncate text-xs font-medium text-[#5C7875]">
                     Chunks
                   </div>
                 </div>
               </div>
 
               {/* Ô 4: Bộ nhớ */}
-              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#CCFBF1] text-[#0F766E]">
-                  <Clock className="h-4 w-4" />
+              <div className="flex items-center gap-3.5 rounded-2xl border border-white/95 bg-white/92 px-4 py-3 shadow-[0_6px_20px_-6px_rgba(11,35,32,0.06)] backdrop-blur-xs">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#CCFBF1] text-[#0F766E]">
+                  <IconStatStorage />
                 </div>
                 <div className="min-w-0">
-                  <div className="truncate font-sans text-base leading-tight font-bold text-[#0B1716]">
+                  <div className="truncate font-sans text-lg leading-tight font-bold text-[#0B1716] sm:text-[19px]">
                     {totalSizeDisplay}
                   </div>
-                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                  <div className="mt-0.5 truncate text-xs font-medium text-[#5C7875]">
                     Bộ nhớ
                   </div>
                 </div>
@@ -423,9 +456,9 @@ export function WorkspaceHubPage() {
 
       {/* =====================================================================
           PHẦN 3: CÁC WORKSPACE GẦN ĐÂY (RECENT WORKSPACES SECTION)
-          Thiết kế thẻ có độ tương phản cao, nổi bật rõ trên nền trang:
-          - Đã xóa chữ "Vào không gian"
-          - Đã đổi "Hỏi đáp AI" thành nút "Mở" sắc nét
+          Thiết kế chuyên nghiệp chuẩn SaaS (Linear / Motivo):
+          - Icon vector nét mảnh tinh tế, không dùng khối màu AI lòe loẹt
+          - Khoảng cách chữ (Typography & Spacing) chặt chẽ, dễ đọc
       ===================================================================== */}
       <main
         className="mx-auto w-full max-w-6xl flex-1 space-y-6 px-6 py-10"
@@ -434,18 +467,18 @@ export function WorkspaceHubPage() {
         {/* Header của Phần 3 + Thanh Tìm kiếm & Sắp xếp */}
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div className="flex items-center gap-3">
-            <h2 className="font-editorial-serif text-2xl font-medium text-[#0B1716] sm:text-3xl">
+            <h2 className="font-editorial-serif text-2xl font-medium text-[#0B1716] sm:text-[28px]">
               Không gian làm việc gần đây
             </h2>
-            <span className="rounded-full bg-[#0F766E] px-2.5 py-0.5 text-xs font-bold text-white shadow-2xs">
+            <span className="rounded-full bg-[#DFF5F0] px-2.5 py-0.5 text-xs font-bold text-[#0F766E]">
               {filteredWorkspaces.length}
             </span>
           </div>
 
-          {/* Thanh Tìm kiếm (không có ⌘K) & Nút Sắp xếp */}
+          {/* Thanh Tìm kiếm & Nút Sắp xếp */}
           <div className="flex flex-wrap items-center gap-3 sm:flex-nowrap">
-            <div className="relative flex w-full items-center gap-2 rounded-full border border-[#BDD6D1] bg-white px-4 py-2 shadow-xs transition-all focus-within:border-[#0F766E] focus-within:ring-2 focus-within:ring-[#0F766E]/15 sm:w-72">
-              <Search className="h-4 w-4 shrink-0 text-[#526E6B]" />
+            <div className="relative flex w-full items-center gap-2 rounded-full border border-[#C8DED9] bg-white px-4 py-2 shadow-2xs transition-all focus-within:border-[#0F766E] focus-within:ring-2 focus-within:ring-[#0F766E]/15 sm:w-72">
+              <Search className="h-4 w-4 shrink-0 text-[#647D7A]" />
               <input
                 ref={searchInputRef}
                 value={searchQuery}
@@ -461,7 +494,7 @@ export function WorkspaceHubPage() {
               trigger={
                 <button
                   type="button"
-                  className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#BDD6D1] bg-white px-3.5 py-2 text-xs font-semibold text-[#233D3A] shadow-xs transition hover:border-[#0F766E] hover:bg-[#F4FAF9]"
+                  className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#C8DED9] bg-white px-3.5 py-2 text-xs font-semibold text-[#233D3A] shadow-2xs transition hover:border-[#0F766E] hover:bg-[#F4FAF9]"
                 >
                   <ArrowUpDown className="h-3.5 w-3.5 text-[#0F766E]" />
                   <span>
@@ -487,10 +520,9 @@ export function WorkspaceHubPage() {
           </div>
         </div>
 
-        {/* Lưới thẻ Workspace nổi bật */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {/* Lưới thẻ Workspace chuyên nghiệp */}
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
           {filteredWorkspaces.map((w, idx) => {
-            const meta = getWorkspaceVisualMeta(w.category, idx)
             const wsDocs = documents.filter((d) => d.workspaceId === w.id)
             const wsConvs = conversations.filter((c) => c.workspaceId === w.id)
             const docCount = wsDocs.length
@@ -499,38 +531,24 @@ export function WorkspaceHubPage() {
               <article
                 key={w.id}
                 onClick={() => handleEnterWorkspace(w, false)}
-                className="group relative flex cursor-pointer flex-col justify-between overflow-hidden rounded-3xl border border-[#C3DDD8] bg-white p-6 shadow-[0_14px_34px_-10px_rgba(11,35,32,0.10),0_2px_6px_rgba(11,35,32,0.04)] transition-all duration-300 hover:-translate-y-1.5 hover:border-[#0F766E] hover:shadow-[0_24px_48px_-12px_rgba(15,118,110,0.22)]"
+                className={cn(
+                  "group flex cursor-pointer flex-col justify-between rounded-2xl border border-[#CEDFD9] bg-white p-5",
+                  "shadow-[0_4px_20px_-4px_rgba(11,25,23,0.06),0_1px_3px_rgba(11,25,23,0.03)]",
+                  "transition-all duration-200 hover:-translate-y-1 hover:border-[#0F766E]/60 hover:shadow-[0_16px_36px_-10px_rgba(15,118,110,0.16)]",
+                )}
               >
-                {/* Dải màu nhấn phía trên thẻ giúp thẻ tách biệt hẳn khỏi nền */}
-                <div
-                  className={cn(
-                    "absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r",
-                    meta.accentBar,
-                  )}
-                />
-
-                <div className="space-y-4 pt-1">
-                  {/* Đầu thẻ: Icon đậm nổi bật + Nhãn thời gian + Menu 3 chấm */}
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3.5">
-                      <div
-                        className={cn(
-                          "flex h-12 w-12 items-center justify-center rounded-2xl transition-transform duration-200 group-hover:scale-105",
-                          meta.iconBoxClass,
-                        )}
-                      >
-                        <meta.Icon className="h-5 w-5" />
+                <div>
+                  {/* Hàng trên: Icon nét mảnh tinh tế + Danh mục/Thời gian + Menu 3 chấm */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D5E8E3] bg-[#F2F9F7] text-[#0F6E66] transition-colors duration-200 group-hover:border-[#0B1315] group-hover:bg-[#0B1315] group-hover:text-white">
+                        <WorkspaceGlyph category={w.category} index={idx} />
                       </div>
-                      <div>
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider",
-                            meta.badgeClass,
-                          )}
-                        >
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-semibold tracking-wide text-[#0F766E]">
                           {w.category || "Cá nhân"}
                         </span>
-                        <span className="mt-1 block text-[11px] font-medium text-[#5C7875]">
+                        <span className="text-[11px] text-[#6E8582]">
                           Cập nhật {relativeTime(w.updatedAt)}
                         </span>
                       </div>
@@ -542,7 +560,7 @@ export function WorkspaceHubPage() {
                         trigger={
                           <button
                             type="button"
-                            className="rounded-full p-1.5 text-[#647D7A] transition hover:bg-[#EAF4F2] hover:text-[#0B1716]"
+                            className="rounded-lg p-1.5 text-[#7A9490] transition hover:bg-[#EFF6F5] hover:text-[#0B1716]"
                             title="Tùy chọn"
                             aria-label={`Tùy chọn cho ${w.name}`}
                           >
@@ -580,28 +598,23 @@ export function WorkspaceHubPage() {
                     </div>
                   </div>
 
-                  {/* Tên & Mô tả Workspace */}
-                  <div>
-                    <h3 className="text-[17px] leading-snug font-bold text-[#091514] transition-colors group-hover:text-[#0F766E]">
+                  {/* Khối Tiêu đề & Mô tả với khoảng cách chuẩn xác */}
+                  <div className="mt-4">
+                    <h3 className="text-[16px] leading-snug font-bold tracking-[-0.01em] text-[#0B1716] transition-colors group-hover:text-[#0F766E]">
                       {w.name}
                     </h3>
-                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-[#4A6663]">
+                    <p className="mt-1.5 line-clamp-2 text-[13px] leading-[1.55] text-[#526B68]">
                       {w.description || "Không gian làm việc với tài liệu và trợ lý RAG cá nhân."}
                     </p>
                   </div>
                 </div>
 
-                {/* Chân thẻ: Thông số gọn bên trái & Nút "Mở" nổi bật bên phải (Đã xóa "Vào không gian") */}
-                <div className="mt-6 flex items-center justify-between border-t border-[#E6F0EE] pt-4">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#EFF7F5] px-2.5 py-1 text-xs font-semibold text-[#1E3A37]">
-                      <FileText className="h-3.5 w-3.5 text-[#0F766E]" />
-                      <span>{docCount} tài liệu</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#EFF7F5] px-2.5 py-1 text-xs font-semibold text-[#1E3A37]">
-                      <MessageSquare className="h-3.5 w-3.5 text-[#0F766E]" />
-                      <span>{wsConvs.length} hội thoại</span>
-                    </span>
+                {/* Chân thẻ: Thông số gọn sạch bên trái + Nút "Mở" bên phải */}
+                <div className="mt-5 flex items-center justify-between border-t border-[#EBF2F0] pt-3.5">
+                  <div className="flex items-center gap-2 text-xs font-medium text-[#526B68]">
+                    <span>{docCount} tài liệu</span>
+                    <span className="text-[#CBDAD7]">&bull;</span>
+                    <span>{wsConvs.length} hội thoại</span>
                   </div>
 
                   <button
@@ -610,7 +623,7 @@ export function WorkspaceHubPage() {
                       e.stopPropagation()
                       handleEnterWorkspace(w, false)
                     }}
-                    className="group/btn inline-flex items-center gap-1.5 rounded-full bg-[#0B1315] px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-all duration-200 hover:bg-[#0F766E] hover:shadow-md"
+                    className="group/btn inline-flex items-center gap-1.5 rounded-full bg-[#0B1315] px-3.5 py-1.5 text-xs font-semibold text-white transition-all duration-200 hover:bg-[#0F766E]"
                   >
                     <span>Mở</span>
                     <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover/btn:translate-x-0.5" />
@@ -624,21 +637,17 @@ export function WorkspaceHubPage() {
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="group flex min-h-[230px] cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed border-[#9CCAC1] bg-white/75 p-6 text-center shadow-xs transition-all duration-300 hover:-translate-y-1 hover:border-[#0F766E] hover:bg-white hover:shadow-lg"
+            className="group flex min-h-[210px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#B2D0CA] bg-white/65 p-5 text-center transition-all duration-200 hover:-translate-y-1 hover:border-[#0F766E] hover:bg-white hover:shadow-md"
           >
-            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#DFF5F0] text-[#0F766E] shadow-xs transition-all duration-200 group-hover:scale-110 group-hover:bg-[#0F766E] group-hover:text-white">
-              <FolderPlus className="h-5 w-5" />
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-[#D5E8E3] bg-[#F2F9F7] text-[#0F6E66] transition-colors duration-200 group-hover:border-[#0B1315] group-hover:bg-[#0B1315] group-hover:text-white">
+              <Plus className="h-5 w-5" />
             </div>
-            <h3 className="text-base font-bold text-[#0B1716]">
+            <h3 className="text-[15px] font-bold text-[#0B1716]">
               Tạo Workspace mới
             </h3>
-            <p className="mt-1 max-w-[220px] text-xs leading-relaxed text-[#4A6663]">
-              Khởi tạo không gian độc lập cho môn học, dự án hoặc chủ đề nghiên cứu mới.
+            <p className="mt-1 max-w-[220px] text-[12px] leading-relaxed text-[#526B68]">
+              Khởi tạo không gian độc lập cho môn học hoặc dự án mới.
             </p>
-            <span className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[#0B1315] px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors group-hover:bg-[#0F766E]">
-              <span>Bắt đầu ngay</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </span>
           </button>
         </div>
       </main>
