@@ -2,26 +2,6 @@ import sqlite3
 from typing import Generator
 from app.config import DATABASE_PATH
 
-import json
-
-def init_db():
-    conn = sqlite3.connect("data/knowledge.db")
-    cursor = conn.cursor()
-    
-    # Tạo bảng lưu tài liệu & vector embedding
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS document_chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        document_id TEXT,
-        chunk_index INTEGER,
-        content TEXT,
-        embedding TEXT,  -- Lưu mảng float dưới dạng JSON string
-        metadata TEXT
-    )
-    """)
-    conn.commit()
-    conn.close()
-
 def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
@@ -89,7 +69,7 @@ def init_db():
     );
     """)
 
-    # 5. Bảng Chunk Embeddings (lưu Dense Vectors 1024 dims của BGE-M3 dạng JSON)
+    # 5. Bảng Chunk Embeddings (Dense Vectors 1024 dims lưu dưới dạng JSON array)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chunk_embeddings (
         chunk_id TEXT PRIMARY KEY,
@@ -112,7 +92,7 @@ def init_db():
     );
     """)
 
-    # 6. Bảng Chat Messages
+    # 7. Bảng Chat Messages
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_messages (
         id TEXT PRIMARY KEY,

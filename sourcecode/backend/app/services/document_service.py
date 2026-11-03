@@ -1,47 +1,16 @@
 import os
 import uuid
 import re
+import json
+import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR
 from app.database import get_db_connection
-
-import json
-import sqlite3
 from app.services.embedding_service import embedding_service
 
-class DocumentService:
-    def process_and_store_document(self, doc_id: str, content: str, metadata: dict = None):
-        # 1. Chia nhỏ văn bản (Chunking)
-        chunks = self._chunk_text(content, chunk_size=512, overlap=50)
-        
-        # 2. Sinh Vector Embedding tự động qua BGE-M3
-        embeddings = embedding_service.generate_embeddings(chunks)
-        
-        # 3. Lưu vào Database
-        conn = sqlite3.connect("data/knowledge.db")
-        cursor = conn.cursor()
-        
-        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            cursor.execute(
-                "INSERT INTO document_chunks (document_id, chunk_index, content, embedding, metadata) VALUES (?, ?, ?, ?, ?)",
-                (doc_id, idx, chunk, json.dumps(emb), json.dumps(metadata or {}))
-            )
-            
-        conn.commit()
-        conn.close()
-        return len(chunks)
-
-    def _chunk_text(self, text: str, chunk_size: int = 512, overlap: int = 50):
-        # Hàm phân tách văn bản đơn giản
-        words = text.split()
-        chunks = []
-        for i in range(0, len(words), chunk_size - overlap):
-            chunks.append(" ".join(words[i:i + chunk_size]))
-        return chunks
-
-document_service = DocumentService()
+logger = logging.getLogger(__name__)
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
     """
@@ -58,7 +27,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if extracted.strip():
                     results.append({"page": i + 1, "text": extracted})
         except Exception as e:
-            print(f"Lỗi đọc PDF: {e}")
+            logger.error(f"Lỗi đọc PDF: {e}")
             
     elif file_type == "docx":
         try:
@@ -68,7 +37,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
             if full_text.strip():
                 results.append({"page": 1, "text": full_text})
         except Exception as e:
-            print(f"Lỗi đọc DOCX: {e}")
+            logger.error(f"Lỗi đọc DOCX: {e}")
 
     elif file_type in ["pptx", "ppt"]:
         try:
@@ -82,7 +51,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if slide_texts:
                     results.append({"page": i + 1, "text": "\n".join(slide_texts)})
         except Exception as e:
-            print(f"Lỗi đọc PPTX: {e}")
+            logger.error(f"Lỗi đọc PPTX: {e}")
             
     elif file_type in ["txt", "md", "py", "json", "csv"]:
         try:
@@ -91,13 +60,13 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 if content.strip():
                     results.append({"page": 1, "text": content})
         except Exception as e:
-            print(f"Lỗi đọc text/md: {e}")
+            logger.error(f"Lỗi đọc text/md: {e}")
             
     return results
 
 def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     """
-    Chia nhỏ văn bản thông minh bám theo dấu câu và dòng trống
+    Chia nhỏ văn bản thông minh bám theo dấu câu và ngắt dòng logic
     """
     text = re.sub(r'\r\n', '\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
@@ -134,7 +103,8 @@ def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int =
 
 def process_and_index_document(workspace_id: str, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
     """
-    Xử lý file tải lên: lưu trữ, trích xuất text, chunking và lưu vào SQLite + FTS
+    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, sinh vector BGE-M3
+    và lưu đồng bộ vào SQLite (document_chunks, chunks_fts, chunk_embeddings).
     """
     doc_id = str(uuid.uuid4())
     ext = file_name.split(".")[-1].lower() if "." in file_name else "txt"
@@ -148,7 +118,6 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
     # 1. Trích xuất text sạch
     pages = extract_text_from_file(saved_path, ext)
     if not pages:
-        # Nếu không trích xuất được text, cố gắng decode utf-8 an toàn (chỉ khi là file văn bản)
         if ext in ["txt", "md", "csv", "json"]:
             text = file_bytes.decode("utf-8", errors="ignore")
             if text.strip():
@@ -170,8 +139,18 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
                 "content": c
             })
             chunk_index += 1
-            
-    # 3. Lưu vào Database
+
+    # 3. Sinh Dense Embeddings (BGE-M3) cho toàn bộ chunks
+    embeddings = []
+    if all_chunks:
+        chunk_texts = [c["content"] for c in all_chunks]
+        try:
+            embeddings = embedding_service.generate_embeddings(chunk_texts)
+        except Exception as e:
+            logger.warning(f"Cảnh báo: Không thể sinh embedding BGE-M3: {e}")
+            embeddings = [[] for _ in all_chunks]
+
+    # 4. Lưu vào Database
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -180,18 +159,25 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (doc_id, workspace_id, file_name, ext, file_size, str(saved_path), len(all_chunks), "indexed"))
     
-    for c in all_chunks:
+    for c, emb in zip(all_chunks, embeddings):
         cursor.execute("""
         INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content)
         VALUES (?, ?, ?, ?, ?, ?)
         """, (c["id"], c["document_id"], c["workspace_id"], c["chunk_index"], c["page_number"], c["content"]))
         
-        # Đánh chỉ mục Full-Text Search (FTS5)
+        # Đánh chỉ mục Full-Text Search (FTS5 BM25)
         clean_fts_content = re.sub(r'["\']', '', c["content"])
         cursor.execute("""
         INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content)
         VALUES (?, ?, ?, ?)
         """, (c["id"], c["document_id"], c["workspace_id"], clean_fts_content))
+
+        # Lưu Dense Vector Embedding
+        if emb:
+            cursor.execute("""
+            INSERT INTO chunk_embeddings (chunk_id, document_id, workspace_id, embedding_json)
+            VALUES (?, ?, ?, ?)
+            """, (c["id"], c["document_id"], c["workspace_id"], json.dumps(emb)))
         
     conn.commit()
     conn.close()
@@ -203,3 +189,26 @@ def process_and_index_document(workspace_id: str, file_name: str, file_bytes: by
         "total_chunks": len(all_chunks),
         "status": "indexed"
     }
+
+class DocumentServiceWrapper:
+    """Wrapper tương thích ngược hướng đối tượng"""
+    def process_and_store_document(self, doc_id: str, content: str, metadata: dict = None):
+        chunks = recursive_chunk_text(content)
+        embeddings = embedding_service.generate_embeddings(chunks) if chunks else []
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            chunk_id = str(uuid.uuid4())
+            cursor.execute(
+                "INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content) VALUES (?, ?, ?, ?, ?, ?)",
+                (chunk_id, doc_id, "default", idx, 1, chunk)
+            )
+            cursor.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, document_id, workspace_id, embedding_json) VALUES (?, ?, ?, ?)",
+                (chunk_id, doc_id, "default", json.dumps(emb))
+            )
+        conn.commit()
+        conn.close()
+        return len(chunks)
+
+document_service = DocumentServiceWrapper()
