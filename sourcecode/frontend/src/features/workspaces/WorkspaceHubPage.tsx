@@ -126,8 +126,6 @@ export function WorkspaceHubPage() {
 
   // Calculate Metrics
   const totalDocs = documents.length
-  const readyDocs = documents.filter((d) => d.status === "ready").length
-  const groundedPct = totalDocs > 0 ? Math.round((readyDocs / totalDocs) * 100) : 100
 
   const totalChunks = useMemo(
     () => documents.reduce((acc, d) => acc + (d.totalChunks || 0), 0),
@@ -357,82 +355,65 @@ export function WorkspaceHubPage() {
               </p>
             </div>
 
-            {/* Bên phải: 4 ô thống kê xếp thành hình vuông 2x2 */}
-            <div className="grid grid-cols-2 gap-3.5 lg:col-span-5">
+            {/* Bên phải: 4 ô thống kê tối giản (Icon + ít chữ, kích thước nhỏ gọn 2x2) */}
+            <div className="grid w-full max-w-[310px] grid-cols-2 gap-2.5 lg:col-span-5 lg:ml-auto">
               {/* Ô 1: Workspace */}
-              <div className="flex flex-col justify-between rounded-2xl border border-white/90 bg-white/95 p-4 shadow-[0_10px_25px_-6px_rgba(11,35,32,0.07)] backdrop-blur-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[#526E6B]">Workspace</span>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#DFF5F0] text-[#0F766E]">
-                    <Folders className="h-4.5 w-4.5" />
-                  </div>
+              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#DFF5F0] text-[#0F766E]">
+                  <Folders className="h-4 w-4" />
                 </div>
-                <div className="mt-3">
-                  <div className="font-sans text-2xl font-extrabold tracking-tight text-[#0B1716] sm:text-3xl">
+                <div className="min-w-0">
+                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
                     {workspaces.length}
                   </div>
-                  <p className="mt-0.5 text-[11px] font-medium text-[#647D7A]">
-                    Đang hoạt động
-                  </p>
+                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                    Workspace
+                  </div>
                 </div>
               </div>
 
               {/* Ô 2: Tài liệu */}
-              <div className="flex flex-col justify-between rounded-2xl border border-white/90 bg-white/95 p-4 shadow-[0_10px_25px_-6px_rgba(11,35,32,0.07)] backdrop-blur-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[#526E6B]">Tài liệu</span>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#E0F2FE] text-[#0284C7]">
-                    <FileCheck2 className="h-4.5 w-4.5" />
-                  </div>
+              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#E0F2FE] text-[#0284C7]">
+                  <FileCheck2 className="h-4 w-4" />
                 </div>
-                <div className="mt-3">
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="font-sans text-2xl font-extrabold tracking-tight text-[#0B1716] sm:text-3xl">
-                      {totalDocs}
-                    </span>
-                    <span className="rounded-full bg-[#DFF5F0] px-1.5 py-0.5 text-[10px] font-bold text-[#0F766E]">
-                      {groundedPct}%
-                    </span>
+                <div className="min-w-0">
+                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
+                    {totalDocs}
                   </div>
-                  <p className="mt-0.5 text-[11px] font-medium text-[#647D7A]">
-                    Đã lập chỉ mục
-                  </p>
+                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                    Tài liệu
+                  </div>
                 </div>
               </div>
 
-              {/* Ô 3: Đoạn trích tri thức */}
-              <div className="flex flex-col justify-between rounded-2xl border border-white/90 bg-white/95 p-4 shadow-[0_10px_25px_-6px_rgba(11,35,32,0.07)] backdrop-blur-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[#526E6B]">Tri thức</span>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#EEF2FF] text-[#4F46E5]">
-                    <BrainCircuit className="h-4.5 w-4.5" />
-                  </div>
+              {/* Ô 3: Chunks */}
+              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#EEF2FF] text-[#4F46E5]">
+                  <BrainCircuit className="h-4 w-4" />
                 </div>
-                <div className="mt-3">
-                  <div className="font-sans text-2xl font-extrabold tracking-tight text-[#0B1716] sm:text-3xl">
+                <div className="min-w-0">
+                  <div className="font-sans text-base leading-tight font-bold text-[#0B1716]">
                     {formattedChunks}
                   </div>
-                  <p className="mt-0.5 text-[11px] font-medium text-[#647D7A]">
-                    Chunks sẵn sàng
-                  </p>
+                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                    Chunks
+                  </div>
                 </div>
               </div>
 
-              {/* Ô 4: Bộ nhớ Offline */}
-              <div className="flex flex-col justify-between rounded-2xl border border-white/90 bg-white/95 p-4 shadow-[0_10px_25px_-6px_rgba(11,35,32,0.07)] backdrop-blur-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[#526E6B]">Bộ nhớ</span>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#CCFBF1] text-[#0F766E]">
-                    <Clock className="h-4.5 w-4.5" />
-                  </div>
+              {/* Ô 4: Bộ nhớ */}
+              <div className="flex items-center gap-2.5 rounded-xl border border-white/90 bg-white/90 px-3 py-2.5 shadow-xs backdrop-blur-xs">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#CCFBF1] text-[#0F766E]">
+                  <Clock className="h-4 w-4" />
                 </div>
-                <div className="mt-3">
-                  <div className="font-sans text-2xl font-extrabold tracking-tight text-[#0B1716] sm:text-3xl">
+                <div className="min-w-0">
+                  <div className="truncate font-sans text-base leading-tight font-bold text-[#0B1716]">
                     {totalSizeDisplay}
                   </div>
-                  <p className="mt-0.5 text-[11px] font-medium text-[#647D7A]">
-                    Lưu trữ cục bộ
-                  </p>
+                  <div className="truncate text-[11px] font-medium text-[#647D7A]">
+                    Bộ nhớ
+                  </div>
                 </div>
               </div>
             </div>
