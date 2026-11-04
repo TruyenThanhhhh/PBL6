@@ -114,6 +114,14 @@ def process_and_index_document(
     file_bytes: bytes,
     notebook_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # Chuẩn hóa notebook_id để tránh vi phạm FOREIGN KEY constraint
+    notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
+    if notebook_id:
+        conn_chk = get_db_connection()
+        nb_exists = conn_chk.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+        conn_chk.close()
+        if not nb_exists:
+            notebook_id = None
     """
     Xử lý file tải lên: lưu trữ, trích xuất text, chunking, sinh vector BGE-M3
     và lưu đồng bộ vào SQLite (documents, document_chunks, chunks_fts, chunk_embeddings).

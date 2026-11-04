@@ -13,11 +13,21 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
+# Tắt các thông báo kết nối kiểm tra ồn ào từ httpx và huggingface
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+
 
 @lru_cache(maxsize=1)
 def _get_sentence_transformer():
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+    try:
+        # Ưu tiên sử dụng model đã tải trong cache cục bộ để xử lý tức thì, tránh timeout mạng
+        return SentenceTransformer(EMBEDDING_MODEL, device="cpu", local_files_only=True)
+    except Exception:
+        # Tự động tải từ Hugging Face nếu máy mới chưa có file cache
+        return SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
 
 @lru_cache(maxsize=1)

@@ -209,11 +209,15 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="File tải lên không có dữ liệu")
 
     try:
+        clean_notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
         result = await run_in_threadpool(
-            process_and_index_document, workspace_id, file.filename, content, notebook_id
+            process_and_index_document, workspace_id, file.filename, content, clean_notebook_id
         )
     except ValueError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Lỗi khi xử lý và lập chỉ mục tài liệu: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý tài liệu: {str(exc)}") from exc
     return {"message": "Tài liệu đã được tải lên và lập chỉ mục thành công", "document": result}
 
 
