@@ -1,18 +1,28 @@
-import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.database import init_db
 from app.api.workspaces import router as workspaces_router
 from app.api.chat import router as chat_router
+from app.api.auth import router as auth_router
+from app.config import APP_SECRET_KEY, SESSION_HTTPS_ONLY
+
+# Khởi tạo CSDL SQLite khi server bắt đầu, dọn dẹp khi tắt
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
 app = FastAPI(
     title="Personal AI Knowledge Platform API",
     description="Backend API cho Trợ lý tri thức cá nhân đa nguồn (Hybrid RAG + Local LLM)",
-    version="0.1.0"
+    version="0.2.0",
+    lifespan=lifespan
 )
 
 # CORS Middleware cho phép kết nối từ mọi frontend
@@ -23,15 +33,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Khởi tạo CSDL SQLite khi server chạy
-@app.on_event("startup")
-def on_startup():
-    init_db()
+app.add_middleware(SessionMiddleware, secret_key=APP_SECRET_KEY, same_site="lax",
+                    https_only=SESSION_HTTPS_ONLY, session_cookie="pbl6_oauth_state")
 
 # Đăng ký API Routers
 app.include_router(workspaces_router)
 app.include_router(chat_router)
+app.include_router(auth_router)
 
 # Phục vụ Giao diện Web tĩnh nếu có
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -48,10 +56,3 @@ def serve_index():
         "docs_url": "/docs",
         "api_v1": "/api/v1"
     }
-
-@app.get("/kanban")
-def serve_kanban():
-    kanban_file = STATIC_DIR / "kanban.html"
-    if kanban_file.exists():
-        return FileResponse(str(kanban_file))
-    return {"message": "Kanban board is not available"}

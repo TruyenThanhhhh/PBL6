@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   FolderKanban,
   Layers,
+  LogOut,
   MessageSquare,
   Moon,
   MoreHorizontal,
@@ -28,6 +29,10 @@ import {
   FormField,
   Input,
 } from "@/components/ui"
+import { useSystemStatus } from "@/hooks/useSystemStatus"
+import { useAuthSession } from "@/hooks/useAuthSession"
+import { createWorkspaceApi, deleteWorkspaceApi, updateWorkspaceApi } from "@/services/api"
+import { logout } from "@/services/auth-service"
 import { useAppStore } from "@/store/app-store"
 import { formatBytes, greeting, relativeTime } from "@/utils/format"
 import { hasDuplicateName } from "@/features/workspaces/workspace-utils"
@@ -132,6 +137,8 @@ function WorkspaceGlyph({ category, index }: { category?: string; index: number 
 export function WorkspaceHubPage() {
   const navigate = useNavigate()
   const searchInputRef = useRef<HTMLInputElement>(null)
+  useSystemStatus()
+  const { user, authenticated } = useAuthSession()
 
   const workspaces = useAppStore((s) => s.workspaces)
   const documents = useAppStore((s) => s.documents)
@@ -140,6 +147,7 @@ export function WorkspaceHubPage() {
   const createWorkspace = useAppStore((s) => s.createWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
+  const mergeWorkspaces = useAppStore((s) => s.mergeWorkspacesFromBackend)
   const createConversation = useAppStore((s) => s.createConversation)
   const status = useAppStore((s) => s.status)
   const theme = useAppStore((s) => s.theme)
@@ -297,21 +305,34 @@ export function WorkspaceHubPage() {
                   title="Hồ sơ & Cài đặt hệ thống"
                 >
                   <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0F766E] text-xs font-bold text-white">
-                    SM
+                    {(user?.name || user?.email || "KH").slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="hidden text-xs font-semibold text-[#0B1716] sm:inline">
-                    Sophie Moore
+                  <span className="hidden max-w-[140px] truncate text-xs font-semibold text-[#0B1716] sm:inline">
+                    {user?.name || (authenticated ? "Tài khoản" : "Khách")}
                   </span>
                 </button>
               }
             >
-              <DropdownMenuLabel>Sophie Moore · Quản trị viên</DropdownMenuLabel>
-              <DropdownMenuItem
-                icon={<Settings className="h-3.5 w-3.5" />}
-                onClick={() => navigate("/settings")}
-              >
-                Cài đặt tài khoản
-              </DropdownMenuItem>
+              <DropdownMenuLabel>
+                {authenticated
+                  ? `${user?.name || user?.email} · Đã đăng nhập`
+                  : "Chưa đăng nhập · Dữ liệu mô phỏng"}
+              </DropdownMenuLabel>
+              {authenticated ? (
+                <DropdownMenuItem
+                  icon={<Settings className="h-3.5 w-3.5" />}
+                  onClick={() => navigate("/settings")}
+                >
+                  Cài đặt tài khoản
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  icon={<Settings className="h-3.5 w-3.5" />}
+                  onClick={() => navigate("/login")}
+                >
+                  Đăng nhập / Đăng ký
+                </DropdownMenuItem>
+              )}
 
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Cài đặt hệ thống</DropdownMenuLabel>
@@ -346,6 +367,20 @@ export function WorkspaceHubPage() {
               >
                 {theme === "dark" ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối"}
               </DropdownMenuItem>
+              {authenticated ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    icon={<LogOut className="h-3.5 w-3.5" />}
+                    onClick={() => {
+                      logout()
+                      navigate("/login")
+                    }}
+                  >
+                    Đăng xuất
+                  </DropdownMenuItem>
+                </>
+              ) : null}
             </DropdownMenu>
           </div>
         </div>
@@ -376,7 +411,7 @@ export function WorkspaceHubPage() {
               <h1 className="font-editorial-serif text-4xl leading-[1.15] font-medium tracking-tight text-[#0B1716] sm:text-5xl">
                 {greeting()},{" "}
                 <span className="bg-gradient-to-r from-[#0F766E] via-[#0D9488] to-[#0284C7] bg-clip-text font-semibold italic text-transparent underline decoration-[#0D9488]/35 decoration-2 underline-offset-8">
-                  Sophie
+                  {user?.name || "bạn"}
                 </span>{" "}
                 👋
               </h1>
@@ -670,7 +705,7 @@ export function WorkspaceHubPage() {
         onClose={() => setCreateOpen(false)}
       >
         <form
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault()
             const form = e.currentTarget
             const nameInput = form.elements.namedItem("wsName") as HTMLInputElement
@@ -687,7 +722,22 @@ export function WorkspaceHubPage() {
               return
             }
 
-            const ws = createWorkspace(name, descInput.value.trim())
+            let ws: Workspace
+            try {
+              if (authenticated) {
+                ws = await createWorkspaceApi(name, descInput.value.trim())
+                mergeWorkspaces([ws])
+              } else {
+                ws = createWorkspace(name, descInput.value.trim())
+              }
+            } catch (err) {
+              toast({
+                title: "Không thể tạo Workspace",
+                description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                tone: "error",
+              })
+              return
+            }
             toast({
               title: "Đã tạo Workspace mới",
               description: ws.name,
@@ -739,10 +789,19 @@ export function WorkspaceHubPage() {
         validate={validateWorkspaceName(editTarget?.id)}
         onClose={() => setEditTarget(null)}
         confirmLabel="Lưu thay đổi"
-        onSubmit={(name, description) => {
+        onSubmit={async (name, description) => {
           if (!editTarget) return
-          updateWorkspace(editTarget.id, { name, description })
-          toast({ title: "Đã cập nhật Workspace", tone: "success" })
+          try {
+            if (authenticated) await updateWorkspaceApi(editTarget.id, name, description)
+            updateWorkspace(editTarget.id, { name, description })
+            toast({ title: "Đã cập nhật Workspace", tone: "success" })
+          } catch (err) {
+            toast({
+              title: "Không thể cập nhật Workspace",
+              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+              tone: "error",
+            })
+          }
           setEditTarget(null)
         }}
       />
@@ -754,10 +813,23 @@ export function WorkspaceHubPage() {
         description={`Bạn có chắc chắn muốn xóa "${deleteTarget?.name}"? Toàn bộ tài liệu và hội thoại bên trong sẽ bị gỡ bỏ.`}
         confirmLabel="Xóa vĩnh viễn"
         onClose={() => setDeleteTarget(null)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!deleteTarget) return
-          deleteWorkspace(deleteTarget.id)
-          toast({ title: "Đã xóa Workspace", description: deleteTarget.name, tone: "info" })
+          if (deleteTarget.id === "default") {
+            toast({ title: "Không thể xóa workspace mặc định", tone: "error" })
+            return
+          }
+          try {
+            if (authenticated) await deleteWorkspaceApi(deleteTarget.id)
+            deleteWorkspace(deleteTarget.id)
+            toast({ title: "Đã xóa Workspace", description: deleteTarget.name, tone: "info" })
+          } catch (err) {
+            toast({
+              title: "Không thể xóa Workspace",
+              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+              tone: "error",
+            })
+          }
           setDeleteTarget(null)
         }}
       />

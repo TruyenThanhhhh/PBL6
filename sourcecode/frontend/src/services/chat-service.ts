@@ -6,6 +6,7 @@ import type {
   KnowledgeDocument,
 } from "@/types"
 import { queryChat, type ChatResult } from "@/services/api"
+import { authHeaders } from "@/services/auth-service"
 import { nowIso, uid } from "@/utils/format"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
@@ -188,6 +189,7 @@ async function tryStreamOrQueryBackend(
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream, application/x-ndjson, application/json",
+        ...authHeaders(),
       },
       body: JSON.stringify({
         workspace_id: req.workspaceId,
@@ -271,7 +273,7 @@ async function tryStreamOrQueryBackend(
 
   const res = await fetch(`${API_BASE}/api/v1/chat/query`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       workspace_id: req.workspaceId,
       query: req.query,

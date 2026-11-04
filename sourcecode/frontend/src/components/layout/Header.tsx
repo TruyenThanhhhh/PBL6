@@ -5,9 +5,12 @@ import {
   ArrowLeft,
   ChevronRight,
   FileUp,
+  LogIn,
+  LogOut,
   Menu,
   Moon,
   MoreHorizontal,
+  Settings,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -22,11 +25,15 @@ import {
   Tooltip,
 } from "@/components/ui"
 import { hasDuplicateName } from "@/features/workspaces/workspace-utils"
+import { useAuthSession } from "@/hooks/useAuthSession"
+import { deleteWorkspaceApi, updateWorkspaceApi } from "@/services/api"
+import { logout } from "@/services/auth-service"
 import { useAppStore } from "@/store/app-store"
 import { cn } from "@/utils/cn"
 
 export function AppHeader() {
   const navigate = useNavigate()
+  const { user, authenticated } = useAuthSession()
   const setMobile = useAppStore((s) => s.setMobileNavOpen)
   const status = useAppStore((s) => s.status)
   const theme = useAppStore((s) => s.theme)
@@ -107,10 +114,19 @@ export function AppHeader() {
                 value={currentWs?.name ?? "Workspace"}
                 ariaLabel="Tên Workspace"
                 validate={validateWorkspaceName}
-                onSave={(next) => {
+                onSave={async (next) => {
                   if (!currentWs || next === currentWs.name) return
-                  updateWorkspace(currentWs.id, { name: next })
-                  toast({ title: "Đã đổi tên Workspace", description: next, tone: "success" })
+                  try {
+                    if (authenticated) await updateWorkspaceApi(currentWs.id, next, currentWs.description)
+                    updateWorkspace(currentWs.id, { name: next })
+                    toast({ title: "Đã đổi tên Workspace", description: next, tone: "success" })
+                  } catch (err) {
+                    toast({
+                      title: "Không thể cập nhật Workspace",
+                      description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                      tone: "error",
+                    })
+                  }
                 }}
                 className="truncate font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md"
                 inputClassName="text-xs font-semibold text-[#172B29]"
@@ -134,7 +150,7 @@ export function AppHeader() {
           </nav>
         </div>
 
-        {/* Right: Trạng thái Ollama/LLM + Cài đặt + Menu thao tác Workspace */}
+        {/* Right: Trạng thái Ollama/LLM + Cài đặt + Tài khoản + Menu thao tác Workspace */}
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip content="Trạng thái mô hình LLM. Bấm để cấu hình." side="bottom">
             <button
@@ -147,6 +163,52 @@ export function AppHeader() {
                 {activeModelName}
               </span>
             </button>
+          </Tooltip>
+
+          {/* Tài khoản: đăng nhập hoặc đăng xuất */}
+          <Tooltip
+            content={authenticated ? `Đang đăng nhập: ${user?.email ?? ""}` : "Đăng nhập để dùng backend"}
+            side="bottom"
+          >
+            {authenticated ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2 text-xs text-[#526B68] hover:bg-[#F1F8F6] hover:text-[#0B1716]"
+                onClick={() => {
+                  logout()
+                  navigate("/login")
+                }}
+                aria-label="Đăng xuất"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Đăng xuất</span>
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2 text-xs text-[#0F766E] hover:bg-[#F1F8F6]"
+                onClick={() => navigate("/login")}
+                aria-label="Đăng nhập"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Đăng nhập</span>
+              </Button>
+            )}
+          </Tooltip>
+
+          {/* Nút Cài đặt */}
+          <Tooltip content="Cài đặt hệ thống & mô hình" side="bottom">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-[#526B68] hover:bg-[#F1F8F6] hover:text-[#0B1716]"
+              aria-label="Cài đặt"
+              onClick={() => navigate("/settings")}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
           </Tooltip>
 
           <DropdownMenu
@@ -199,18 +261,33 @@ export function AppHeader() {
         </div>
       </header>
 
+      {/* Dialog Xóa Workspace */}
       <ConfirmDialog
         open={deleteOpen}
         title="Xóa Workspace?"
         description={`Bạn có chắc muốn xóa "${currentWs?.name}"? Toàn bộ tài liệu và lịch sử hội thoại trong không gian này sẽ bị xóa.`}
         confirmLabel="Xóa Workspace"
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!currentWs) return
-          deleteWorkspace(currentWs.id)
-          toast({ title: "Đã xóa Workspace", description: currentWs.name, tone: "info" })
-          setDeleteOpen(false)
-          navigate("/hub")
+          if (currentWs.id === "default") {
+            toast({ title: "Không thể xóa workspace mặc định", tone: "error" })
+            setDeleteOpen(false)
+            return
+          }
+          try {
+            if (authenticated) await deleteWorkspaceApi(currentWs.id)
+            deleteWorkspace(currentWs.id)
+            toast({ title: "Đã xóa Workspace", description: currentWs.name, tone: "info" })
+            setDeleteOpen(false)
+            navigate("/hub")
+          } catch (err) {
+            toast({
+              title: "Không thể xóa Workspace",
+              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+              tone: "error",
+            })
+          }
         }}
       />
     </>

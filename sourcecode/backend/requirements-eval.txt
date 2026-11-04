@@ -1,0 +1,11 @@
+# Optional evaluation stack. Runtime app does not need these packages.
+# Ragas 0.4.x depends on scikit-network, which has no Python 3.14 wheel on Windows.
+ragas==0.2.15
+datasets>=4.0,<6
+pandas>=2.2,<4
+langchain==0.3.27
+langchain-core==0.3.79
+langchain-community==0.3.29
+langchain-openai==0.3.28
+langchain-ollama==0.2.3
+langchain-text-splitters==0.3.9

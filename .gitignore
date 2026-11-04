@@ -7,10 +7,15 @@ __pycache__/
 # CSDL & Dữ liệu tải lên cá nhân
 sourcecode/backend/data/uploads/*
 !sourcecode/backend/data/uploads/.gitkeep
+# SQLite database (chứa dữ liệu cá nhân, không commit)
+sourcecode/backend/data/*.db
 *.db-journal
 *.sqlite3-journal
 
 # Python Virtual Environments
+.env
+.env.*
+!.env.example
 .venv/
 venv/
 ENV/

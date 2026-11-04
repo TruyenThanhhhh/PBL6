@@ -139,6 +139,7 @@ interface AppState {
   deleteDocument: (id: string) => void
   replaceDocumentsFromBackend: (docs: KnowledgeDocument[]) => void
   mergeWorkspacesFromBackend: (rows: Workspace[]) => void
+  replaceWorkspacesFromBackend: (rows: Workspace[]) => void
 
   saveNote: (note: Note) => void
   deleteNote: (id: string) => void
@@ -325,15 +326,19 @@ export const useAppStore = create<AppState>()(
         set({ documents: get().documents.filter((d) => d.id !== id) })
         get().log("Đã xóa một tài liệu", "document")
       },
-      replaceDocumentsFromBackend: (docs) => {
-        const localOnly = get().documents.filter((d) => d.mock)
-        const merged = [...docs, ...localOnly.filter((d) => !docs.some((x) => x.id === d.id))]
-        set({ documents: merged })
-      },
+      replaceDocumentsFromBackend: (docs) => set({ documents: docs }),
       mergeWorkspacesFromBackend: (rows) => {
         const local = get().workspaces
         const extra = rows.filter((r) => !local.some((l) => l.id === r.id || l.name === r.name))
         if (extra.length) set({ workspaces: [...local, ...extra] })
+      },
+      replaceWorkspacesFromBackend: (rows) => {
+        if (!rows.length) return
+        const currentId = get().currentWorkspaceId
+        set({
+          workspaces: rows,
+          currentWorkspaceId: rows.some((w) => w.id === currentId) ? currentId : rows[0].id,
+        })
       },
 
       saveNote: (note) => {
