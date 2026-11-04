@@ -32,6 +32,7 @@ def search_relevant_chunks(
     query: str,
     top_k: int = TOP_K_RETRIEVAL,
     document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
@@ -39,8 +40,16 @@ def search_relevant_chunks(
         clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         tokens = [token for token in clean_query.split() if len(token) > 1]
         candidate_limit = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
-        document_filter = " AND c.document_id = ?" if document_id else ""
-        document_params = (document_id,) if document_id else ()
+        if document_id:
+            document_filter = " AND c.document_id = ?"
+            document_params = (document_id,)
+        elif document_ids:
+            placeholders = ",".join("?" for _ in document_ids)
+            document_filter = f" AND c.document_id IN ({placeholders})"
+            document_params = tuple(document_ids)
+        else:
+            document_filter = ""
+            document_params = ()
         sparse: List[Dict[str, Any]] = []
         if tokens:
             match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)

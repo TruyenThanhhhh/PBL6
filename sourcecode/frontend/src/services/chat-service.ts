@@ -47,7 +47,7 @@ export const AI_MODE_DESCRIPTORS: AIModeDescriptor[] = [
     description:
       "Mở rộng tìm kiếm thông tin từ các nguồn trên Internet.",
     requiresWebPermission: true,
-    backendIntegrated: false,
+    backendIntegrated: true,
   },
   {
     id: "hybrid",
@@ -56,7 +56,7 @@ export const AI_MODE_DESCRIPTORS: AIModeDescriptor[] = [
     description:
       "Kết hợp nội dung từ tài liệu cá nhân với thông tin trên Internet để đối chiếu.",
     requiresWebPermission: true,
-    backendIntegrated: false,
+    backendIntegrated: true,
   },
 ]
 
@@ -192,6 +192,7 @@ async function tryStreamOrQueryBackend(
         ...authHeaders(),
       },
       body: JSON.stringify({
+        conversation_id: req.conversationId,
         workspace_id: req.workspaceId,
         notebook_id: req.notebookScopeId ?? undefined,
         document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
@@ -275,9 +276,13 @@ async function tryStreamOrQueryBackend(
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
+      conversation_id: req.conversationId,
       workspace_id: req.workspaceId,
+      notebook_id: req.notebookScopeId ?? undefined,
+      document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
       query: req.query,
       model: req.modelId,
+      mode: req.mode,
     }),
     signal: req.signal,
   })

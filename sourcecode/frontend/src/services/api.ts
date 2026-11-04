@@ -1,4 +1,4 @@
-import type { AIMode, KnowledgeDocument, SystemStatus, Workspace } from "@/types"
+import type { AIMode, ChatMessage, Conversation, KnowledgeDocument, SystemStatus, Workspace } from "@/types"
 import { MOCK_ANSWER } from "@/store/app-store"
 import { authHeaders, clearSession } from "@/services/auth-service"
 import { nowIso, uid } from "@/utils/format"
@@ -177,6 +177,74 @@ export function uploadDocumentWithProgress(
 
 export async function deleteDocumentApi(documentId: string) {
   return request<{ message: string }>(`/api/v1/documents/${documentId}`, { method: "DELETE" })
+}
+
+export async function fetchConversations(workspaceId: string): Promise<Conversation[]> {
+  const data = await request<{ conversations: Array<Record<string, unknown>> }>(
+    `/api/v1/workspaces/${workspaceId}/conversations`,
+  )
+  return (data.conversations ?? []).map((c) => ({
+    id: String(c.id),
+    workspaceId: String(c.workspaceId ?? workspaceId),
+    notebookId: (c.notebookId as string | null) ?? null,
+    title: String(c.title ?? "Cuộc trò chuyện mới"),
+    updatedAt: String(c.updatedAt ?? nowIso()),
+    messages: [],
+  }))
+}
+
+export async function createConversationApi(
+  workspaceId: string,
+  title = "Cuộc trò chuyện mới",
+  notebookId?: string | null,
+): Promise<Conversation> {
+  const data = await request<{ conversation: Record<string, unknown> }>(
+    `/api/v1/workspaces/${workspaceId}/conversations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, notebook_id: notebookId ?? null }),
+    },
+  )
+  const c = data.conversation
+  return {
+    id: String(c.id),
+    workspaceId: String(c.workspaceId ?? workspaceId),
+    notebookId: (c.notebookId as string | null) ?? null,
+    title: String(c.title ?? title),
+    updatedAt: String(c.updatedAt ?? nowIso()),
+    messages: [],
+  }
+}
+
+export async function fetchConversationMessages(conversationId: string): Promise<ChatMessage[]> {
+  const data = await request<{ messages: Array<Record<string, unknown>> }>(
+    `/api/v1/conversations/${conversationId}/messages`,
+  )
+  return (data.messages ?? []).map((m) => ({
+    id: String(m.id),
+    role: (m.role as "user" | "assistant") || "user",
+    content: String(m.content ?? ""),
+    createdAt: String(m.createdAt ?? nowIso()),
+    citations: (m.citations as any[]) ?? [],
+    modeUsed: m.modeUsed as AIMode | undefined,
+    streaming: false,
+    isMock: false,
+  }))
+}
+
+export async function renameConversationApi(conversationId: string, title: string) {
+  return request<{ message: string; title: string }>(`/api/v1/conversations/${conversationId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  })
+}
+
+export async function deleteConversationApi(conversationId: string) {
+  return request<{ message: string }>(`/api/v1/conversations/${conversationId}`, {
+    method: "DELETE",
+  })
 }
 
 export interface ChatResult {

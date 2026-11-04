@@ -35,6 +35,13 @@ import {
 } from "@/components/ui"
 import { CitationMarkdown } from "@/features/citations/CitationMarkdown"
 import {
+  createConversationApi,
+  deleteConversationApi,
+  fetchConversationMessages,
+  renameConversationApi,
+} from "@/services/api"
+import { getAuthToken } from "@/services/auth-service"
+import {
   getModeDescriptor,
   sendChatMessageService,
 } from "@/services/chat-service"
@@ -65,6 +72,7 @@ export function ChatPage() {
   const deleteConversation = useAppStore((s) => s.deleteConversation)
   const appendMessage = useAppStore((s) => s.appendMessage)
   const updateMessage = useAppStore((s) => s.updateMessage)
+  const setConversationMessages = useAppStore((s) => s.setConversationMessages)
 
   const saveNote = useAppStore((s) => s.saveNote)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
@@ -92,6 +100,8 @@ export function ChatPage() {
 
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
+  const [loadingMessages, setLoadingMessages] = useState(false)
+  const loadedConvIdsRef = useRef<Set<string>>(new Set())
 
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -119,6 +129,36 @@ export function ChatPage() {
     }
     return wsConversations[0] ?? null
   }, [wsConversations, conversationId])
+
+  useEffect(() => {
+    const convId = conversation?.id
+    if (!convId || !getAuthToken()) return
+    if (loadedConvIdsRef.current.has(convId)) return
+    if (conversation.messages.length > 0) {
+      loadedConvIdsRef.current.add(convId)
+      return
+    }
+
+    let active = true
+    setLoadingMessages(true)
+    fetchConversationMessages(convId)
+      .then((msgs) => {
+        if (active) {
+          loadedConvIdsRef.current.add(convId)
+          setConversationMessages(convId, msgs)
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load conversation messages:", err)
+      })
+      .finally(() => {
+        if (active) setLoadingMessages(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [conversation?.id, conversation?.messages.length, setConversationMessages])
 
   useEffect(() => {
     if (conversationId) {
@@ -263,14 +303,44 @@ export function ChatPage() {
     })
   }
 
-  const handleCreateConversation = () => {
+  const handleCreateConversation = async () => {
+    if (getAuthToken()) {
+      try {
+        const created = await createConversationApi(currentWsId, "Cuộc trò chuyện mới")
+        useAppStore.setState((s) => ({
+          conversations: [created, ...s.conversations],
+        }))
+        navigate(`/chat/${created.id}`)
+        return
+      } catch (err) {
+        console.error("Create conversation API error:", err)
+      }
+    }
     const created = createConversation(currentWsId, "Cuộc trò chuyện mới")
     navigate(`/chat/${created.id}`)
   }
 
-  const handleConfirmDeleteConversation = () => {
+  const handleRenameConversation = async (convId: string, newTitle: string) => {
+    renameConversation(convId, newTitle)
+    if (getAuthToken()) {
+      try {
+        await renameConversationApi(convId, newTitle)
+      } catch (err) {
+        console.error("Rename conversation API error:", err)
+      }
+    }
+  }
+
+  const handleConfirmDeleteConversation = async () => {
     if (!deleteTarget) return
     const targetId = deleteTarget.id
+    if (getAuthToken()) {
+      try {
+        await deleteConversationApi(targetId)
+      } catch (err) {
+        console.error("Delete conversation API error:", err)
+      }
+    }
     deleteConversation(targetId)
     setDeleteTarget(null)
     toast({ title: "Đã xóa cuộc trò chuyện", description: deleteTarget.title, tone: "info" })
@@ -297,7 +367,18 @@ export function ChatPage() {
 
     let activeConv = conversation
     if (!activeConv) {
-      activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+      if (getAuthToken()) {
+        try {
+          activeConv = await createConversationApi(currentWsId, trimmed.slice(0, 68))
+          useAppStore.setState((s) => ({
+            conversations: [activeConv!, ...s.conversations],
+          }))
+        } catch {
+          activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+        }
+      } else {
+        activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+      }
       navigate(`/chat/${activeConv.id}`, { replace: true })
     }
 
@@ -323,7 +404,7 @@ export function ChatPage() {
         notebookScopeId: selectedNotebookId,
       })
       if (activeConv.title === "Cuộc trò chuyện mới") {
-        renameConversation(convId, trimmed.slice(0, 68))
+        void handleRenameConversation(convId, trimmed.slice(0, 68))
       }
       setInput("")
     }
@@ -547,7 +628,7 @@ export function ChatPage() {
                   ariaLabel="Tiêu đề cuộc trò chuyện"
                   validate={(next) => (!next.trim() ? "Tiêu đề không được để trống." : null)}
                   onSave={(next) => {
-                    renameConversation(conversation.id, next)
+                    void handleRenameConversation(conversation.id, next)
                     toast({ title: "Đã đổi tên hội thoại", tone: "success" })
                   }}
                   className="truncate text-xs font-semibold text-[#172B29]"
@@ -627,7 +708,14 @@ export function ChatPage() {
         {/* Vùng nội dung Chat: Tối ưu chiều cao, ưu tiên diện tích cho câu trả lời */}
         <div className="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-4 md:px-8">
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col">
-            {!conversation || conversation.messages.length === 0 ? (
+            {loadingMessages ? (
+              <div className="my-auto flex flex-col items-center justify-center py-12 text-center">
+                <div className="flex items-center gap-2 text-xs text-[#647C79]">
+                  <span className="h-2 w-2 animate-ping rounded-full bg-[#087F73]" />
+                  <span>Đang tải lịch sử trò chuyện...</span>
+                </div>
+              </div>
+            ) : !conversation || conversation.messages.length === 0 ? (
               /* EMPTY STATE NGẮN GỌN THEO YÊU CẦU:
                  - Không có tiêu đề workspace quá lớn ở giữa màn hình
                  - Tiêu đề ngắn gọn: "Bạn muốn tìm hiểu điều gì?"
@@ -975,7 +1063,7 @@ export function ChatPage() {
         onClose={() => setRenameTarget(null)}
         onSubmit={(name) => {
           if (renameTarget) {
-            renameConversation(renameTarget.id, name)
+            void handleRenameConversation(renameTarget.id, name)
             toast({ title: "Đã đổi tên hội thoại", description: name, tone: "success" })
             setRenameTarget(null)
           }

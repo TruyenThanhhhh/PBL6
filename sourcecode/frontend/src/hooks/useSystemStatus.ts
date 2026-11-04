@@ -1,6 +1,6 @@
 import { useEffect } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { fetchDocuments, fetchSystemStatus, fetchWorkspaces } from "@/services/api"
+import { fetchConversations, fetchDocuments, fetchSystemStatus, fetchWorkspaces } from "@/services/api"
 import { fetchCurrentSession, getAuthToken } from "@/services/auth-service"
 import { useAppStore } from "@/store/app-store"
 
@@ -8,6 +8,7 @@ export function useSystemStatus() {
   const setStatus = useAppStore((s) => s.setStatus)
   const replaceWorkspaces = useAppStore((s) => s.replaceWorkspacesFromBackend)
   const replaceDocs = useAppStore((s) => s.replaceDocumentsFromBackend)
+  const replaceConversations = useAppStore((s) => s.replaceConversationsFromBackend)
   const setCurrent = useAppStore((s) => s.setCurrentWorkspace)
   const current = useAppStore((s) => s.currentWorkspaceId)
 
@@ -52,8 +53,12 @@ export function useSystemStatus() {
         const target = ws.find((w) => w.id === current)?.id ?? ws[0]?.id
         if (target) {
           if (!ws.some((w) => w.id === current)) setCurrent(target)
-          const docs = await fetchDocuments(target)
+          const [docs, convs] = await Promise.all([
+            fetchDocuments(target),
+            fetchConversations(target),
+          ])
           replaceDocs(docs)
+          replaceConversations(convs)
         }
         return status
       } catch {
