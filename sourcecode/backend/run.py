@@ -1,7 +1,14 @@
 import logging
-import uvicorn
 import sys
+import warnings
 
+try:
+    import authlib.deprecate
+    warnings.simplefilter("ignore", authlib.deprecate.AuthlibDeprecationWarning)
+except ImportError:
+    pass
+
+import uvicorn
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
