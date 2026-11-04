@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom"
 import { AppShell } from "@/components/layout/AppShell"
 import { PlaceholderPage } from "@/components/common/PlaceholderPage"
+import { WelcomePage } from "@/features/welcome/WelcomePage"
 import { WorkspaceHubPage } from "@/features/workspaces/WorkspaceHubPage"
 import { WorkspaceDetailPage } from "@/features/workspaces/WorkspaceDetailPage"
 import { NotebookDetailPage } from "@/features/workspaces/NotebookDetailPage"
@@ -17,8 +18,13 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
+
+      {/* Trang giới thiệu Welcome / Landing Page */}
+      <Route path="/" element={<WelcomePage />} />
+      <Route path="/welcome" element={<WelcomePage />} />
+
+
       {/* Workspace Hub (Dashboard) - Trang danh sách không gian làm việc */}
-      <Route path="/" element={<WorkspaceHubPage />} />
       <Route path="/hub" element={<WorkspaceHubPage />} />
       <Route path="/knowledge" element={<Navigate to="/hub" replace />} />
 
