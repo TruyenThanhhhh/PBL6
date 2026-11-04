@@ -22,6 +22,7 @@ class ChatQueryRequest(BaseModel):
     workspace_id: str = "default"
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
+    mode: Optional[str] = None
     web_search: bool = False
     top_k: int = Field(default=4, ge=1, le=20)
     selected_document_id: Optional[str] = Field(default=None, max_length=100)
@@ -98,7 +99,8 @@ async def query_knowledge_base(req: ChatQueryRequest, user: dict = Depends(get_c
             raise HTTPException(status_code=413, detail="Ảnh tối đa 5 MB")
     elif req.image_mime_type:
         raise HTTPException(status_code=422, detail="Thiếu dữ liệu ảnh")
-    return await answer_query(req.workspace_id, req.query, req.model, req.web_search, req.top_k,
+    should_web = req.web_search or (req.mode in ['web', 'hybrid'])
+    return await answer_query(req.workspace_id, req.query, req.model, should_web, req.top_k,
                               [turn.model_dump() for turn in req.history],
                               image_base64=req.image_base64,
                               selected_document_id=req.selected_document_id,

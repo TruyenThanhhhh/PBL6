@@ -47,7 +47,7 @@ export const AI_MODE_DESCRIPTORS: AIModeDescriptor[] = [
     description:
       "Mở rộng tìm kiếm thông tin từ các nguồn trên Internet.",
     requiresWebPermission: true,
-    backendIntegrated: false,
+    backendIntegrated: true,
   },
   {
     id: "hybrid",
@@ -56,7 +56,7 @@ export const AI_MODE_DESCRIPTORS: AIModeDescriptor[] = [
     description:
       "Kết hợp nội dung từ tài liệu cá nhân với thông tin trên Internet để đối chiếu.",
     requiresWebPermission: true,
-    backendIntegrated: false,
+    backendIntegrated: true,
   },
 ]
 
@@ -279,6 +279,8 @@ async function tryStreamOrQueryBackend(
       workspace_id: req.workspaceId,
       query: req.query,
       model: req.modelId,
+      mode: req.mode,
+      web_search: req.mode === "web" || req.mode === "hybrid",
       document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
       selected_document_id: req.selectedDocumentId ?? undefined,
     }),
