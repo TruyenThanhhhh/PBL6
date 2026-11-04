@@ -10,7 +10,7 @@ export type DocumentStatus =
   | "ready"
   | "failed"
 
-export type FileKind = "pdf" | "docx" | "pptx" | "txt" | "md" | "other"
+export type FileKind = "pdf" | "docx" | "pptx" | "txt" | "md" | "xlsx" | "other"
 
 export type SourceKind = "local" | "web"
 

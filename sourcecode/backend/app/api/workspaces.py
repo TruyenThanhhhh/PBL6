@@ -8,7 +8,10 @@ from starlette.concurrency import run_in_threadpool
 from typing import Dict
 
 from app.database import get_db_connection
-from app.services.document_service import process_and_index_document, reindex_document_embeddings
+from app.services.document_service import (
+    process_and_index_document_async,
+    reindex_document_embeddings,
+)
 from app.config import UPLOAD_MAX_BYTES
 from app.api.auth import get_current_user
 
@@ -120,10 +123,10 @@ async def upload_document(workspace_id: str, file: UploadFile = File(...),
         raise HTTPException(status_code=400, detail="File tải lên không có dữ liệu")
 
     try:
-        result = await run_in_threadpool(process_and_index_document, workspace_id, file.filename, content)
+        result = await run_in_threadpool(process_and_index_document_async, workspace_id, file.filename, content)
     except ValueError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
-    return {"message": "Tài liệu đã được tải lên và lập chỉ mục thành công", "document": result}
+    return {"message": "Tài liệu đã được tải lên, đang lập chỉ mục ở nền", "document": result}
 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str, user: Dict[str, str] = Depends(get_current_user)):
