@@ -343,3 +343,48 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
     fallbackReason: undefined as string | undefined,
   }
 }
+
+export interface DocumentChunkRecord {
+  id: string
+  document_id: string
+  workspace_id: string
+  chunk_index: number
+  page_number: number
+  token_count: number
+  content: string
+  created_at?: string
+}
+
+export interface DocumentChunksApiResponse {
+  document: {
+    id: string
+    workspace_id: string
+    workspace_name?: string
+    file_name: string
+    file_type: string
+    file_size: number
+    total_pages: number
+    total_chunks: number
+    status: string
+    created_at: string
+  }
+  chunks: DocumentChunkRecord[]
+  total: number
+  total_chunks: number
+}
+
+export async function fetchDocumentChunks(
+  documentId: string,
+  page?: number,
+): Promise<DocumentChunksApiResponse> {
+  const url = page != null && page > 0
+    ? `/api/v1/documents/${documentId}/chunks?page=${page}`
+    : `/api/v1/documents/${documentId}/chunks`
+  return request<DocumentChunksApiResponse>(url)
+}
+
+export async function fetchDocumentDetail(
+  documentId: string,
+): Promise<{ document: DocumentChunksApiResponse["document"] }> {
+  return request<{ document: DocumentChunksApiResponse["document"] }>(`/api/v1/documents/${documentId}`)
+}

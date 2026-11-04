@@ -224,6 +224,30 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dic
     return _public_user(user)
 
 
+def get_current_user_optional(authorization: Optional[str] = Header(default=None)) -> Optional[Dict[str, Any]]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization[7:].strip()
+    try:
+        payload = jwt.decode(token, APP_SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+    except Exception:
+        return None
+    conn = get_db_connection()
+    try:
+        user = conn.execute(
+            f"SELECT {USER_SELECT_COLUMNS} FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        return _public_user(user) if user else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 @router.post("/register", status_code=201)
 def register(req: RegisterRequest):
     email = req.email.strip().lower()

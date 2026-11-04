@@ -11,7 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from app.database import get_db_connection
 from app.services.document_service import process_and_index_document, reindex_document_embeddings
 from app.config import UPLOAD_MAX_BYTES
-from app.api.auth import get_current_user
+from app.api.auth import get_current_user, get_current_user_optional
 
 router = APIRouter(prefix="/api/v1", tags=["Workspaces & Documents"])
 logger = logging.getLogger(__name__)
@@ -269,6 +269,98 @@ def get_document_chunk(
     if not row:
         raise HTTPException(status_code=404, detail="Không tìm thấy đoạn trích dẫn")
     return {"citation": dict(row)}
+
+
+@router.get("/documents/{document_id}")
+def get_document_detail(
+    document_id: str,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT d.*, w.name AS workspace_name, w.owner_user_id
+        FROM documents d
+        JOIN workspaces w ON w.id = d.workspace_id
+        WHERE d.id = ?
+        """,
+        (document_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    if user and row["owner_user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    doc = dict(row)
+    doc.pop("owner_user_id", None)
+    return {"document": doc}
+
+
+@router.get("/documents/{document_id}/chunks")
+def get_document_chunks(
+    document_id: str,
+    page: Optional[int] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    conn = get_db_connection()
+    doc_row = conn.execute(
+        """
+        SELECT d.*, w.name AS workspace_name, w.owner_user_id
+        FROM documents d
+        JOIN workspaces w ON w.id = d.workspace_id
+        WHERE d.id = ?
+        """,
+        (document_id,),
+    ).fetchone()
+    if not doc_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    if user and doc_row["owner_user_id"] != user["id"]:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+
+    query = """
+        SELECT id, document_id, workspace_id, chunk_index, page_number, token_count, content, created_at
+        FROM document_chunks
+        WHERE document_id = ?
+    """
+    params = [document_id]
+    if page is not None and page > 0:
+        query += " AND page_number = ?"
+        params.append(page)
+
+    query += " ORDER BY chunk_index ASC"
+
+    if limit is not None and limit > 0:
+        query += " LIMIT ?"
+        params.append(limit)
+        if offset is not None and offset >= 0:
+            query += " OFFSET ?"
+            params.append(offset)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
+    chunks = [dict(r) for r in cursor.fetchall()]
+
+    count_row = conn.execute(
+        "SELECT COUNT(*) AS total FROM document_chunks WHERE document_id = ?",
+        (document_id,),
+    ).fetchone()
+    total_chunks = count_row["total"] if count_row else len(chunks)
+    conn.close()
+
+    doc_data = dict(doc_row)
+    doc_data.pop("owner_user_id", None)
+    doc_data["total_chunks"] = total_chunks
+
+    return {
+        "document": doc_data,
+        "chunks": chunks,
+        "total": len(chunks),
+        "total_chunks": total_chunks,
+    }
 
 
 @router.post("/documents/{document_id}/reindex-vectors")
