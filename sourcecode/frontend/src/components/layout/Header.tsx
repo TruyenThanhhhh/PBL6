@@ -3,22 +3,19 @@ import { Link, useNavigate } from "react-router-dom"
 import {
   Activity,
   ArrowLeft,
-  Check,
-  ChevronDown,
   ChevronRight,
   FileUp,
-  FolderOpen,
   LogIn,
   LogOut,
   Menu,
   Moon,
   MoreHorizontal,
-  Pencil,
   Settings,
   Sun,
   Trash2,
 } from "lucide-react"
-import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
+import { ConfirmDialog } from "@/components/common/NameDialog"
+import { InlineEdit } from "@/components/common/InlineEdit"
 import {
   Button,
   DropdownMenu,
@@ -46,12 +43,10 @@ export function AppHeader() {
   const workspaces = useAppStore((s) => s.workspaces)
   const documents = useAppStore((s) => s.documents)
   const currentWorkspaceId = useAppStore((s) => s.currentWorkspaceId)
-  const setCurrentWorkspace = useAppStore((s) => s.setCurrentWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
   const toast = useAppStore((s) => s.toast)
 
-  const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const currentWs = useMemo(
@@ -81,7 +76,7 @@ export function AppHeader() {
 
   return (
     <>
-      <header className="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-[#DCECE8] bg-white px-3 md:px-5">
+      <header className="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-[#D4E2DF] bg-white px-4 md:px-5">
         {/* Left: Mobile Menu + Breadcrumb quay lại Dashboard + Tên Workspace & Trạng thái đồng bộ */}
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <Button
@@ -91,110 +86,80 @@ export function AppHeader() {
             aria-label="Mở menu điều hướng"
             onClick={() => setMobile(true)}
           >
-            <Menu className="h-4 w-4" />
+            <Menu className="h-4 w-4 text-[#172B29]" />
           </Button>
 
-          {/* Breadcrumb quay lại Dashboard */}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[13px]">
             <Link
               to="/hub"
-              className="group inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-[#526B68] transition-colors hover:bg-[#F1F8F6] hover:text-[#0B1716]"
+              className="group relative inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium text-[#647C79] transition-all hover:bg-[#F0F5F4] hover:text-[#172B29]"
+              title="Quay lại Dashboard"
             >
-              <ArrowLeft className="h-3.5 w-3.5 text-[#0F766E] transition-transform group-hover:-translate-x-0.5" />
-              <span className="font-sans font-bold tracking-tight text-[#0B1716]">
-                motivo<span className="text-[#0D9488]">.</span>
-              </span>
-              <span className="hidden text-xs text-[#647D7A] sm:inline">Dashboard</span>
+              <ArrowLeft className="h-3.5 w-3.5 text-[#647C79] transition-transform duration-200 group-hover:-translate-x-1 group-hover:text-[#087F73]" />
+              <div className="relative flex h-5 items-center overflow-hidden">
+                <span className="font-sans font-bold tracking-tight text-[#172B29] transition-all duration-200 ease-out group-hover:-translate-y-full group-hover:opacity-0">
+                  motivo<span className="text-[#087F73]">.</span>
+                </span>
+                <span className="absolute inset-0 flex items-center font-sans text-xs font-semibold text-[#087F73] translate-y-full opacity-0 transition-all duration-200 ease-out group-hover:translate-y-0 group-hover:opacity-100">
+                  Back
+                </span>
+              </div>
             </Link>
 
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B8CECA]" />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
 
-            {/* Chọn / Hiển thị Tên Workspace hiện tại */}
-            <DropdownMenu
-              align="start"
-              trigger={
-                <button
-                  type="button"
-                  className="inline-flex max-w-[220px] items-center gap-1.5 rounded-lg px-2 py-1 text-left font-semibold text-[#0B1716] transition-colors hover:bg-[#F1F8F6] sm:max-w-[320px]"
-                  title="Chuyển nhanh Workspace"
-                >
-                  <span className="truncate">{currentWs?.name ?? "Workspace"}</span>
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[#647D7A]" />
-                </button>
-              }
-            >
-              <DropdownMenuLabel>Chuyển đổi Workspace</DropdownMenuLabel>
-              {workspaces.map((w) => {
-                const isSelected = w.id === currentWs?.id
-                return (
-                  <DropdownMenuItem
-                    key={w.id}
-                    icon={
-                      isSelected ? (
-                        <Check className="h-3.5 w-3.5 text-[#0F766E]" />
-                      ) : (
-                        <FolderOpen className="h-3.5 w-3.5 text-[#647D7A]" />
-                      )
-                    }
-                    onClick={() => {
-                      setCurrentWorkspace(w.id)
-                      navigate("/chat")
-                      toast({
-                        title: "Đã chuyển Workspace",
-                        description: w.name,
-                        tone: "info",
-                      })
-                    }}
-                  >
-                    <span className={cn(isSelected && "font-semibold text-[#0F766E]")}>
-                      {w.name}
-                    </span>
-                  </DropdownMenuItem>
-                )
-              })}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                icon={<ArrowLeft className="h-3.5 w-3.5" />}
-                onClick={() => navigate("/hub")}
-              >
-                Quay lại trang Dashboard (Hub)
-              </DropdownMenuItem>
-            </DropdownMenu>
+            {/* Tên Workspace hiện tại: Click để đổi tên trực tiếp, tự lưu khi out focus */}
+            <div className="max-w-[200px] sm:max-w-[320px]">
+              <InlineEdit
+                value={currentWs?.name ?? "Workspace"}
+                ariaLabel="Tên Workspace"
+                validate={validateWorkspaceName}
+                onSave={async (next) => {
+                  if (!currentWs || next === currentWs.name) return
+                  try {
+                    if (authenticated) await updateWorkspaceApi(currentWs.id, next, currentWs.description)
+                    updateWorkspace(currentWs.id, { name: next })
+                    toast({ title: "Đã đổi tên Workspace", description: next, tone: "success" })
+                  } catch (err) {
+                    toast({
+                      title: "Không thể cập nhật Workspace",
+                      description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                      tone: "error",
+                    })
+                  }
+                }}
+                className="truncate font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md"
+                inputClassName="text-xs font-semibold text-[#172B29]"
+              />
+            </div>
 
-            {/* Trạng thái đồng bộ Workspace */}
-            <div className="hidden items-center gap-1.5 rounded-full border border-[#D8EAE6] bg-[#F4FAF8] px-2.5 py-0.5 text-[11px] font-medium text-[#37524F] md:inline-flex">
+            {/* Trạng thái đồng bộ gọn gàng */}
+            <div className="hidden items-center gap-1.5 rounded-full border border-[#D4E2DF] bg-[#F5F8F7] px-2.5 py-0.5 text-[11px] font-medium text-[#647C79] md:inline-flex">
               <span
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
-                  processingCount > 0 ? "animate-pulse bg-amber-500" : "bg-[#10B981]",
+                  processingCount > 0 ? "animate-pulse bg-amber-500" : "bg-[#087F73]",
                 )}
               />
               <span>
                 {processingCount > 0
                   ? `Đang đồng bộ (${processingCount})`
-                  : `Đã đồng bộ · ${readyCount} tài liệu`}
+                  : `${readyCount} tài liệu`}
               </span>
             </div>
           </nav>
         </div>
 
-        {/* Right: Trạng thái Ollama/LLM + Cài đặt + Menu thao tác Workspace */}
+        {/* Right: Trạng thái Ollama/LLM + Cài đặt + Tài khoản + Menu thao tác Workspace */}
         <div className="flex shrink-0 items-center gap-2">
-          {/* Trạng thái Ollama / Local LLM */}
-          <Tooltip
-            content="Trạng thái mô hình ngôn ngữ & kết nối RAG. Bấm để cấu hình."
-            side="bottom"
-          >
+          <Tooltip content="Trạng thái mô hình LLM. Bấm để cấu hình." side="bottom">
             <button
               type="button"
               onClick={() => navigate("/settings?section=status")}
-              className="hidden items-center gap-1.5 rounded-full border border-[#D5E6E2] bg-[#F7FAF9] px-2.5 py-1 text-xs text-[#37524F] transition-colors hover:border-[#0F766E]/40 hover:bg-[#EFF7F5] sm:inline-flex"
+              className="hidden items-center gap-1.5 rounded-lg border border-[#D4E2DF] bg-[#F5F8F7] px-2.5 py-1 text-xs text-[#647C79] transition-colors hover:border-[#087F73] hover:text-[#172B29] sm:inline-flex"
             >
-              <span className="relative flex h-2 w-2">
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#10B981]" />
-              </span>
-              <span className="text-[11px] text-[#647D7A]">LLM:</span>
-              <span className="font-mono text-[11px] font-semibold text-[#0B1716]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#087F73]" />
+              <span className="font-mono text-[11px] font-semibold text-[#172B29]">
                 {activeModelName}
               </span>
             </button>
@@ -246,90 +211,55 @@ export function AppHeader() {
             </Button>
           </Tooltip>
 
-          {/* Menu thao tác Workspace */}
           <DropdownMenu
             align="end"
             trigger={
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 gap-1.5 border-[#D5E6E2] px-2.5 text-xs font-medium text-[#233D3A] hover:bg-[#F1F8F6]"
+                className="h-8 border-[#D4E2DF] px-2 text-xs text-[#172B29] hover:bg-[#F0F5F4]"
                 aria-label="Menu thao tác Workspace"
               >
-                <span className="hidden sm:inline">Workspace</span>
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             }
           >
-            <DropdownMenuLabel>{currentWs?.name ?? "Thao tác Workspace"}</DropdownMenuLabel>
-            <DropdownMenuItem
-              icon={<Pencil className="h-3.5 w-3.5" />}
-              onClick={() => setEditOpen(true)}
-            >
-              Đổi tên &amp; mô tả Workspace
-            </DropdownMenuItem>
+            <DropdownMenuLabel>{currentWs?.name ?? "Workspace"}</DropdownMenuLabel>
             <DropdownMenuItem
               icon={<FileUp className="h-3.5 w-3.5" />}
               onClick={() => navigate("/documents")}
             >
-              Tải lên &amp; quản lý tài liệu
+              Quản lý tài liệu
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={<Activity className="h-3.5 w-3.5" />}
               onClick={() => navigate("/settings?section=status")}
             >
-              Kiểm tra trạng thái Ollama / RAG
+              Trạng thái Ollama / RAG
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={theme === "light" ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
               onClick={() => setTheme(theme === "light" ? "dark" : "light")}
             >
-              {theme === "light" ? "Chuyển giao diện tối" : "Chuyển giao diện sáng"}
+              {theme === "light" ? "Giao diện tối" : "Giao diện sáng"}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               icon={<ArrowLeft className="h-3.5 w-3.5" />}
               onClick={() => navigate("/hub")}
             >
-              Về trang Dashboard (Hub)
+              Về Dashboard
             </DropdownMenuItem>
             <DropdownMenuItem
               tone="danger"
               icon={<Trash2 className="h-3.5 w-3.5" />}
               onClick={() => setDeleteOpen(true)}
             >
-              Xóa Workspace này
+              Xóa Workspace
             </DropdownMenuItem>
           </DropdownMenu>
         </div>
       </header>
-
-      {/* Dialog Đổi tên & mô tả Workspace */}
-      <NameDialog
-        open={editOpen}
-        title="Đổi tên &amp; mô tả Workspace"
-        initialName={currentWs?.name ?? ""}
-        initialDescription={currentWs?.description ?? ""}
-        showDescription
-        validate={validateWorkspaceName}
-        confirmLabel="Lưu thay đổi"
-        onClose={() => setEditOpen(false)}
-        onSubmit={async (name, description) => {
-          if (!currentWs) return
-          try {
-            if (authenticated) await updateWorkspaceApi(currentWs.id, name, description)
-            updateWorkspace(currentWs.id, { name, description })
-            toast({ title: "Đã cập nhật Workspace", tone: "success" })
-            setEditOpen(false)
-          } catch (err) {
-            toast({
-              title: "Không thể cập nhật Workspace",
-              description: err instanceof Error ? err.message : "Lỗi kết nối backend",
-              tone: "error",
-            })
-          }
-        }}
-      />
 
       {/* Dialog Xóa Workspace */}
       <ConfirmDialog

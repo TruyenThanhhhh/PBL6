@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
-  BookOpen,
   FileText,
   GraduationCap,
   MessageSquare,
@@ -11,6 +10,7 @@ import {
   Pencil,
   Plus,
   Quote,
+  Settings,
   Trash2,
   X,
 } from "lucide-react"
@@ -33,10 +33,8 @@ export function AppSidebar() {
   const setMobile = useAppStore((s) => s.setMobileNavOpen)
 
   const workspaces = useAppStore((s) => s.workspaces)
-  const documents = useAppStore((s) => s.documents)
   const conversations = useAppStore((s) => s.conversations)
   const current = useAppStore((s) => s.currentWorkspaceId)
-  const citationOpen = useAppStore((s) => s.citationOpen)
   const setCitationOpen = useAppStore((s) => s.setCitationOpen)
 
   const createConversation = useAppStore((s) => s.createConversation)
@@ -47,6 +45,7 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
 
+  const [citationNavSelected, setCitationNavSelected] = useState(false)
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
 
@@ -67,79 +66,74 @@ export function AppSidebar() {
     [conversations, currentWsId],
   )
 
-  const recentDocuments = useMemo(
-    () =>
-      [...documents]
-        .filter((d) => d.workspaceId === currentWsId)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .slice(0, 5),
-    [documents, currentWsId],
-  )
-
-  const totalWsDocs = useMemo(
-    () => documents.filter((d) => d.workspaceId === currentWsId).length,
-    [documents, currentWsId],
-  )
-
   const handleNewChat = () => {
+    setCitationNavSelected(false)
     const conv = createConversation(currentWsId, "Cuộc trò chuyện mới")
     navigate(`/chat/${conv.id}`)
     setMobile(false)
   }
 
-  const handleOpenCitations = () => {
-    setCitationOpen(true)
-    window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
-    if (!location.pathname.startsWith("/chat")) {
-      navigate("/chat")
-    }
-    setMobile(false)
-  }
-
-  const isChatRoute =
-    location.pathname === "/chat" ||
-    location.pathname.startsWith("/chat/") ||
-    location.pathname === "/dashboard"
   const isDocsRoute =
     location.pathname === "/documents" || location.pathname.startsWith("/documents/")
   const isStudyRoute = location.pathname === "/study"
+  const isChatRoute =
+    !isDocsRoute &&
+    !isStudyRoute &&
+    (location.pathname === "/chat" ||
+      location.pathname.startsWith("/chat/") ||
+      location.pathname === "/studio" ||
+      location.pathname === "/dashboard")
+
+  // Chỉ highlight duy nhất 1 mục đang active
+  const activeNavId: "chat" | "documents" | "citation" | "study" = isDocsRoute
+    ? "documents"
+    : isStudyRoute
+      ? "study"
+      : citationNavSelected && isChatRoute
+        ? "citation"
+        : "chat"
 
   const navItems = [
     {
-      id: "chat",
+      id: "chat" as const,
       label: "Chat AI",
       icon: MessageSquare,
-      active: isChatRoute,
-      badge: wsConversations.length > 0 ? String(wsConversations.length) : undefined,
       onClick: () => {
+        setCitationNavSelected(false)
         navigate("/chat")
         setMobile(false)
       },
     },
     {
-      id: "documents",
+      id: "documents" as const,
       label: "Tài liệu",
       icon: FileText,
-      active: isDocsRoute,
-      badge: totalWsDocs > 0 ? String(totalWsDocs) : undefined,
       onClick: () => {
+        setCitationNavSelected(false)
         navigate("/documents")
         setMobile(false)
       },
     },
     {
-      id: "citation",
+      id: "citation" as const,
       label: "Citation",
       icon: Quote,
-      active: isChatRoute && citationOpen,
-      onClick: handleOpenCitations,
+      onClick: () => {
+        setCitationNavSelected(true)
+        setCitationOpen(true)
+        window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
+        if (!isChatRoute) {
+          navigate("/chat")
+        }
+        setMobile(false)
+      },
     },
     {
-      id: "study",
+      id: "study" as const,
       label: "Học liệu",
       icon: GraduationCap,
-      active: isStudyRoute,
       onClick: () => {
+        setCitationNavSelected(false)
         navigate("/study")
         setMobile(false)
       },
@@ -157,7 +151,7 @@ export function AppSidebar() {
       {mobile ? (
         <button
           type="button"
-          className="fixed inset-0 z-30 bg-[#0B1716]/30 md:hidden"
+          className="fixed inset-0 z-30 bg-[#172B29]/30 md:hidden"
           aria-label="Đóng menu điều hướng"
           onClick={() => setMobile(false)}
         />
@@ -166,16 +160,18 @@ export function AppSidebar() {
       <aside
         aria-label="Thanh điều hướng Workspace Studio"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-[#DCECE8] bg-[#F7FAF9] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
-          collapsed ? "w-[238px] md:w-[60px]" : "w-[238px]",
+          "fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-[#DCE7E4] bg-[#F1F6F5] text-[13px] transition-[width,transform] duration-150 md:static md:translate-x-0",
+          collapsed
+            ? "w-[220px] md:w-[56px]"
+            : "w-[220px] md:w-[16%] md:min-w-[200px] md:max-w-[250px]",
           mobile ? "translate-x-0" : "-translate-x-full md:translate-x-0",
         )}
       >
-        {/* Nút tạo hội thoại mới + Thu gọn Sidebar */}
+        {/* Nút Hội thoại mới (Nút chính duy nhất) + Nút thu gọn Sidebar */}
         <div
           className={cn(
-            "flex items-center justify-between gap-1.5 px-3 pt-3 pb-2",
-            collapsed && "md:flex-col md:justify-center md:px-2",
+            "flex items-center justify-between gap-1.5 px-2.5 pt-2.5 pb-2",
+            collapsed && "md:flex-col md:justify-center md:px-1.5",
           )}
         >
           {collapsed ? (
@@ -183,7 +179,7 @@ export function AppSidebar() {
               <button
                 type="button"
                 onClick={toggle}
-                className="hidden h-9 w-9 items-center justify-center rounded-xl border border-[#D5E6E2] bg-white text-[#37524F] transition-colors hover:border-[#0F766E] hover:text-[#0F766E] md:flex"
+                className="hidden h-7 w-7 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29] md:flex"
                 aria-label="Mở rộng Sidebar"
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -191,39 +187,38 @@ export function AppSidebar() {
             </Tooltip>
           ) : null}
 
-          <Tooltip content="Bắt đầu cuộc trò chuyện AI mới" side={collapsed ? "right" : "bottom"}>
+          <Tooltip content="Bắt đầu hội thoại mới" side={collapsed ? "right" : "bottom"}>
             <button
               type="button"
               onClick={handleNewChat}
               className={cn(
-                "inline-flex items-center justify-center gap-2 rounded-xl bg-[#0B1315] text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-[#0F766E]",
-                collapsed ? "h-9 w-9 md:px-0" : "h-9 flex-1 px-3",
+                "inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#087F73] text-xs font-semibold text-white transition-colors hover:bg-[#06665C] shadow-2xs",
+                collapsed ? "h-8 w-8 md:px-0" : "h-8 flex-1 px-2.5",
               )}
               aria-label="Hội thoại mới"
             >
-              <Plus className="h-4 w-4 shrink-0" />
+              <Plus className="h-3.5 w-3.5 shrink-0" />
               <span className={cn("truncate", collapsed && "md:hidden")}>Hội thoại mới</span>
             </button>
           </Tooltip>
 
           {!collapsed ? (
             <Tooltip content="Thu gọn thanh bên" side="bottom">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden h-8 w-8 shrink-0 text-[#647D7A] hover:bg-[#EAF4F2] hover:text-[#0B1716] md:inline-flex"
+              <button
+                type="button"
+                className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#647C79] hover:bg-white/80 hover:text-[#172B29] md:inline-flex"
                 onClick={toggle}
                 aria-label="Thu gọn Sidebar"
               >
-                <PanelLeftClose className="h-4 w-4" />
-              </Button>
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              </button>
             </Tooltip>
           ) : null}
 
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 text-[#647D7A] md:hidden"
+            className="h-7 w-7 shrink-0 text-[#647C79] md:hidden"
             onClick={() => setMobile(false)}
             aria-label="Đóng menu"
           >
@@ -231,43 +226,32 @@ export function AppSidebar() {
           </Button>
         </div>
 
-        {/* 1. Menu chính của Studio: Chat AI, Tài liệu, Citation, Học liệu */}
-        <nav className="flex shrink-0 flex-col gap-0.5 px-2.5 py-1" aria-label="Chức năng Studio">
+        {/* 1. Menu chính: Giảm padding, chỉ highlight mục đang active */}
+        <nav className="flex shrink-0 flex-col gap-0.5 px-2 py-1" aria-label="Chức năng Studio">
           {navItems.map((item) => {
+            const active = activeNavId === item.id
             const btn = (
               <button
                 key={item.id}
                 type="button"
                 onClick={item.onClick}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-[13px] transition-all",
-                  item.active
-                    ? "bg-[#E2F3EF] font-semibold text-[#0B1716]"
-                    : "text-[#526B68] hover:bg-[#EDF6F4] hover:text-[#0B1716]",
-                  collapsed && "md:justify-center md:px-2",
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                  active
+                    ? "bg-white font-semibold text-[#172B29] shadow-2xs border border-[#DCE7E4]"
+                    : "font-medium text-[#647C79] hover:bg-white/60 hover:text-[#172B29]",
+                  collapsed && "md:justify-center md:px-1.5",
                 )}
               >
                 <item.icon
                   className={cn(
-                    "h-4 w-4 shrink-0",
-                    item.active ? "text-[#0F766E]" : "text-[#647D7A]",
+                    "h-3.5 w-3.5 shrink-0",
+                    active ? "text-[#087F73]" : "text-[#647C79]",
                   )}
                 />
                 <span className={cn("flex-1 truncate", collapsed && "md:hidden")}>
                   {item.label}
                 </span>
-                {item.badge && !collapsed ? (
-                  <span
-                    className={cn(
-                      "rounded-full px-1.5 py-0.2 text-[10px] font-semibold",
-                      item.active
-                        ? "bg-white text-[#0F766E]"
-                        : "bg-[#E6F0EE] text-[#526B68]",
-                    )}
-                  >
-                    {item.badge}
-                  </span>
-                ) : null}
               </button>
             )
 
@@ -281,32 +265,32 @@ export function AppSidebar() {
           })}
         </nav>
 
-        {/* Vùng cuộn: Lịch sử hội thoại + 3–5 Tài liệu gần đây (ẩn khi thu gọn) */}
+        {/* 2. Lịch sử hội thoại & Tài liệu gần đây (Danh sách gọn, không dùng khung rỗng hay card lồng) */}
         <div
           className={cn(
-            "mt-2 flex-1 space-y-5 overflow-y-auto border-t border-[#E4EFECE0] px-2.5 py-3",
+            "mt-1 flex-1 space-y-4 overflow-y-auto border-t border-[#DCE7E4] px-2 py-2.5",
             collapsed && "md:hidden",
           )}
         >
-          {/* 2. Danh sách lịch sử hội thoại */}
+          {/* Lịch sử hội thoại */}
           <div>
-            <div className="mb-1.5 flex items-center justify-between px-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[#647D7A]">
-                Lịch sử hội thoại
+            <div className="mb-1 flex items-center justify-between px-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#647C79]">
+                Lịch sử
               </span>
               <button
                 type="button"
                 onClick={handleNewChat}
-                className="rounded p-0.5 text-[#647D7A] transition-colors hover:bg-[#E6F0EE] hover:text-[#0F766E]"
-                title="Tạo cuộc trò chuyện mới"
-                aria-label="Tạo cuộc trò chuyện mới"
+                className="text-[#647C79] hover:text-[#087F73]"
+                title="Hội thoại mới"
+                aria-label="Hội thoại mới"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3 w-3" />
               </button>
             </div>
 
             {wsConversations.length === 0 ? (
-              <p className="px-2 py-2 text-xs text-[#7A9490]">Chưa có hội thoại nào.</p>
+              <p className="px-1 text-[11px] text-[#647C79]">Chưa có hội thoại</p>
             ) : (
               <ul className="space-y-0.5">
                 {wsConversations.map((c) => {
@@ -315,27 +299,22 @@ export function AppSidebar() {
                     <li
                       key={c.id}
                       className={cn(
-                        "group flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors",
+                        "group flex items-center justify-between gap-1 rounded-md px-1.5 py-1 text-xs transition-colors",
                         active
-                          ? "bg-white font-semibold text-[#0B1716] shadow-2xs ring-1 ring-[#DCECE8]"
-                          : "text-[#4A6663] hover:bg-[#EDF6F4] hover:text-[#0B1716]",
+                          ? "bg-white font-semibold text-[#087F73] border border-[#DCE7E4]/80 shadow-2xs"
+                          : "text-[#647C79] hover:bg-white/50 hover:text-[#172B29]",
                       )}
                     >
                       <button
                         type="button"
                         onClick={() => {
+                          setCitationNavSelected(false)
                           navigate(`/chat/${c.id}`)
                           setMobile(false)
                         }}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        className="min-w-0 flex-1 truncate text-left text-[11.5px]"
                       >
-                        <MessageSquare
-                          className={cn(
-                            "h-3.5 w-3.5 shrink-0",
-                            active ? "text-[#0F766E]" : "text-[#829B98]",
-                          )}
-                        />
-                        <span className="truncate">{c.title}</span>
+                        {c.title}
                       </button>
 
                       <DropdownMenu
@@ -344,9 +323,9 @@ export function AppSidebar() {
                           <button
                             type="button"
                             aria-label={`Tùy chọn cho ${c.title}`}
-                            className="rounded p-0.5 text-[#7A9490] opacity-0 transition-opacity hover:bg-[#E6F0EE] hover:text-[#0B1716] group-hover:opacity-100 focus:opacity-100"
+                            className="rounded p-0.5 text-[#647C79] opacity-0 transition-opacity hover:text-[#172B29] group-hover:opacity-100 focus:opacity-100"
                           >
-                            <MoreHorizontal className="h-3.5 w-3.5" />
+                            <MoreHorizontal className="h-3 w-3" />
                           </button>
                         }
                       >
@@ -371,83 +350,55 @@ export function AppSidebar() {
               </ul>
             )}
           </div>
+        </div>
 
-          {/* 3. Danh sách 3–5 tài liệu gần đây */}
-          <div>
-            <div className="mb-1.5 flex items-center justify-between px-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[#647D7A]">
-                Tài liệu gần đây
-              </span>
+        {/* Footer Sidebar: Nút Cài đặt hệ thống */}
+        <div className="shrink-0 border-t border-[#DCE7E4] p-2">
+          {collapsed ? (
+            <Tooltip content="Cài đặt hệ thống" side="right">
               <button
                 type="button"
                 onClick={() => {
-                  navigate("/documents")
+                  navigate("/settings")
                   setMobile(false)
                 }}
-                className="text-[11px] font-medium text-[#0F766E] hover:underline"
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-lg text-[#647C79] transition-colors hover:bg-white hover:text-[#172B29]",
+                  location.pathname.startsWith("/settings") &&
+                    "border border-[#DCE7E4] bg-white font-semibold text-[#087F73] shadow-2xs",
+                )}
+                aria-label="Cài đặt"
               >
-                Tất cả ({totalWsDocs})
+                <Settings className="h-4 w-4" />
               </button>
-            </div>
-
-            {recentDocuments.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[#CBE4DF] bg-white/60 p-3 text-center">
-                <p className="text-xs text-[#647D7A]">Chưa có tài liệu</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigate("/documents")
-                    setMobile(false)
-                  }}
-                  className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-[#0F766E] hover:underline"
-                >
-                  <Plus className="h-3 w-3" />
-                  <span>Tải tài liệu</span>
-                </button>
-              </div>
-            ) : (
-              <ul className="space-y-0.5">
-                {recentDocuments.map((doc) => {
-                  const isDocActive = location.pathname === `/documents/${doc.id}`
-                  return (
-                    <li key={doc.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigate(`/documents/${doc.id}`)
-                          setMobile(false)
-                        }}
-                        title={doc.fileName}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
-                          isDocActive
-                            ? "bg-white font-semibold text-[#0B1716] shadow-2xs ring-1 ring-[#DCECE8]"
-                            : "text-[#4A6663] hover:bg-[#EDF6F4] hover:text-[#0B1716]",
-                        )}
-                      >
-                        <BookOpen className="h-3.5 w-3.5 shrink-0 text-[#0F766E]" />
-                        <span className="flex-1 truncate">{doc.fileName}</span>
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            doc.status === "ready"
-                              ? "bg-[#10B981]"
-                              : doc.status === "failed"
-                                ? "bg-rose-500"
-                                : "bg-amber-400",
-                          )}
-                        />
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
+            </Tooltip>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                navigate("/settings")
+                setMobile(false)
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                location.pathname.startsWith("/settings")
+                  ? "border border-[#DCE7E4] bg-white font-semibold text-[#172B29] shadow-2xs"
+                  : "font-medium text-[#647C79] hover:bg-white/60 hover:text-[#172B29]",
+              )}
+              aria-label="Cài đặt"
+            >
+              <Settings
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0",
+                  location.pathname.startsWith("/settings") ? "text-[#087F73]" : "text-[#647C79]",
+                )}
+              />
+              <span className="flex-1 truncate">Cài đặt</span>
+            </button>
+          )}
         </div>
       </aside>
 
-      {/* Dialog đổi tên hội thoại */}
       <NameDialog
         open={Boolean(renameTarget)}
         title="Đổi tên cuộc trò chuyện"
@@ -462,7 +413,6 @@ export function AppSidebar() {
         }}
       />
 
-      {/* Dialog xóa hội thoại */}
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Xóa cuộc trò chuyện?"

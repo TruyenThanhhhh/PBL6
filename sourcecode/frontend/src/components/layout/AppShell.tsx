@@ -16,7 +16,7 @@ export function AppShell() {
   }, [theme])
 
   return (
-    <div className="flex h-screen w-full flex-col overflow-hidden bg-[#F7FAF9] text-ink">
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-white text-[#172B29]">
       <AppHeader />
       <ConnectionBanner />
       <div className="flex min-h-0 flex-1 overflow-hidden">

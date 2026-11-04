@@ -7,13 +7,13 @@ import {
   FolderInput,
   LayoutList,
   MoreHorizontal,
-  Pencil,
   Search,
   Table2,
   Trash2,
 } from "lucide-react"
 import { PageHeader } from "@/components/common/PageHeader"
-import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
+import { ConfirmDialog } from "@/components/common/NameDialog"
+import { InlineEdit } from "@/components/common/InlineEdit"
 import {
   Badge,
   Button,
@@ -68,7 +68,6 @@ export function DocumentsPage() {
   const [viewMode, setViewMode] = useState<"table" | "list">("table")
 
   // Dialog states
-  const [renameDoc, setRenameDoc] = useState<KnowledgeDocument | null>(null)
   const [deleteDoc, setDeleteDoc] = useState<KnowledgeDocument | null>(null)
   const [moveDoc, setMoveDoc] = useState<KnowledgeDocument | null>(null)
   const [moveWsId, setMoveWsId] = useState<string>("")
@@ -179,12 +178,6 @@ export function DocumentsPage() {
         onClick={() => navigate(`/documents/${doc.id}`)}
       >
         Xem nội dung
-      </DropdownMenuItem>
-      <DropdownMenuItem
-        icon={<Pencil className="h-3.5 w-3.5" />}
-        onClick={() => setRenameDoc(doc)}
-      >
-        Đổi tên tài liệu
       </DropdownMenuItem>
       <DropdownMenuItem
         icon={<FolderInput className="h-3.5 w-3.5" />}
@@ -332,13 +325,29 @@ export function DocumentsPage() {
                 return (
                   <TableRow key={d.id} className="transition-colors hover:bg-bg-hover/60">
                     <TableCell>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/documents/${d.id}`)}
-                        className="text-left font-semibold text-ink hover:text-brand"
-                      >
-                        {d.fileName}
-                      </button>
+                      <div className="flex items-center gap-1.5 max-w-[280px]">
+                        <InlineEdit
+                          value={d.fileName}
+                          ariaLabel="Tên tài liệu"
+                          validate={(next) => (!next.trim() ? "Tên tệp không được để trống." : null)}
+                          onSave={(next) => {
+                            if (next === d.fileName) return
+                            updateDocument(d.id, { fileName: next })
+                            toast({ title: "Đã đổi tên tài liệu", description: next, tone: "success" })
+                          }}
+                          className="font-semibold text-ink hover:text-[#087F73] text-xs truncate"
+                          inputClassName="text-xs font-semibold text-[#172B29]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/documents/${d.id}`)}
+                          className="shrink-0 p-1 text-muted hover:text-[#087F73] rounded hover:bg-bg-hover transition-colors"
+                          title="Xem nội dung tài liệu"
+                          aria-label={`Xem ${d.fileName}`}
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge tone="neutral">{d.fileType.toUpperCase()}</Badge>
@@ -375,12 +384,28 @@ export function DocumentsPage() {
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
+                    <div className="max-w-[280px]">
+                      <InlineEdit
+                        value={d.fileName}
+                        ariaLabel="Tên tài liệu"
+                        validate={(next) => (!next.trim() ? "Tên tệp không được để trống." : null)}
+                        onSave={(next) => {
+                          if (next === d.fileName) return
+                          updateDocument(d.id, { fileName: next })
+                          toast({ title: "Đã đổi tên tài liệu", description: next, tone: "success" })
+                        }}
+                        className="truncate text-xs font-semibold text-ink hover:text-[#087F73]"
+                        inputClassName="text-xs font-semibold text-[#172B29]"
+                      />
+                    </div>
                     <button
                       type="button"
                       onClick={() => navigate(`/documents/${d.id}`)}
-                      className="truncate text-xs font-semibold text-ink hover:text-brand"
+                      className="shrink-0 p-1 text-muted hover:text-[#087F73] rounded hover:bg-bg-hover transition-colors"
+                      title="Xem nội dung tài liệu"
+                      aria-label={`Xem ${d.fileName}`}
                     >
-                      {d.fileName}
+                      <Eye className="h-3.5 w-3.5" />
                     </button>
                     <Badge tone="neutral">{d.fileType.toUpperCase()}</Badge>
                   </div>
@@ -402,21 +427,6 @@ export function DocumentsPage() {
           })}
         </div>
       )}
-
-      {/* Dialog đổi tên */}
-      <NameDialog
-        open={Boolean(renameDoc)}
-        title="Đổi tên tài liệu"
-        initialName={renameDoc?.fileName ?? ""}
-        onClose={() => setRenameDoc(null)}
-        onSubmit={(name) => {
-          if (renameDoc) {
-            updateDocument(renameDoc.id, { fileName: name })
-            toast({ title: "Đã đổi tên tài liệu", tone: "success" })
-            setRenameDoc(null)
-          }
-        }}
-      />
 
       {/* Dialog xác nhận xóa */}
       <ConfirmDialog

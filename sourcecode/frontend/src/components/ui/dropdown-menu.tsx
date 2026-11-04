@@ -6,12 +6,14 @@ const DropdownMenuContext = createContext<{ close: () => void }>({ close: () => 
 export function DropdownMenu({
   trigger,
   align = "end",
+  side = "bottom",
   children,
   className,
   fullWidth = false,
 }: {
   trigger: ReactNode
   align?: "start" | "end"
+  side?: "bottom" | "top"
   children: ReactNode
   className?: string
   fullWidth?: boolean
@@ -53,7 +55,8 @@ export function DropdownMenu({
           <div
             role="menu"
             className={cn(
-              "absolute top-[calc(100%+4px)] z-40 min-w-[196px] rounded-lg border border-line bg-bg p-1 shadow-lg",
+              "absolute z-50 min-w-[200px] max-h-[380px] overflow-y-auto rounded-xl border border-[#DCE7E4] bg-white p-1 shadow-xl",
+              side === "top" ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+4px)]",
               align === "end" ? "right-0" : "left-0",
               className,
             )}

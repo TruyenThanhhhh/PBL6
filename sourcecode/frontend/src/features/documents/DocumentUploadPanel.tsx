@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { AlertCircle, CheckCircle2, FileUp, Loader2, Trash2, Upload, X } from "lucide-react"
-import { Alert, Badge, Button, FormField, Select } from "@/components/ui"
+import { Alert, Badge, Button } from "@/components/ui"
 import { buildUploadedDocument, useAppStore } from "@/store/app-store"
 import { fetchDocuments, uploadDocumentWithProgress } from "@/services/api"
 import { ACCEPTED_EXTENSIONS, formatBytes, uid } from "@/utils/format"
@@ -14,16 +14,12 @@ import {
 export function DocumentUploadPanel({
   targetWorkspaceId,
   targetNotebookId,
-  onTargetWorkspaceChange,
-  onTargetNotebookChange,
 }: {
   targetWorkspaceId: string
-  targetNotebookId: string
-  onTargetWorkspaceChange: (wsId: string) => void
-  onTargetNotebookChange: (nbId: string) => void
+  targetNotebookId?: string
+  onTargetWorkspaceChange?: (wsId: string) => void
+  onTargetNotebookChange?: (nbId: string) => void
 }) {
-  const workspaces = useAppStore((s) => s.workspaces)
-  const notebooks = useAppStore((s) => s.notebooks)
   const documents = useAppStore((s) => s.documents)
   const addDocument = useAppStore((s) => s.addDocument)
   const replaceDocs = useAppStore((s) => s.replaceDocumentsFromBackend)
@@ -37,7 +33,6 @@ export function DocumentUploadPanel({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const wsDocs = documents.filter((d) => d.workspaceId === targetWorkspaceId)
-  const wsNotebooks = notebooks.filter((n) => n.workspaceId === targetWorkspaceId)
 
   const enqueueFiles = (files: FileList | File[]) => {
     const incoming = Array.from(files)
@@ -163,38 +158,6 @@ export function DocumentUploadPanel({
 
   return (
     <section aria-label="Tải lên tài liệu" className="motivo-card mb-6 p-4">
-      <div className="mb-4 grid gap-3 sm:grid-cols-2">
-        <FormField label="Workspace đích" hint="Nơi lưu tài liệu">
-          <Select
-            value={targetWorkspaceId}
-            onChange={(e) => {
-              onTargetWorkspaceChange(e.target.value)
-              onTargetNotebookChange("")
-            }}
-          >
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </Select>
-        </FormField>
-
-        <FormField label="Notebook đích (tuỳ chọn)" hint="Phân loại trong workspace">
-          <Select
-            value={targetNotebookId}
-            onChange={(e) => onTargetNotebookChange(e.target.value)}
-          >
-            <option value="">-- Chưa phân loại vào notebook --</option>
-            {wsNotebooks.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name}
-              </option>
-            ))}
-          </Select>
-        </FormField>
-      </div>
-
       {/* Dropzone */}
       <div
         onDragOver={(e) => {
