@@ -12,11 +12,13 @@ import { StudyToolsPage } from "@/features/study-tools/StudyToolsPage"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { DesignSystemPage } from "@/features/design-system/DesignSystemPage"
 import { LoginPage } from "@/features/auth/LoginPage"
+import { OnboardingPage } from "@/features/onboarding/OnboardingPage"
 
 export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/onboarding" element={<OnboardingPage />} />
 
 
       {/* Trang giới thiệu Welcome / Landing Page */}

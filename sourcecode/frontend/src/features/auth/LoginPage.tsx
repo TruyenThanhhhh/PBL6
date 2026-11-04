@@ -69,6 +69,8 @@ export function LoginPage() {
       }
       if (mode === "register") {
         await register(email.trim(), password)
+        navigate("/onboarding", { replace: true })
+        return
       } else {
         await login(email.trim(), password)
       }
