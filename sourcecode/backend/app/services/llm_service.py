@@ -2,7 +2,13 @@ import httpx
 import re
 import logging
 from typing import List, Dict, Any, Optional
-from app.config import OLLAMA_BASE_URL, DEFAULT_LLM_MODEL, VISION_MODEL, VISION_MODEL_FALLBACK
+from app.config import (
+    OLLAMA_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    OLLAMA_TIMEOUT,
+    VISION_MODEL,
+    VISION_MODEL_FALLBACK,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +87,8 @@ async def generate_rag_answer(
         )
         if ollama_status["running"] and model_available:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                timeout = httpx.Timeout(OLLAMA_TIMEOUT, connect=10.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json={
                         "model": model_name,
                         "messages": [
@@ -89,7 +96,9 @@ async def generate_rag_answer(
                             *history_messages,
                             {"role": "user", "content": query}
                         ],
-                        "stream": False
+                        "stream": False,
+                        "keep_alive": "30m",
+                        "options": {"num_predict": 256}
                     })
                     if resp.status_code == 200:
                         ans = resp.json().get("message", {}).get("content", "")
@@ -179,7 +188,7 @@ async def generate_rag_answer(
     image_request_error = None
     if ollama_status["running"] and model_available:
         try:
-            timeout = httpx.Timeout(180.0, connect=10.0) if image_base64 else 60.0
+            timeout = httpx.Timeout(180.0, connect=10.0) if image_base64 else httpx.Timeout(OLLAMA_TIMEOUT, connect=10.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if image_base64:
                     logger.info("Vision request: model=%s image_bytes=%d", model_name, len(image_base64) * 3 // 4)
@@ -194,6 +203,7 @@ async def generate_rag_answer(
                         user_message
                     ],
                     "stream": False,
+                    "keep_alive": "30m",
                     "options": {"num_predict": 384 if image_base64 else 512},
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
