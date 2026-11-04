@@ -25,6 +25,7 @@ class ChatQueryRequest(BaseModel):
     web_search: bool = False
     top_k: int = Field(default=4, ge=1, le=20)
     selected_document_id: Optional[str] = Field(default=None, max_length=100)
+    document_ids: Optional[list[str]] = Field(default=None, max_length=20)
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
     image_base64: Optional[str] = Field(default=None, max_length=7_000_000)
     image_mime_type: Optional[Literal["image/png", "image/jpeg", "image/webp"]] = None
@@ -68,12 +69,20 @@ async def query_knowledge_base(req: ChatQueryRequest, user: dict = Depends(get_c
     if not owned:
         conn.close()
         raise HTTPException(status_code=404, detail="Không tìm thấy workspace")
-    if req.selected_document_id:
-        selected_document = conn.execute(
-            "SELECT 1 FROM documents WHERE id = ? AND workspace_id = ?",
-            (req.selected_document_id, req.workspace_id),
-        ).fetchone()
-        if not selected_document:
+    scope_ids: list[str] = []
+    if req.document_ids:
+        scope_ids = list(dict.fromkeys(req.document_ids))
+    elif req.selected_document_id:
+        scope_ids = [req.selected_document_id]
+    if scope_ids:
+        placeholders = ",".join("?" for _ in scope_ids)
+        found = conn.execute(
+            f"SELECT id FROM documents WHERE workspace_id = ? AND id IN ({placeholders})",
+            (req.workspace_id, *scope_ids),
+        ).fetchall()
+        found_ids = {row["id"] for row in found}
+        missing = [doc_id for doc_id in scope_ids if doc_id not in found_ids]
+        if missing:
             conn.close()
             raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu được chọn trong kho này")
     conn.close()
@@ -92,7 +101,8 @@ async def query_knowledge_base(req: ChatQueryRequest, user: dict = Depends(get_c
     return await answer_query(req.workspace_id, req.query, req.model, req.web_search, req.top_k,
                               [turn.model_dump() for turn in req.history],
                               image_base64=req.image_base64,
-                              selected_document_id=req.selected_document_id)
+                              selected_document_id=req.selected_document_id,
+                              document_ids=scope_ids or None)
 
 
 class WebSearchRequest(BaseModel):

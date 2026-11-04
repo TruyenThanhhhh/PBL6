@@ -15,17 +15,19 @@ async def answer_query(workspace_id: str, query: str, model: Optional[str] = Non
                        include_web: bool = False, top_k: int = TOP_K_RETRIEVAL,
                        history: Optional[list[Dict[str, str]]] = None,
                        image_base64: Optional[str] = None,
-                       selected_document_id: Optional[str] = None) -> Dict[str, Any]:
+                       selected_document_id: Optional[str] = None,
+                       document_ids: Optional[list[str]] = None) -> Dict[str, Any]:
     history = (history or [])[-8:]
     prior_user_context = " ".join(turn["content"] for turn in history if turn.get("role") == "user")
     retrieval_query = f"{prior_user_context} {query}".strip()
-    if image_base64 and not selected_document_id:
+    scope_ids = document_ids or ([selected_document_id] if selected_document_id else None)
+    if image_base64 and not scope_ids:
         # A question about an image does not need to embed/search every workspace document.
         local_sources = []
     else:
         retrieval_limit = min(top_k, 2) if image_base64 else top_k
         local_sources = await run_in_threadpool(
-            search_relevant_chunks, workspace_id, retrieval_query, retrieval_limit, selected_document_id
+            search_relevant_chunks, workspace_id, retrieval_query, retrieval_limit, scope_ids
         )
     web_sources = []
     network_status = "not_requested"

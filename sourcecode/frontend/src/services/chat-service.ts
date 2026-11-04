@@ -150,8 +150,8 @@ export interface SendChatRequest {
   modelId: string
   backendOnline: boolean
   contextDocuments?: KnowledgeDocument[]
+  selectedDocumentId?: string
   signal?: AbortSignal
-  /** Callback nhận từng phần nội dung nếu backend trả về luồng streaming thật */
   onStreamChunk?: (partialContent: string) => void
 }
 
@@ -198,6 +198,7 @@ async function tryStreamOrQueryBackend(
         query: req.query,
         model: req.modelId,
         mode: req.mode,
+        selected_document_id: req.selectedDocumentId ?? undefined,
       }),
       signal: req.signal,
     })
@@ -278,6 +279,8 @@ async function tryStreamOrQueryBackend(
       workspace_id: req.workspaceId,
       query: req.query,
       model: req.modelId,
+      document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
+      selected_document_id: req.selectedDocumentId ?? undefined,
     }),
     signal: req.signal,
   })

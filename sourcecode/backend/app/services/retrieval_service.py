@@ -23,15 +23,26 @@ def _cosine(left: List[float], right: List[float]) -> float:
 
 
 def search_relevant_chunks(workspace_id: str, query: str, top_k: int = TOP_K_RETRIEVAL,
-                           document_id: Optional[str] = None) -> List[Dict[str, Any]]:
+                           document_id: Optional[Any] = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         tokens = [token for token in clean_query.split() if len(token) > 1]
         candidate_limit = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k)
-        document_filter = " AND c.document_id = ?" if document_id else ""
-        document_params = (document_id,) if document_id else ()
+        if isinstance(document_id, str):
+            scope_ids = [document_id]
+        elif document_id:
+            scope_ids = [str(doc_id) for doc_id in document_id]
+        else:
+            scope_ids = []
+        if scope_ids:
+            placeholders = ",".join("?" for _ in scope_ids)
+            document_filter = f" AND c.document_id IN ({placeholders})"
+            document_params = tuple(scope_ids)
+        else:
+            document_filter = ""
+            document_params = ()
         sparse: List[Dict[str, Any]] = []
         if tokens:
             match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
