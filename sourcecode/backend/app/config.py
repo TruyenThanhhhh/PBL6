@@ -18,6 +18,7 @@ DATABASE_PATH = DATA_DIR / "knowledge.db"
 # Cấu hình AI & LLM
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "qwen2.5:3b")
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl:2b-instruct")
 VISION_MODEL_FALLBACK = os.getenv("VISION_MODEL_FALLBACK", "qwen2.5vl:3b")
 

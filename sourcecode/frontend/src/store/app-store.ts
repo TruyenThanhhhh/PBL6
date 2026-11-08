@@ -147,6 +147,8 @@ interface AppState {
   createConversation: (workspaceId: string, title?: string) => Conversation
   renameConversation: (id: string, title: string) => void
   deleteConversation: (id: string) => void
+  replaceConversationsFromBackend: (convs: Conversation[]) => void
+  setConversationMessages: (convId: string, messages: ChatMessage[]) => void
   appendMessage: (conversationId: string, message: ChatMessage) => void
   updateMessage: (conversationId: string, messageId: string, patch: Partial<ChatMessage>) => void
 
@@ -368,6 +370,20 @@ export const useAppStore = create<AppState>()(
         }),
       deleteConversation: (id) =>
         set({ conversations: get().conversations.filter((c) => c.id !== id) }),
+      replaceConversationsFromBackend: (rows) => {
+        const existingMap = new Map(get().conversations.map((c) => [c.id, c.messages]))
+        const updated = rows.map((r) => ({
+          ...r,
+          messages: (existingMap.get(r.id)?.length ?? 0) > 0 ? existingMap.get(r.id)! : r.messages,
+        }))
+        set({ conversations: updated })
+      },
+      setConversationMessages: (convId, messages) =>
+        set({
+          conversations: get().conversations.map((c) =>
+            c.id === convId ? { ...c, messages } : c,
+          ),
+        }),
       appendMessage: (conversationId, message) =>
         set({
           conversations: get().conversations.map((c) =>

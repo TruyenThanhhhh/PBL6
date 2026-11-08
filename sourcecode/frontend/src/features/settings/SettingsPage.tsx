@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import {
   Activity,
   Bot,
   Database,
+  KeyRound,
   Palette,
   RefreshCw,
   Settings,
@@ -11,18 +12,22 @@ import {
   Sun,
   Moon,
   Trash2,
+  User,
 } from "lucide-react"
 import { ConfirmDialog } from "@/components/common/NameDialog"
 import { PageHeader } from "@/components/common/PageHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { FormField, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
 import { fetchSystemStatus } from "@/services/api"
+import { changePassword, logout, updateProfile } from "@/services/auth-service"
 import type { AIMode } from "@/types"
 
 type SettingsSection =
+  | "account"
   | "general"
   | "appearance"
   | "models"
@@ -31,6 +36,7 @@ type SettingsSection =
   | "status"
 
 const SECTIONS: { id: SettingsSection; label: string; icon: typeof Settings }[] = [
+  { id: "account", label: "Hồ sơ cá nhân", icon: User },
   { id: "general", label: "General", icon: Settings },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "models", label: "AI Models", icon: Bot },
@@ -41,14 +47,37 @@ const SECTIONS: { id: SettingsSection; label: string; icon: typeof Settings }[] 
 
 export function SettingsPage() {
   const navigate = useNavigate()
+  const { user, authenticated } = useAuthSession()
   const [searchParams, setSearchParams] = useSearchParams()
   const paramSection = searchParams.get("section") as SettingsSection | null
   const activeSection: SettingsSection =
-    SECTIONS.find((s) => s.id === paramSection)?.id ?? "general"
+    SECTIONS.find((s) => s.id === paramSection)?.id ?? "account"
 
   const setSection = (id: SettingsSection) => {
     setSearchParams({ section: id })
   }
+
+  const [firstName, setFirstName] = useState(user?.first_name ?? "")
+  const [lastName, setLastName] = useState(user?.last_name ?? "")
+  const [phone, setPhone] = useState(user?.phone ?? "")
+  const [organization, setOrganization] = useState(user?.organization ?? "")
+  const [roleTitle, setRoleTitle] = useState(user?.role_title || "Sinh viên")
+  const [savingProfile, setSavingProfile] = useState(false)
+
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmNewPassword, setConfirmNewPassword] = useState("")
+  const [savingPassword, setSavingPassword] = useState(false)
+
+  useEffect(() => {
+    if (user) {
+      setFirstName(user.first_name ?? "")
+      setLastName(user.last_name ?? "")
+      setPhone(user.phone ?? "")
+      setOrganization(user.organization ?? "")
+      setRoleTitle(user.role_title || "Sinh viên")
+    }
+  }, [user])
 
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
@@ -140,6 +169,217 @@ export function SettingsPage() {
 
         {/* Nội dung section */}
         <div className="min-w-0 flex-1 rounded-lg border border-line bg-bg p-5 md:p-6">
+          {activeSection === "account" && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-base font-semibold text-ink">Hồ sơ cá nhân &amp; Tài khoản</h2>
+                <p className="mt-0.5 text-xs text-muted">
+                  Quản lý thông tin họ tên, số điện thoại, đơn vị công tác/học tập và bảo mật mật khẩu.
+                </p>
+              </div>
+
+              {!authenticated ? (
+                <div className="rounded-lg border border-line bg-bg-secondary p-5">
+                  <div className="text-sm font-medium text-ink">Bạn đang ở chế độ Khách (Chưa đăng nhập)</div>
+                  <p className="mt-1 text-xs text-muted">
+                    Đăng nhập hoặc đăng ký tài khoản để lưu trữ thông tin cá nhân, đồng bộ Workspace và tài liệu trên cơ sở dữ liệu SQLite.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2.5">
+                    <Button size="sm" onClick={() => navigate("/login")}>
+                      Đăng nhập
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => navigate("/login?mode=register")}>
+                      Đăng ký tài khoản mới
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <form
+                    className="space-y-4 border-t border-line pt-4"
+                    onSubmit={async (e) => {
+                      e.preventDefault()
+                      if (!lastName.trim() && !firstName.trim()) {
+                        toast({ title: "Vui lòng nhập họ và tên", tone: "error" })
+                        return
+                      }
+                      setSavingProfile(true)
+                      try {
+                        const updated = await updateProfile({
+                          first_name: firstName.trim(),
+                          last_name: lastName.trim(),
+                          phone: phone.trim(),
+                          organization: organization.trim(),
+                          role_title: roleTitle.trim(),
+                        })
+                        toast({
+                          title: "Đã lưu hồ sơ cá nhân",
+                          description: `Tên hiển thị: ${updated.name}`,
+                          tone: "success",
+                        })
+                      } catch (err) {
+                        toast({
+                          title: "Không thể cập nhật hồ sơ",
+                          description: err instanceof Error ? err.message : "Lỗi kết nối",
+                          tone: "error",
+                        })
+                      } finally {
+                        setSavingProfile(false)
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-3.5 rounded-lg border border-line bg-bg-secondary p-3.5">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0F766E] text-sm font-bold text-white">
+                        {(user?.name || user?.email || "U").slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-ink">{user?.name}</div>
+                        <div className="truncate text-xs text-muted">{user?.email}</div>
+                      </div>
+                      <Badge tone="success">Đã xác thực</Badge>
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField label="Họ và tên đệm">
+                        <Input
+                          value={lastName}
+                          onChange={(e) => setLastName(e.target.value)}
+                          placeholder="Nguyễn Văn"
+                        />
+                      </FormField>
+                      <FormField label="Tên gọi">
+                        <Input
+                          value={firstName}
+                          onChange={(e) => setFirstName(e.target.value)}
+                          placeholder="Minh"
+                        />
+                      </FormField>
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField label="Số điện thoại">
+                        <Input
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          placeholder="0905 123 456"
+                        />
+                      </FormField>
+                      <FormField label="Vai trò">
+                        <Select value={roleTitle} onChange={(e) => setRoleTitle(e.target.value)}>
+                          <option value="Sinh viên">Sinh viên</option>
+                          <option value="Giảng viên / Giáo viên">Giảng viên / Giáo viên</option>
+                          <option value="Nghiên cứu viên">Nghiên cứu viên</option>
+                          <option value="Kỹ sư AI / Phần mềm">Kỹ sư AI / Phần mềm</option>
+                          <option value="Chuyên viên phân tích">Chuyên viên phân tích</option>
+                          <option value="Khác">Khác</option>
+                        </Select>
+                      </FormField>
+                    </div>
+
+                    <FormField label="Trường học / Cơ quan / Tổ chức">
+                      <Input
+                        value={organization}
+                        onChange={(e) => setOrganization(e.target.value)}
+                        placeholder="VD: Trường ĐH Bách Khoa - ĐH Đà Nẵng"
+                      />
+                    </FormField>
+
+                    <div className="flex items-center justify-between pt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          logout()
+                          navigate("/login")
+                        }}
+                      >
+                        Đăng xuất tài khoản
+                      </Button>
+                      <Button type="submit" size="sm" loading={savingProfile}>
+                        Lưu thay đổi hồ sơ
+                      </Button>
+                    </div>
+                  </form>
+
+                  <form
+                    className="space-y-4 border-t border-line pt-5"
+                    onSubmit={async (e) => {
+                      e.preventDefault()
+                      if (newPassword.length < 8) {
+                        toast({ title: "Mật khẩu mới cần tối thiểu 8 ký tự", tone: "error" })
+                        return
+                      }
+                      if (newPassword !== confirmNewPassword) {
+                        toast({ title: "Mật khẩu xác nhận không khớp", tone: "error" })
+                        return
+                      }
+                      setSavingPassword(true)
+                      try {
+                        const msg = await changePassword(currentPassword, newPassword)
+                        setCurrentPassword("")
+                        setNewPassword("")
+                        setConfirmNewPassword("")
+                        toast({ title: msg, tone: "success" })
+                      } catch (err) {
+                        toast({
+                          title: "Không thể đổi mật khẩu",
+                          description: err instanceof Error ? err.message : "Lỗi kết nối",
+                          tone: "error",
+                        })
+                      } finally {
+                        setSavingPassword(false)
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <KeyRound className="h-4 w-4 text-muted" />
+                      <h3 className="text-sm font-semibold text-ink">Đổi mật khẩu bảo mật</h3>
+                    </div>
+
+                    <div className="grid gap-3.5 sm:grid-cols-3">
+                      <FormField label="Mật khẩu hiện tại">
+                        <Input
+                          type="password"
+                          required
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          placeholder="••••••••"
+                        />
+                      </FormField>
+                      <FormField label="Mật khẩu mới (≥ 8 ký tự)">
+                        <Input
+                          type="password"
+                          required
+                          minLength={8}
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                        />
+                      </FormField>
+                      <FormField label="Xác nhận mật khẩu mới">
+                        <Input
+                          type="password"
+                          required
+                          minLength={8}
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                        />
+                      </FormField>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <Button type="submit" variant="outline" size="sm" loading={savingPassword}>
+                        Cập nhật mật khẩu
+                      </Button>
+                    </div>
+                  </form>
+                </>
+              )}
+            </div>
+          )}
+
           {activeSection === "general" && (
             <div className="space-y-6">
               <div>

@@ -1,7 +1,35 @@
 export interface AuthUser {
   id: string
   email: string
+  first_name?: string
+  last_name?: string
   name: string
+  phone?: string
+  organization?: string
+  role_title?: string
+  avatar_url?: string
+  created_at?: string
+}
+
+export interface RegisterPayload {
+  email: string
+  password: string
+  first_name: string
+  last_name: string
+  name?: string
+  phone?: string
+  organization?: string
+  role_title?: string
+}
+
+export interface ProfileUpdatePayload {
+  first_name?: string
+  last_name?: string
+  name?: string
+  phone?: string
+  organization?: string
+  role_title?: string
+  avatar_url?: string
 }
 
 export interface AuthSession {
@@ -68,6 +96,15 @@ export function storeSession(session: AuthSession) {
   notify()
 }
 
+export function storeUser(user: AuthUser) {
+  try {
+    localStorage.setItem(USER_KEY, JSON.stringify(user))
+  } catch {
+    // Bỏ qua khi trình duyệt chặn localStorage.
+  }
+  notify()
+}
+
 export function clearSession() {
   try {
     localStorage.removeItem(TOKEN_KEY)
@@ -107,11 +144,11 @@ export async function isBackendReachable(): Promise<boolean> {
   }
 }
 
-async function authenticate(path: "/register" | "/login", email: string, password: string) {
-  const response = await fetch(`${API_BASE}/api/v1/auth${path}`, {
+export async function login(email: string, password: string, rememberMe = true): Promise<AuthSession> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, remember_me: rememberMe }),
   })
   if (!response.ok) {
     throw new Error(await parseError(response))
@@ -121,12 +158,67 @@ async function authenticate(path: "/register" | "/login", email: string, passwor
   return session
 }
 
-export function login(email: string, password: string) {
-  return authenticate("/login", email, password)
+export async function register(
+  payloadOrEmail: RegisterPayload | string,
+  legacyPassword?: string,
+): Promise<AuthSession> {
+  const body: RegisterPayload =
+    typeof payloadOrEmail === "string"
+      ? {
+          email: payloadOrEmail,
+          password: legacyPassword ?? "",
+          first_name: "",
+          last_name: "",
+        }
+      : payloadOrEmail
+
+  const response = await fetch(`${API_BASE}/api/v1/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    throw new Error(await parseError(response))
+  }
+  const session = (await response.json()) as AuthSession
+  storeSession(session)
+  return session
 }
 
-export function register(email: string, password: string) {
-  return authenticate("/register", email, password)
+export async function updateProfile(payload: ProfileUpdatePayload): Promise<AuthUser> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/profile`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(await parseError(response))
+  }
+  const data = (await response.json()) as { user: AuthUser }
+  storeUser(data.user)
+  return data.user
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(await parseError(response))
+  }
+  const data = (await response.json()) as { message?: string }
+  return data.message ?? "Đã đổi mật khẩu thành công"
 }
 
 export async function fetchCurrentSession(): Promise<AuthSession | null> {
@@ -178,10 +270,10 @@ export function logout() {
 /**
  * Google OAuth redirects về `/#access_token=...`. Đọc token, lưu lại và xoá hash.
  */
-export function consumeOAuthTokenFromHash() {
-  if (typeof window === "undefined") return
+export function consumeOAuthTokenFromHash(): boolean {
+  if (typeof window === "undefined") return false
   const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : ""
-  if (!hash.includes("access_token=")) return
+  if (!hash.includes("access_token=")) return false
   const params = new URLSearchParams(hash)
   const token = params.get("access_token")
   if (token) {
@@ -191,6 +283,8 @@ export function consumeOAuthTokenFromHash() {
       // Bỏ qua khi trình duyệt chặn localStorage.
     }
     notify()
+    window.history.replaceState(null, "", window.location.pathname + window.location.search)
+    return true
   }
-  window.history.replaceState(null, "", window.location.pathname + window.location.search)
+  return false
 }

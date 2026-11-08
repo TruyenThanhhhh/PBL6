@@ -200,12 +200,39 @@
         <p class="mt-1 text-sm text-slate-500">Đăng nhập để dùng kho tri thức cá nhân</p>
       </div>
       <form id="auth-form" class="space-y-3">
-        <label class="block text-sm text-slate-600">Email
+        <div id="register-extra-fields" class="hidden space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block text-sm text-slate-600">Họ và tên đệm *
+              <input id="auth-last-name" type="text" placeholder="Nguyễn Văn" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 outline-none focus:border-blue-500">
+            </label>
+            <label class="block text-sm text-slate-600">Tên gọi *
+              <input id="auth-first-name" type="text" placeholder="Minh" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 outline-none focus:border-blue-500">
+            </label>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block text-sm text-slate-600">Số điện thoại
+              <input id="auth-phone" type="tel" placeholder="0905 123 456" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 outline-none focus:border-blue-500">
+            </label>
+            <label class="block text-sm text-slate-600">Vai trò
+              <select id="auth-role" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 outline-none focus:border-blue-500">
+                <option value="Sinh viên">Sinh viên</option>
+                <option value="Giảng viên">Giảng viên</option>
+                <option value="Nghiên cứu viên">Nghiên cứu viên</option>
+                <option value="Kỹ sư AI / IT">Kỹ sư AI / IT</option>
+                <option value="Khác">Khác</option>
+              </select>
+            </label>
+          </div>
+          <label class="block text-sm text-slate-600">Trường học / Cơ quan
+            <input id="auth-organization" type="text" placeholder="ĐH Bách Khoa - ĐH Đà Nẵng" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 outline-none focus:border-blue-500">
+          </label>
+        </div>
+        <label class="block text-sm text-slate-600">Email *
           <input id="auth-email" type="email" autocomplete="email" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-blue-500">
         </label>
-        <label class="block text-sm text-slate-600">Mật khẩu
-          <input id="auth-password" type="password" minlength="10" maxlength="128" autocomplete="current-password" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-blue-500">
-          <span id="password-hint" class="mt-1 block text-xs text-slate-400">Ít nhất 10 ký tự</span>
+        <label class="block text-sm text-slate-600">Mật khẩu *
+          <input id="auth-password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-blue-500">
+          <span id="password-hint" class="mt-1 block text-xs text-slate-400">Ít nhất 8 ký tự</span>
         </label>
         <p id="auth-error" class="hidden text-sm text-rose-600"></p>
         <button id="auth-submit" class="w-full rounded-xl bg-blue-600 py-2.5 font-medium text-white hover:bg-blue-700">Đăng nhập</button>
@@ -273,6 +300,9 @@
       document.getElementById("auth-switch").textContent = registering ? "Đăng nhập" : "Đăng ký";
       document.getElementById("auth-password").autocomplete = registering ? "new-password" : "current-password";
       document.getElementById("password-hint").classList.toggle("hidden", !registering);
+      document.getElementById("register-extra-fields").classList.toggle("hidden", !registering);
+      document.getElementById("auth-last-name").required = registering;
+      document.getElementById("auth-first-name").required = registering;
       document.getElementById("auth-error").classList.add("hidden");
       document.getElementById("auth-gate").classList.remove("hidden");
       document.getElementById("auth-email").focus();
@@ -343,7 +373,18 @@
       try {
         const res = await fetch(`${API_BASE}/auth/${authMode === "register" ? "register" : "login"}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: document.getElementById("auth-email").value, password: document.getElementById("auth-password").value })
+          body: JSON.stringify(authMode === "register" ? {
+            email: document.getElementById("auth-email").value,
+            password: document.getElementById("auth-password").value,
+            first_name: document.getElementById("auth-first-name").value,
+            last_name: document.getElementById("auth-last-name").value,
+            phone: document.getElementById("auth-phone").value,
+            organization: document.getElementById("auth-organization").value,
+            role_title: document.getElementById("auth-role").value
+          } : {
+            email: document.getElementById("auth-email").value,
+            password: document.getElementById("auth-password").value
+          })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Không thể xác thực tài khoản");

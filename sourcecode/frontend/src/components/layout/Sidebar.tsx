@@ -14,6 +14,12 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import {
+  createConversationApi,
+  deleteConversationApi,
+  renameConversationApi,
+} from "@/services/api"
+import { getAuthToken } from "@/services/auth-service"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
 import {
   Button,
@@ -66,8 +72,21 @@ export function AppSidebar() {
     [conversations, currentWsId],
   )
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     setCitationNavSelected(false)
+    if (getAuthToken()) {
+      try {
+        const created = await createConversationApi(currentWsId, "Cuộc trò chuyện mới")
+        useAppStore.setState((s) => ({
+          conversations: [created, ...s.conversations],
+        }))
+        navigate(`/chat/${created.id}`)
+        setMobile(false)
+        return
+      } catch (err) {
+        console.error("Create conversation API error in sidebar:", err)
+      }
+    }
     const conv = createConversation(currentWsId, "Cuộc trò chuyện mới")
     navigate(`/chat/${conv.id}`)
     setMobile(false)
@@ -407,6 +426,9 @@ export function AppSidebar() {
         onSubmit={(name) => {
           if (renameTarget) {
             renameConversation(renameTarget.id, name)
+            if (getAuthToken()) {
+              renameConversationApi(renameTarget.id, name).catch(() => {})
+            }
             toast({ title: "Đã đổi tên hội thoại", description: name, tone: "success" })
             setRenameTarget(null)
           }
@@ -422,9 +444,16 @@ export function AppSidebar() {
             : undefined
         }
         onClose={() => setDeleteTarget(null)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!deleteTarget) return
           const targetId = deleteTarget.id
+          if (getAuthToken()) {
+            try {
+              await deleteConversationApi(targetId)
+            } catch (err) {
+              console.error("Delete conversation API error in sidebar:", err)
+            }
+          }
           deleteConversation(targetId)
           setDeleteTarget(null)
           toast({ title: "Đã xóa cuộc trò chuyện", tone: "info" })

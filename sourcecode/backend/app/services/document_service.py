@@ -1,9 +1,10 @@
+import hashlib
 import uuid
 import re
 import logging
 import threading
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR, EMBEDDING_MODEL
 from app.database import get_db_connection
@@ -12,12 +13,13 @@ from app.services.embedding_service import embed_texts, pack_vector
 logger = logging.getLogger(__name__)
 SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv", "xlsx"}
 
+
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
     """
     Trích xuất text sạch từ file (PDF, DOCX, PPTX, TXT, MD) và giữ metadata số trang/slide.
     """
     results = []
-    
+
     if file_type == "pdf":
         try:
             import pypdf
@@ -29,7 +31,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
         except Exception as e:
             logger.exception("PDF extraction failed")
             raise ValueError("Không thể trích xuất nội dung PDF") from e
-            
+
     elif file_type == "docx":
         try:
             import docx
@@ -55,7 +57,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
         except Exception as e:
             logger.exception("PPTX extraction failed")
             raise ValueError("Không thể trích xuất nội dung PPTX") from e
-            
+
     elif file_type in ["txt", "md", "py", "json", "csv"]:
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -66,24 +68,8 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
             logger.exception("Text extraction failed")
             raise ValueError("Không thể đọc tệp văn bản") from e
 
-    elif file_type == "xlsx":
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
-            for sheet in wb.worksheets:
-                lines = []
-                for row in sheet.iter_rows(values_only=True):
-                    cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
-                    if cells:
-                        lines.append(" | ".join(cells))
-                if lines:
-                    results.append({"page": sheet.title, "text": "\n".join(lines)})
-            wb.close()
-        except Exception as e:
-            logger.exception("Excel extraction failed")
-            raise ValueError("Không thể trích xuất nội dung Excel") from e
-
     return results
+
 
 def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     """
@@ -91,10 +77,10 @@ def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int =
     """
     text = re.sub(r'\r\n', '\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
-    
+
     if len(text) <= chunk_size:
         return [text.strip()] if text.strip() else []
-        
+
     chunks = []
     start = 0
     while start < len(text):
@@ -104,127 +90,155 @@ def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int =
             if chunk:
                 chunks.append(chunk)
             break
-            
+
         cut = -1
         for delim in ["\n\n", "\n", ". ", "; ", ", ", " "]:
             pos = text.rfind(delim, start + chunk_size // 2, end)
             if pos != -1:
                 cut = pos + len(delim)
                 break
-                
+
         if cut == -1:
             cut = end
-            
+
         chunk = text[start:cut].strip()
         if chunk:
             chunks.append(chunk)
         start = cut - overlap if cut - overlap > start else cut
-        
+
     return chunks
 
-def _save_upload(workspace_id: str, file_name: str, file_bytes: bytes):
-    """Lưu file và tạo bản ghi documents (status=processing). Trả về thông tin cơ bản."""
+
+def process_and_index_document(
+    workspace_id: str,
+    file_name: str,
+    file_bytes: bytes,
+    notebook_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    # Chuẩn hóa notebook_id để tránh vi phạm FOREIGN KEY constraint
+    notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
+    if notebook_id:
+        conn_chk = get_db_connection()
+        nb_exists = conn_chk.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+        conn_chk.close()
+        if not nb_exists:
+            notebook_id = None
+    """
+    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, sinh vector BGE-M3
+    và lưu đồng bộ vào SQLite (documents, document_chunks, chunks_fts, chunk_embeddings).
+    """
     doc_id = str(uuid.uuid4())
     safe_name = Path(file_name or "upload.txt").name
     ext = Path(safe_name).suffix.lower().lstrip(".") or "txt"
     if ext not in SUPPORTED_TYPES:
         raise ValueError(f"Định dạng không hỗ trợ: {ext}")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     saved_path = UPLOAD_DIR / f"{doc_id}_{safe_name}"
 
     with open(saved_path, "wb") as f:
         f.write(file_bytes)
 
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            """
-    INSERT INTO documents (id, workspace_id, file_name, file_type, file_size, file_path, total_chunks, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-            (doc_id, workspace_id, safe_name, ext, len(file_bytes), str(saved_path), 0, "processing"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    file_size = len(file_bytes)
+    content_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    return doc_id, safe_name, ext, saved_path
-
-
-def _index_saved_document(doc_id: str, workspace_id: str, safe_name: str, ext: str, saved_path: Path) -> Dict[str, Any]:
-    """Trích xuất text, chunking, sinh vector BGE-M3 và lưu chunks/FTS/embeddings."""
+    # 1. Trích xuất text sạch
     try:
         pages = extract_text_from_file(saved_path, ext)
-        if not pages and ext in ["txt", "md", "csv", "json"]:
-            text = saved_path.read_bytes().decode("utf-8", errors="ignore")
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        raise
+    if not pages:
+        if ext in ["txt", "md", "csv", "json", "py"]:
+            text = file_bytes.decode("utf-8", errors="ignore")
             if text.strip():
                 pages = [{"page": 1, "text": text}]
 
-        if not pages:
-            raise ValueError("Không trích xuất được văn bản từ tài liệu")
+    if not pages:
+        saved_path.unlink(missing_ok=True)
+        raise ValueError("Không trích xuất được văn bản từ tài liệu")
 
-        # Chunking
-        all_chunks = []
-        chunk_index = 0
-        for p in pages:
-            for c in recursive_chunk_text(p["text"]):
-                all_chunks.append({
-                    "id": str(uuid.uuid4()),
-                    "document_id": doc_id,
-                    "workspace_id": workspace_id,
-                    "chunk_index": chunk_index,
-                    "page_number": p["page"],
-                    "content": c,
-                })
-                chunk_index += 1
+    total_pages = max(1, len(pages))
 
-        vectors = embed_texts([chunk["content"] for chunk in all_chunks])
+    # 2. Chunking
+    all_chunks = []
+    chunk_index = 0
+    for p in pages:
+        page_chunks = recursive_chunk_text(p["text"])
+        for c in page_chunks:
+            chunk_id = str(uuid.uuid4())
+            token_count = max(1, len(c.split()))
+            all_chunks.append({
+                "id": chunk_id,
+                "document_id": doc_id,
+                "workspace_id": workspace_id,
+                "chunk_index": chunk_index,
+                "page_number": p["page"],
+                "token_count": token_count,
+                "content": c,
+            })
+            chunk_index += 1
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            for c in all_chunks:
-                cursor.execute(
-                    """
-        INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-                    (c["id"], c["document_id"], c["workspace_id"], c["chunk_index"], c["page_number"], c["content"]),
-                )
-                clean_fts_content = re.sub(r'["\']', '', c["content"])
-                cursor.execute(
-                    """
-        INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content)
-        VALUES (?, ?, ?, ?)
-        """,
-                    (c["id"], c["document_id"], c["workspace_id"], clean_fts_content),
-                )
+    vectors = embed_texts([chunk["content"] for chunk in all_chunks])
 
-            if vectors:
-                for chunk, vector in zip(all_chunks, vectors):
-                    cursor.execute(
-                        "INSERT INTO chunk_embeddings (chunk_id, model, dimensions, vector) VALUES (?, ?, ?, ?)",
-                        (chunk["id"], EMBEDDING_MODEL, len(vector), pack_vector(vector)),
-                    )
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-            cursor.execute(
-                "UPDATE documents SET total_chunks = ?, status = ? WHERE id = ?",
-                (len(all_chunks), "indexed", doc_id),
+    try:
+        cursor.execute(
+            """
+            INSERT INTO documents (
+                id, workspace_id, notebook_id, file_name, file_type,
+                file_size, file_path, content_hash, total_pages, total_chunks, status
             )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id, workspace_id, notebook_id, safe_name, ext,
+                file_size, str(saved_path), content_hash, total_pages, len(all_chunks), "indexed",
+            ),
+        )
 
-        return {
-            "document_id": doc_id,
-            "file_name": safe_name,
-            "file_type": ext,
-            "total_chunks": len(all_chunks),
-            "dense_indexed": bool(vectors),
-            "status": "indexed",
-        }
+        for c in all_chunks:
+            cursor.execute(
+                """
+                INSERT INTO document_chunks (
+                    id, document_id, workspace_id, chunk_index, page_number, token_count, content
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    c["id"], c["document_id"], c["workspace_id"],
+                    c["chunk_index"], c["page_number"], c["token_count"], c["content"],
+                ),
+            )
+
+            # Đánh chỉ mục Full-Text Search (FTS5)
+            clean_fts_content = re.sub(r'["\']', '', c["content"])
+            cursor.execute(
+                """
+                INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content)
+                VALUES (?, ?, ?, ?)
+                """,
+                (c["id"], c["document_id"], c["workspace_id"], clean_fts_content),
+            )
+
+        if vectors:
+            for chunk, vector in zip(all_chunks, vectors):
+                cursor.execute(
+                    "INSERT INTO chunk_embeddings (chunk_id, model, dimensions, vector) VALUES (?, ?, ?, ?)",
+                    (chunk["id"], EMBEDDING_MODEL, len(vector), pack_vector(vector)),
+                )
+
+        cursor.execute(
+            "INSERT INTO user_activities (id, workspace_id, activity_type, message) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), workspace_id, "document", f"Đã tải lên và lập chỉ mục tài liệu '{safe_name}'"),
+        )
+        cursor.execute(
+            "UPDATE workspaces SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (workspace_id,),
+        )
+
+        conn.commit()
     except Exception:
         saved_path.unlink(missing_ok=True)
         conn = get_db_connection()
@@ -234,33 +248,16 @@ def _index_saved_document(doc_id: str, workspace_id: str, safe_name: str, ext: s
         finally:
             conn.close()
         raise
-
-
-def process_and_index_document(workspace_id: str, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
-    """Xử lý đồng bộ (dùng cho eval/CLI)."""
-    doc_id, safe_name, ext, saved_path = _save_upload(workspace_id, file_name, file_bytes)
-    return _index_saved_document(doc_id, workspace_id, safe_name, ext, saved_path)
-
-
-def process_and_index_document_async(workspace_id: str, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
-    """Lưu file nhanh rồi lập chỉ mục ở luồng nền để HTTP trả về ngay."""
-    doc_id, safe_name, ext, saved_path = _save_upload(workspace_id, file_name, file_bytes)
-
-    def _run() -> None:
-        try:
-            _index_saved_document(doc_id, workspace_id, safe_name, ext, saved_path)
-        except Exception:
-            logger.exception("Background indexing failed for document %s", doc_id)
-
-    threading.Thread(target=_run, name=f"index-{doc_id}", daemon=True).start()
+    conn.close()
 
     return {
         "document_id": doc_id,
         "file_name": safe_name,
         "file_type": ext,
-        "total_chunks": 0,
-        "dense_indexed": False,
-        "status": "processing",
+        "total_pages": total_pages,
+        "total_chunks": len(all_chunks),
+        "dense_indexed": bool(vectors),
+        "status": "indexed",
     }
 
 
@@ -279,8 +276,11 @@ def reindex_document_embeddings(document_id: str) -> Dict[str, Any]:
         vectors = embed_texts([row["content"] for row in rows])
         if vectors is None:
             raise RuntimeError("BGE-M3 chưa sẵn sàng; hãy kiểm tra fastembed và kết nối tải model")
-        conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id IN "
-                     "(SELECT id FROM document_chunks WHERE document_id = ?)", (document_id,))
+        conn.execute(
+            "DELETE FROM chunk_embeddings WHERE chunk_id IN "
+            "(SELECT id FROM document_chunks WHERE document_id = ?)",
+            (document_id,),
+        )
         for row, vector in zip(rows, vectors):
             conn.execute(
                 "INSERT INTO chunk_embeddings (chunk_id, model, dimensions, vector) VALUES (?, ?, ?, ?)",

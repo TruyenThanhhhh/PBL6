@@ -192,6 +192,7 @@ async function tryStreamOrQueryBackend(
         ...authHeaders(),
       },
       body: JSON.stringify({
+        conversation_id: req.conversationId,
         workspace_id: req.workspaceId,
         notebook_id: req.notebookScopeId ?? undefined,
         document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
@@ -276,13 +277,13 @@ async function tryStreamOrQueryBackend(
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
+      conversation_id: req.conversationId,
       workspace_id: req.workspaceId,
+      notebook_id: req.notebookScopeId ?? undefined,
+      document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
       query: req.query,
       model: req.modelId,
       mode: req.mode,
-      web_search: req.mode === "web" || req.mode === "hybrid",
-      document_ids: req.attachedDocumentIds?.length ? req.attachedDocumentIds : undefined,
-      selected_document_id: req.selectedDocumentId ?? undefined,
     }),
     signal: req.signal,
   })
