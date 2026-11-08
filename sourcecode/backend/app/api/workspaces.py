@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.database import get_db_connection
-from app.services.document_service import process_and_index_document, reindex_document_embeddings
+from app.services.document_service import (
+    process_and_index_document_async,
+    reindex_document_embeddings,
+)
 from app.config import UPLOAD_MAX_BYTES
 from app.api.auth import get_current_user, get_current_user_optional
 

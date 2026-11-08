@@ -2,6 +2,7 @@ import hashlib
 import uuid
 import re
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -10,7 +11,7 @@ from app.database import get_db_connection
 from app.services.embedding_service import embed_texts, pack_vector
 
 logger = logging.getLogger(__name__)
-SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv"}
+SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv", "xlsx"}
 
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
@@ -179,7 +180,6 @@ def process_and_index_document(
 
     vectors = embed_texts([chunk["content"] for chunk in all_chunks])
 
-    # 3. Lưu vào Database
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -240,9 +240,13 @@ def process_and_index_document(
 
         conn.commit()
     except Exception:
-        conn.rollback()
-        conn.close()
         saved_path.unlink(missing_ok=True)
+        conn = get_db_connection()
+        try:
+            conn.execute("UPDATE documents SET status = ? WHERE id = ?", ("failed", doc_id))
+            conn.commit()
+        finally:
+            conn.close()
         raise
     conn.close()
 

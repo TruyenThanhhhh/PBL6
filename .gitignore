@@ -25,6 +25,10 @@ env/
 sourcecode/frontend/node_modules/
 sourcecode/frontend/dist/
 
+# Runtime logs
+sourcecode/backend/_server_*.log
+sourcecode/frontend/_fe_*.log
+
 # IDE & OS
 .idea/
 .vscode/

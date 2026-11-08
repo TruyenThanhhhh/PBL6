@@ -84,7 +84,7 @@ export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocu
     const name = String(d.file_name ?? "document")
     const ext = name.split(".").pop()?.toLowerCase()
     const fileType =
-      ext === "pdf" || ext === "docx" || ext === "pptx" || ext === "txt" || ext === "md"
+      ext === "pdf" || ext === "docx" || ext === "pptx" || ext === "xlsx" || ext === "txt" || ext === "md"
         ? ext
         : "other"
     const statusRaw = String(d.status ?? "ready")
