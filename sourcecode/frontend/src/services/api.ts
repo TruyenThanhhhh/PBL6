@@ -388,3 +388,170 @@ export async function fetchDocumentDetail(
 ): Promise<{ document: DocumentChunksApiResponse["document"] }> {
   return request<{ document: DocumentChunksApiResponse["document"] }>(`/api/v1/documents/${documentId}`)
 }
+
+// ==========================================
+// AI Study Tools APIs
+// ==========================================
+
+export interface StudySummaryPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  focus_prompt?: string
+  model?: string
+}
+
+export interface StudySummaryResponse {
+  title: string
+  markdown: string
+  is_mock: boolean
+}
+
+export async function fetchAiSummaryApi(payload: StudySummaryPayload): Promise<StudySummaryResponse> {
+  return request<StudySummaryResponse>("/api/v1/study/summary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyQuizPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  difficulty?: "easy" | "medium" | "hard"
+  question_count?: number
+  model?: string
+}
+
+export interface StudyQuizResponse {
+  title: string
+  difficulty: "easy" | "medium" | "hard"
+  questions: Array<{
+    id: string
+    prompt: string
+    options: string[]
+    answerIndex: number
+    explanation: string
+  }>
+  is_mock: boolean
+  error?: string
+}
+
+export async function fetchAiQuizApi(payload: StudyQuizPayload): Promise<StudyQuizResponse> {
+  return request<StudyQuizResponse>("/api/v1/study/quiz", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyFlashcardsPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  count?: number
+  model?: string
+}
+
+export interface StudyFlashcardsResponse {
+  flashcards: Array<{
+    id: string
+    front: string
+    back: string
+    status: "new" | "remembered" | "review"
+    is_mock: boolean
+  }>
+  is_mock: boolean
+  error?: string
+}
+
+export async function fetchAiFlashcardsApi(payload: StudyFlashcardsPayload): Promise<StudyFlashcardsResponse> {
+  return request<StudyFlashcardsResponse>("/api/v1/study/flashcards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyMindmapNodePayload {
+  id?: string
+  label: string
+  detail?: string
+  children?: StudyMindmapNodePayload[]
+}
+
+export interface StudyMindmapPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  focus_prompt?: string
+  max_depth?: number
+  model?: string
+}
+
+export interface StudyMindmapResponse {
+  root: StudyMindmapNodePayload | null
+  is_mock: boolean
+  error?: string
+}
+
+export async function fetchAiMindmapApi(payload: StudyMindmapPayload): Promise<StudyMindmapResponse> {
+  return request<StudyMindmapResponse>("/api/v1/study/mindmap", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyNotesPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  focus_prompt?: string
+  model?: string
+}
+
+export interface StudyNotesResponse {
+  title: string
+  markdown: string
+  is_mock: boolean
+  error?: string
+}
+
+export async function fetchAiNotesApi(payload: StudyNotesPayload): Promise<StudyNotesResponse> {
+  return request<StudyNotesResponse>("/api/v1/study/notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyPlanPayload {
+  workspace_id: string
+  document_id?: string | null
+  document_ids?: string[] | null
+  start_date?: string
+  day_span?: number
+  model?: string
+}
+
+export interface StudyPlanTaskResponse {
+  title: string
+  due_date: string
+  detail?: string
+}
+
+export interface StudyPlanResponse {
+  tasks: StudyPlanTaskResponse[]
+  is_mock: boolean
+  error?: string
+}
+
+export async function fetchAiPlanApi(payload: StudyPlanPayload): Promise<StudyPlanResponse> {
+  return request<StudyPlanResponse>("/api/v1/study/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
