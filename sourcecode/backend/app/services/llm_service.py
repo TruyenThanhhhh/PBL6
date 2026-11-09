@@ -39,11 +39,15 @@ async def check_ollama_status() -> Dict[str, Any]:
             resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
             if resp.status_code == 200:
                 models = resp.json().get("models", [])
-                model_names = [m.get("name") for m in models]
+                raw_names = [m.get("name") for m in models]
+                model_names = list(raw_names)
+                for name in raw_names:
+                    if name and ":" in name:
+                        model_names.append(name.split(":")[0])
                 return {
                     "running": True,
-                    "available_models": model_names,
-                    "message": f"Ollama đang chạy cục bộ với {len(model_names)} model(s)."
+                    "available_models": list(dict.fromkeys(model_names)),
+                    "message": f"Ollama đang chạy cục bộ với {len(raw_names)} model(s)."
                 }
     except Exception:
         pass
@@ -222,7 +226,12 @@ async def generate_rag_answer(
                     ],
                     "stream": False,
                     "keep_alive": "30m",
-                    "options": {"num_predict": 384 if image_base64 else 512},
+                    "options": {
+                        "num_predict": 384 if image_base64 else 512,
+                        "temperature": 0.65,
+                        "top_p": 0.9,
+                        "num_ctx": 4096,
+                    },
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
                 if resp.status_code == 200:
@@ -410,7 +419,12 @@ async def stream_rag_answer(
                     ],
                     "stream": True,
                     "keep_alive": "30m",
-                    "options": {"num_predict": 384 if image_base64 else 512},
+                    "options": {
+                        "num_predict": 384 if image_base64 else 512,
+                        "temperature": 0.65,
+                        "top_p": 0.9,
+                        "num_ctx": 4096,
+                    },
                 }
                 async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
                     if resp.status_code == 200:
