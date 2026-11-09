@@ -11,7 +11,6 @@ import {
   Copy,
   FilePlus2,
   Plus,
-  RefreshCw,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -33,11 +32,12 @@ import {
   Textarea,
 } from "@/components/ui"
 import {
-  buildMindmapFromContext,
-  generateStudyFlashcards,
-  generateStudyPlanTasks,
-  generateStudyQuiz,
-  generateStudySummary,
+  generateStudyFlashcardsAsync,
+  generateStudyMindmapAsync,
+  generateStudyNotesAsync,
+  generateStudyPlanAsync,
+  generateStudyQuizAsync,
+  generateStudySummaryAsync,
   type StudySourceContext,
   type StudyToolId,
 } from "@/services/study-service"
@@ -154,17 +154,18 @@ export function StudyToolsPage() {
     [documents, wsId],
   )
 
-  // Chọn nguồn học tập (Notebook hoặc Tài liệu cụ thể)
+  // Chọn nguồn học tập (Notebook hoặc Tài liệu cụ thể; rỗng = tất cả tài liệu trong phạm vi)
   const [selectedNotebookId, setSelectedNotebookId] = useState<string>("")
-  const [selectedDocId, setSelectedDocId] = useState<string>(() => wsDocs[0]?.id ?? "")
+  const [selectedDocId, setSelectedDocId] = useState<string>("")
 
   const scopedDocs = useMemo(() => {
     if (!selectedNotebookId) return wsDocs
     return wsDocs.filter((d) => d.notebookId === selectedNotebookId)
   }, [wsDocs, selectedNotebookId])
 
-  const activeDoc =
-    scopedDocs.find((d) => d.id === selectedDocId) ?? scopedDocs[0] ?? null
+  const activeDoc = selectedDocId
+    ? scopedDocs.find((d) => d.id === selectedDocId) ?? null
+    : null
   const activeNotebook =
     wsNotebooks.find((n) => n.id === selectedNotebookId) ?? null
 
@@ -181,11 +182,13 @@ export function StudyToolsPage() {
   // 1. Summary State
   const [focusPrompt, setFocusPrompt] = useState("")
   const [customSummary, setCustomSummary] = useState<string | null>(null)
-  const generatedSummary = useMemo(
-    () => generateStudySummary(sourceContext, focusPrompt),
-    [sourceContext, focusPrompt],
-  )
-  const summaryMarkdown = customSummary ?? generatedSummary.markdown
+  const [summaryTitle, setSummaryTitle] = useState("")
+  const [summaryIsMock, setSummaryIsMock] = useState(false)
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
+  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false)
+  const [isGeneratingFlashcards, setIsGeneratingFlashcards] = useState(false)
+  const [isGeneratingNotes, setIsGeneratingNotes] = useState(false)
+  const summaryMarkdown = customSummary
 
   // 2. Notes State
   const wsNotes = useMemo(
@@ -233,11 +236,9 @@ export function StudyToolsPage() {
   const reviewCount = wsCards.filter((f) => f.status === "review").length
 
   // 5. Mindmap State
-  const [customMindmap, setCustomMindmap] = useState<MindmapNode | null>(null)
-  const mindmapRoot = useMemo(
-    () => customMindmap ?? buildMindmapFromContext(sourceContext),
-    [customMindmap, sourceContext],
-  )
+  const [mindmapRoot, setMindmapRoot] = useState<MindmapNode | null>(null)
+  const [mindmapIsMock, setMindmapIsMock] = useState(false)
+  const [isGeneratingMindmap, setIsGeneratingMindmap] = useState(false)
   const [addBranchParentId, setAddBranchParentId] = useState<string | null>(null)
   const [branchLabel, setBranchLabel] = useState("")
   const [branchDetail, setBranchDetail] = useState("")
@@ -249,17 +250,22 @@ export function StudyToolsPage() {
   )
   const [newTaskTitle, setNewTaskTitle] = useState("")
   const [newTaskDue, setNewTaskDue] = useState("2026-11-05")
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [editingTaskTitle, setEditingTaskTitle] = useState("")
 
   // Handlers
   const handleSaveSummaryAsNote = () => {
+    if (!summaryMarkdown) {
+      toast({ title: "Chưa có bản tóm tắt để lưu", tone: "info" })
+      return
+    }
     const note: Note = {
       id: uid("note"),
       workspaceId: wsId,
       notebookId: activeNotebook?.id ?? activeDoc?.notebookId ?? null,
       documentId: activeDoc?.id ?? null,
-      title: generatedSummary.title,
+      title: summaryTitle || "Tóm tắt học tập",
       content: summaryMarkdown,
       updatedAt: nowIso(),
     }
@@ -267,26 +273,89 @@ export function StudyToolsPage() {
     toast({ title: "Đã lưu bản tóm tắt vào Ghi chú", tone: "success" })
   }
 
-  const handleGenerateQuiz = () => {
-    const nextQuiz = generateStudyQuiz(sourceContext, difficulty, questionCount)
-    upsertQuiz(nextQuiz)
-    setActiveQuizId(nextQuiz.id)
-    toast({
-      title: "Đã tạo bài Quiz mới (Mô phỏng)",
-      description: `${nextQuiz.questions.length} câu hỏi từ nguồn đã chọn.`,
-      tone: "info",
-    })
+  const handleGenerateSummary = async () => {
+    setIsGeneratingSummary(true)
+    try {
+      const res = await generateStudySummaryAsync(sourceContext, focusPrompt)
+      setCustomSummary(res.markdown)
+      setSummaryTitle(res.title)
+      setSummaryIsMock(res.isMock)
+      toast({
+        title: res.isMock ? "Đã tạo bản tóm tắt (Mô phỏng)" : "Đã tạo bản tóm tắt bằng AI thành công",
+        description: res.isMock ? "Dịch vụ AI cục bộ chưa chạy." : "Nội dung đã được AI đọc hiểu và tổng hợp.",
+        tone: res.isMock ? "info" : "success",
+      })
+    } catch {
+      toast({ title: "Không thể tạo tóm tắt", tone: "error" })
+    } finally {
+      setIsGeneratingSummary(false)
+    }
   }
 
-  const handleGenerateFlashcards = () => {
-    const created = generateStudyFlashcards(sourceContext)
-    addFlashcards(created)
-    setCardIndex(0)
-    setFlipped(false)
-    toast({
-      title: `Đã tạo ${created.length} thẻ Flashcard (Mô phỏng)`,
-      tone: "info",
-    })
+  const handleGenerateNotes = async () => {
+    setIsGeneratingNotes(true)
+    try {
+      const res = await generateStudyNotesAsync(sourceContext)
+      setEditingNote({
+        id: uid("note"),
+        workspaceId: wsId,
+        notebookId: activeNotebook?.id ?? activeDoc?.notebookId ?? null,
+        documentId: activeDoc?.id ?? null,
+        title: res.title,
+        content: res.markdown,
+        updatedAt: nowIso(),
+      })
+      toast({
+        title: res.isMock ? "Đã tạo ghi chú (Mô phỏng)" : "Đã tạo ghi chú bằng AI thành công",
+        description: res.isMock
+          ? "Dịch vụ AI chưa sẵn sàng, đang dùng dữ liệu mô phỏng."
+          : "Bạn có thể chỉnh sửa nội dung trước khi lưu.",
+        tone: res.isMock ? "info" : "success",
+      })
+    } catch {
+      toast({ title: "Không thể tạo ghi chú AI", tone: "error" })
+    } finally {
+      setIsGeneratingNotes(false)
+    }
+  }
+
+  const handleGenerateQuiz = async () => {
+    setIsGeneratingQuiz(true)
+    try {
+      const nextQuiz = await generateStudyQuizAsync(sourceContext, difficulty, questionCount)
+      upsertQuiz(nextQuiz)
+      setActiveQuizId(nextQuiz.id)
+      toast({
+        title: nextQuiz.isMock ? "Đã tạo bài Quiz (Mô phỏng)" : "Đã tạo bài Quiz bằng AI thành công",
+        description: `${nextQuiz.questions.length} câu hỏi từ nguồn tài liệu đã chọn.`,
+        tone: nextQuiz.isMock ? "info" : "success",
+      })
+    } catch {
+      toast({ title: "Không thể tạo Quiz", tone: "error" })
+    } finally {
+      setIsGeneratingQuiz(false)
+    }
+  }
+
+  const handleGenerateFlashcards = async () => {
+    setIsGeneratingFlashcards(true)
+    try {
+      const created = await generateStudyFlashcardsAsync(sourceContext, 6)
+      addFlashcards(created)
+      setCardIndex(0)
+      setFlipped(false)
+      const hasRealAi = created.some((c) => !c.isMock)
+      toast({
+        title: hasRealAi
+          ? `Đã tạo ${created.length} thẻ Flashcards bằng AI thành công`
+          : `Đã tạo ${created.length} thẻ Flashcards (Mô phỏng)`,
+        tone: hasRealAi ? "success" : "info",
+      })
+    } catch {
+      toast({ title: "Không thể tạo Flashcards", tone: "error" })
+    } finally {
+      setIsGeneratingFlashcards(false)
+    }
   }
 
   const handleAddCustomFlashcard = (e: React.FormEvent) => {
@@ -330,13 +399,13 @@ export function StudyToolsPage() {
 
   const handleConfirmAddBranch = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!addBranchParentId || !branchLabel.trim()) return
+    if (!mindmapRoot || !addBranchParentId || !branchLabel.trim()) return
     const nextTree = insertBranchIntoTree(mindmapRoot, addBranchParentId, {
       id: uid("mm"),
       label: branchLabel.trim(),
       detail: branchDetail.trim() || undefined,
     })
-    setCustomMindmap(nextTree)
+    setMindmapRoot(nextTree)
     setAddBranchParentId(null)
     setBranchLabel("")
     setBranchDetail("")
@@ -359,15 +428,42 @@ export function StudyToolsPage() {
     toast({ title: "Đã thêm nhiệm vụ học tập", tone: "success" })
   }
 
-  const handleGenerateStudyPlan = () => {
-    const generated = generateStudyPlanTasks(sourceContext)
-    for (const item of generated) {
-      addStudyTask(item)
+  const handleGenerateMindmap = async () => {
+    setIsGeneratingMindmap(true)
+    try {
+      const res = await generateStudyMindmapAsync(sourceContext)
+      setMindmapRoot(res.root)
+      setMindmapIsMock(res.isMock)
+      toast({
+        title: res.isMock ? "Đã tạo Mindmap (Mô phỏng)" : "Đã tạo Mindmap bằng AI thành công",
+        tone: res.isMock ? "info" : "success",
+      })
+    } catch {
+      toast({ title: "Không thể tạo Mindmap", tone: "error" })
+    } finally {
+      setIsGeneratingMindmap(false)
     }
-    toast({
-      title: `Đã tạo ${generated.length} nhiệm vụ học tập (Mô phỏng)`,
-      tone: "info",
-    })
+  }
+
+  const handleGenerateStudyPlan = async () => {
+    setIsGeneratingPlan(true)
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      const res = await generateStudyPlanAsync(sourceContext, today, 7)
+      for (const item of res.tasks) {
+        addStudyTask(item)
+      }
+      toast({
+        title: res.isMock
+          ? `Đã tạo ${res.tasks.length} nhiệm vụ học tập (Mô phỏng)`
+          : `Đã tạo ${res.tasks.length} nhiệm vụ học tập bằng AI`,
+        tone: res.isMock ? "info" : "success",
+      })
+    } catch {
+      toast({ title: "Không thể tạo lộ trình học tập", tone: "error" })
+    } finally {
+      setIsGeneratingPlan(false)
+    }
   }
 
   return (
@@ -390,8 +486,12 @@ export function StudyToolsPage() {
             value={selectedNotebookId}
             onChange={(e) => {
               setSelectedNotebookId(e.target.value)
+              setSelectedDocId("")
               setCustomSummary(null)
-              setCustomMindmap(null)
+              setSummaryTitle("")
+              setSummaryIsMock(false)
+              setMindmapRoot(null)
+              setMindmapIsMock(false)
             }}
             className="h-7 w-44 text-xs"
           >
@@ -408,23 +508,23 @@ export function StudyToolsPage() {
           <span className="font-medium text-muted">Tài liệu nguồn:</span>
           <Select
             aria-label="Chọn tài liệu làm nguồn"
-            value={activeDoc?.id ?? ""}
+            value={selectedDocId}
             onChange={(e) => {
               setSelectedDocId(e.target.value)
               setCustomSummary(null)
-              setCustomMindmap(null)
+              setSummaryTitle("")
+              setSummaryIsMock(false)
+              setMindmapRoot(null)
+              setMindmapIsMock(false)
             }}
             className="h-7 w-56 text-xs"
           >
-            {scopedDocs.length === 0 ? (
-              <option value="">-- Chưa có tài liệu --</option>
-            ) : (
-              scopedDocs.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.fileName}
-                </option>
-              ))
-            )}
+            <option value="">Tất cả tài liệu ({scopedDocs.length})</option>
+            {scopedDocs.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.fileName}
+              </option>
+            ))}
           </Select>
         </div>
       </div>
@@ -454,6 +554,8 @@ export function StudyToolsPage() {
               onChange={(e) => {
                 setFocusPrompt(e.target.value)
                 setCustomSummary(null)
+                setSummaryTitle("")
+                setSummaryIsMock(false)
               }}
               placeholder="Nhập trọng tâm muốn tóm tắt (tuỳ chọn)..."
               className="max-w-sm"
@@ -462,17 +564,16 @@ export function StudyToolsPage() {
               variant="outline"
               size="sm"
               leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-              onClick={() => {
-                setCustomSummary(null)
-                toast({ title: "Đã tạo lại bản tóm tắt (Mô phỏng)", tone: "info" })
-              }}
+              loading={isGeneratingSummary}
+              onClick={handleGenerateSummary}
             >
-              Tạo tóm tắt
+              Tạo tóm tắt AI
             </Button>
             <Button
               variant="outline"
               size="sm"
               leftIcon={<BookmarkPlus className="h-3.5 w-3.5" />}
+              disabled={!summaryMarkdown}
               onClick={handleSaveSummaryAsNote}
             >
               Lưu thành Ghi chú
@@ -481,7 +582,9 @@ export function StudyToolsPage() {
               variant="ghost"
               size="sm"
               leftIcon={<Copy className="h-3.5 w-3.5" />}
+              disabled={!summaryMarkdown}
               onClick={async () => {
+                if (!summaryMarkdown) return
                 await navigator.clipboard.writeText(summaryMarkdown)
                 toast({ title: "Đã sao chép bản tóm tắt", tone: "success" })
               }}
@@ -490,34 +593,64 @@ export function StudyToolsPage() {
             </Button>
           </div>
 
-          <article className="markdown-body rounded-lg border border-line bg-bg p-5 text-[14px] leading-7">
-            <Markdown remarkPlugins={[remarkGfm]}>{summaryMarkdown}</Markdown>
-          </article>
+          {!summaryMarkdown ? (
+            <EmptyState
+              compact
+              title="Chưa có bản tóm tắt AI"
+              description="Chọn Notebook/Tài liệu nguồn rồi bấm Tạo tóm tắt AI để hệ thống đọc hiểu và tổng hợp."
+              action={
+                <Button size="sm" loading={isGeneratingSummary} onClick={handleGenerateSummary}>
+                  Tạo tóm tắt AI
+                </Button>
+              }
+            />
+          ) : (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                <span>{summaryTitle || "Bản tóm tắt học tập"}</span>
+                {summaryIsMock ? <Badge tone="neutral">Mô phỏng</Badge> : <Badge tone="success">AI thật</Badge>}
+              </div>
+              <article className="markdown-body rounded-lg border border-line bg-bg p-5 text-[14px] leading-7">
+                <Markdown remarkPlugins={[remarkGfm]}>{summaryMarkdown}</Markdown>
+              </article>
+            </div>
+          )}
         </TabsContent>
 
         {/* 2. NOTES */}
         <TabsContent value="notes" className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-muted">
               Lưu trữ ghi chú gắn với notebook và tài liệu đang chọn.
             </span>
-            <Button
-              size="sm"
-              leftIcon={<FilePlus2 className="h-3.5 w-3.5" />}
-              onClick={() =>
-                setEditingNote({
-                  id: uid("note"),
-                  workspaceId: wsId,
-                  notebookId: activeNotebook?.id ?? activeDoc?.notebookId ?? null,
-                  documentId: activeDoc?.id ?? null,
-                  title: "",
-                  content: "",
-                  updatedAt: nowIso(),
-                })
-              }
-            >
-              Ghi chú mới
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                loading={isGeneratingNotes}
+                onClick={handleGenerateNotes}
+              >
+                Tạo ghi chú AI
+              </Button>
+              <Button
+                size="sm"
+                leftIcon={<FilePlus2 className="h-3.5 w-3.5" />}
+                onClick={() =>
+                  setEditingNote({
+                    id: uid("note"),
+                    workspaceId: wsId,
+                    notebookId: activeNotebook?.id ?? activeDoc?.notebookId ?? null,
+                    documentId: activeDoc?.id ?? null,
+                    title: "",
+                    content: "",
+                    updatedAt: nowIso(),
+                  })
+                }
+              >
+                Ghi chú mới
+              </Button>
+            </div>
           </div>
 
           {wsNotes.length === 0 ? (
@@ -608,9 +741,10 @@ export function StudyToolsPage() {
                 variant="outline"
                 size="sm"
                 leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                loading={isGeneratingQuiz}
                 onClick={handleGenerateQuiz}
               >
-                Tạo Quiz từ nguồn
+                Tạo Quiz AI từ nguồn
               </Button>
             </div>
 
@@ -740,6 +874,7 @@ export function StudyToolsPage() {
               <span>
                 Tổng số: <strong className="text-ink">{wsCards.length}</strong>
               </span>
+              {wsCards.some((f) => f.isMock) ? <Badge tone="neutral">Mô phỏng</Badge> : null}
             </div>
 
             <div className="flex items-center gap-2">
@@ -747,9 +882,10 @@ export function StudyToolsPage() {
                 variant="outline"
                 size="sm"
                 leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                loading={isGeneratingFlashcards}
                 onClick={handleGenerateFlashcards}
               >
-                Tạo thẻ từ nguồn
+                Tạo thẻ AI từ nguồn
               </Button>
               <Button
                 size="sm"
@@ -859,27 +995,43 @@ export function StudyToolsPage() {
         <TabsContent value="mindmap" className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
             <span className="text-xs text-muted">
-              Sơ đồ phân cấp khái niệm. Bấm vào từng mục để thu gọn/mở rộng hoặc thêm nhánh con.
+              Sơ đồ phân cấp khái niệm do AI tạo từ tài liệu. Bấm vào từng mục để thu gọn/mở rộng hoặc thêm nhánh con.
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
-              onClick={() => {
-                setCustomMindmap(null)
-                toast({ title: "Đã làm mới Mindmap theo tài liệu nguồn", tone: "info" })
-              }}
-            >
-              Tạo lại từ nguồn
-            </Button>
+            <div className="flex items-center gap-2">
+              {mindmapRoot ? (
+                mindmapIsMock ? <Badge tone="neutral">Mô phỏng</Badge> : <Badge tone="success">AI thật</Badge>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                loading={isGeneratingMindmap}
+                onClick={handleGenerateMindmap}
+              >
+                Tạo Mindmap AI
+              </Button>
+            </div>
           </div>
 
-          <div className="rounded-lg border border-line bg-bg p-4">
-            <MindmapTreeItem
-              node={mindmapRoot}
-              onAddChild={(parentId) => setAddBranchParentId(parentId)}
+          {!mindmapRoot ? (
+            <EmptyState
+              compact
+              title="Chưa có Mindmap"
+              description="Bấm Tạo Mindmap AI để hệ thống đọc tài liệu và dựng sơ đồ khái niệm phân cấp."
+              action={
+                <Button size="sm" loading={isGeneratingMindmap} onClick={handleGenerateMindmap}>
+                  Tạo Mindmap AI
+                </Button>
+              }
             />
-          </div>
+          ) : (
+            <div className="rounded-lg border border-line bg-bg p-4">
+              <MindmapTreeItem
+                node={mindmapRoot}
+                onAddChild={(parentId) => setAddBranchParentId(parentId)}
+              />
+            </div>
+          )}
         </TabsContent>
 
         {/* 6. STUDY PLAN */}
@@ -896,9 +1048,10 @@ export function StudyToolsPage() {
               variant="outline"
               size="sm"
               leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+              loading={isGeneratingPlan}
               onClick={handleGenerateStudyPlan}
             >
-              Tạo lộ trình từ nguồn
+              Tạo lộ trình AI từ nguồn
             </Button>
           </div>
 

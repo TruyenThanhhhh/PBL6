@@ -8,6 +8,14 @@ import type {
   StudyTask,
 } from "@/types"
 import { uid } from "@/utils/format"
+import {
+  fetchAiFlashcardsApi,
+  fetchAiMindmapApi,
+  fetchAiNotesApi,
+  fetchAiPlanApi,
+  fetchAiQuizApi,
+  fetchAiSummaryApi,
+} from "./api"
 
 export type StudyToolId = "summary" | "notes" | "quiz" | "flashcards" | "mindmap" | "plan"
 
@@ -16,6 +24,209 @@ export interface StudySourceContext {
   notebook: Notebook | null
   document: KnowledgeDocument | null
   documentsInScope: KnowledgeDocument[]
+}
+
+/**
+ * Gọi AI Backend sinh tóm tắt học tập thực tế từ tài liệu trong kho tri thức
+ */
+export async function generateStudySummaryAsync(
+  ctx: StudySourceContext,
+  focusPrompt?: string,
+): Promise<{ title: string; markdown: string; isMock: boolean }> {
+  try {
+    const res = await fetchAiSummaryApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      focus_prompt: focusPrompt,
+    })
+    return {
+      title: res.title,
+      markdown: res.markdown,
+      isMock: res.is_mock,
+    }
+  } catch (err) {
+    console.warn("AI summary fallback:", err)
+    return generateStudySummary(ctx, focusPrompt)
+  }
+}
+
+/**
+ * Gọi AI Backend sinh bài Quiz trắc nghiệm thực tế từ tài liệu
+ */
+export async function generateStudyQuizAsync(
+  ctx: StudySourceContext,
+  difficulty: "easy" | "medium" | "hard",
+  questionCount: number,
+): Promise<Quiz> {
+  const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Kho tri thức"
+  try {
+    const res = await fetchAiQuizApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      difficulty,
+      question_count: questionCount,
+    })
+    if (res.questions && res.questions.length > 0) {
+      return {
+        id: uid("quiz"),
+        workspaceId: ctx.workspaceId,
+        documentId: ctx.document?.id ?? null,
+        title: res.title || `Quiz AI · ${sourceLabel}`,
+        difficulty: res.difficulty || difficulty,
+        questions: res.questions.map((q, idx) => ({
+          ...q,
+          id: q.id || uid(`qq-${idx}`),
+        })),
+        answers: {},
+        submitted: false,
+        isMock: res.is_mock ?? false,
+      }
+    }
+  } catch (err) {
+    console.warn("AI quiz fallback:", err)
+  }
+  return generateStudyQuiz(ctx, difficulty, questionCount)
+}
+
+/**
+ * Gọi AI Backend sinh bộ thẻ Flashcards thực tế từ tài liệu
+ */
+export async function generateStudyFlashcardsAsync(
+  ctx: StudySourceContext,
+  count = 6,
+): Promise<Flashcard[]> {
+  try {
+    const res = await fetchAiFlashcardsApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      count,
+    })
+    if (res.flashcards && res.flashcards.length > 0) {
+      return res.flashcards.map((c) => ({
+        id: c.id || uid("fc"),
+        workspaceId: ctx.workspaceId,
+        documentId: ctx.document?.id ?? null,
+        front: c.front,
+        back: c.back,
+        status: c.status || "new",
+        isMock: c.is_mock ?? false,
+      }))
+    }
+  } catch (err) {
+    console.warn("AI flashcards fallback:", err)
+  }
+  return generateStudyFlashcards(ctx)
+}
+
+/**
+ * Gọi AI Backend sinh sơ đồ tư duy (Mindmap) thực tế từ tài liệu
+ */
+export async function generateStudyMindmapAsync(
+  ctx: StudySourceContext,
+  focusPrompt?: string,
+  maxDepth = 3,
+): Promise<{ root: MindmapNode; isMock: boolean }> {
+  try {
+    const res = await fetchAiMindmapApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      focus_prompt: focusPrompt?.trim() || undefined,
+      max_depth: maxDepth,
+    })
+    if (res.root && res.root.label) {
+      return { root: res.root as MindmapNode, isMock: res.is_mock }
+    }
+    console.warn("AI mindmap empty:", res.error)
+  } catch (err) {
+    console.warn("AI mindmap fallback:", err)
+  }
+  return { root: buildMindmapFromContext(ctx), isMock: true }
+}
+
+/**
+ * Gọi AI Backend sinh ghi chú học tập có cấu trúc Markdown từ tài liệu
+ */
+export async function generateStudyNotesAsync(
+  ctx: StudySourceContext,
+  focusPrompt?: string,
+): Promise<{ title: string; markdown: string; isMock: boolean }> {
+  try {
+    const res = await fetchAiNotesApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      focus_prompt: focusPrompt?.trim() || undefined,
+    })
+    if (res.markdown?.trim()) {
+      return {
+        title: res.title || "Ghi chú AI",
+        markdown: res.markdown,
+        isMock: res.is_mock,
+      }
+    }
+    console.warn("AI notes empty:", res.error)
+  } catch (err) {
+    console.warn("AI notes fallback:", err)
+  }
+  const fallback = generateStudySummary(ctx, focusPrompt)
+  return {
+    title: `Ghi chú · ${ctx.document?.fileName ?? ctx.notebook?.name ?? "Workspace"}`,
+    markdown: fallback.markdown,
+    isMock: true,
+  }
+}
+
+/**
+ * Gọi AI Backend sinh lộ trình học tập (danh sách nhiệm vụ) từ tài liệu
+ */
+export async function generateStudyPlanAsync(
+  ctx: StudySourceContext,
+  startDate: string,
+  daySpan = 7,
+): Promise<{ tasks: StudyTask[]; isMock: boolean }> {
+  try {
+    const res = await fetchAiPlanApi({
+      workspace_id: ctx.workspaceId,
+      document_id: ctx.document?.id ?? null,
+      document_ids: !ctx.document && ctx.documentsInScope.length > 0
+        ? ctx.documentsInScope.map((d) => d.id)
+        : null,
+      start_date: startDate,
+      day_span: daySpan,
+    })
+    if (res.tasks && res.tasks.length > 0) {
+      return {
+        tasks: res.tasks.map((task) => ({
+          id: uid("st"),
+          workspaceId: ctx.workspaceId,
+          documentId: ctx.document?.id ?? null,
+          title: task.title,
+          dueDate: task.due_date,
+          completed: false,
+          isMock: res.is_mock,
+        })),
+        isMock: res.is_mock,
+      }
+    }
+    console.warn("AI plan empty:", res.error)
+  } catch (err) {
+    console.warn("AI plan fallback:", err)
+  }
+  return { tasks: generateStudyPlanTasks(ctx), isMock: true }
 }
 
 /**
