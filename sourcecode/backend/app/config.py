@@ -37,6 +37,7 @@ RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
 
 # Search, embedding and network fallback
 ENABLE_DENSE_RETRIEVAL = os.getenv("ENABLE_DENSE_RETRIEVAL", "true").lower() == "true"
+SIMILARITY_CUTOFF = float(os.getenv("SIMILARITY_CUTOFF", "0.28"))
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence_transformers")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))

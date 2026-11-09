@@ -13,6 +13,7 @@ from app.config import (
     RERANK_MAX_CANDIDATES,
     RETRIEVAL_CANDIDATE_MULTIPLIER,
     RRF_K,
+    SIMILARITY_CUTOFF,
     TOP_K_RETRIEVAL,
 )
 from app.database import get_db_connection
@@ -112,6 +113,7 @@ def search_relevant_chunks(
                     vector = unpack_vector(item.pop("vector"), item.pop("dimensions"))
                     item["score"] = _cosine(query_vectors[0], vector)
                     dense.append(item)
+            dense = [item for item in dense if item.get("score", 0.0) >= SIMILARITY_CUTOFF]
             dense.sort(key=lambda item: item["score"], reverse=True)
             dense = dense[:candidate_limit]
 

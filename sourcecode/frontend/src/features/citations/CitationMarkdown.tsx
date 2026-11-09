@@ -5,7 +5,8 @@ import { Check, Copy } from "lucide-react"
 import { useAppStore } from "@/store/app-store"
 
 function withCitationChips(text: string) {
-  return text.replace(/\[(\d+)\]/g, (_m, n: string) => `[[cite:${n}]]`)
+  // Hỗ trợ [1], [2], [Tài liệu 1], [Tài liệu 2], [Nguồn web 1], [Web 1]
+  return text.replace(/\[(?:Tài liệu |Nguồn web |Web )?(\d+)\]/gi, (_m, n: string) => `[[cite:${n}]]`)
 }
 
 function CodeBlockWithCopy({

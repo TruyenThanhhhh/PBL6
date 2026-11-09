@@ -36,6 +36,29 @@ def _resolve_routing_modes(mode: str, query: str, include_web: Optional[bool] = 
     return auto_web, True
 
 
+def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] = None) -> str:
+    """
+    Xây dựng câu truy vấn độc lập và giàu ngữ cảnh cho RAG.
+    Đối với các câu hỏi nối tiếp (ngắn, chứa đại từ thay thế như 'nó', 'đó', 'ở đâu', 'như thế nào'),
+    trích xuất từ khóa trọng tâm của các câu hỏi user trước đó để bổ trợ tìm kiếm chính xác.
+    """
+    history_turns = (history or [])[-6:]
+    prior_user_queries = [turn["content"].strip() for turn in history_turns if turn.get("role") == "user" and turn.get("content")]
+    if not prior_user_queries:
+        return query.strip()
+
+    q_lower = query.lower().strip()
+    pronouns = ["nó", "đó", "này", "ở đâu", "khi nào", "thế nào", "sao lại", "còn gì", "chi tiết", "rõ hơn", "tiếp", "tại sao"]
+    is_follow_up = len(q_lower.split()) <= 6 or any(p in q_lower for p in pronouns)
+
+    if is_follow_up:
+        # Bổ sung câu hỏi gần nhất của user vào truy vấn tìm kiếm
+        last_query = prior_user_queries[-1]
+        return f"{last_query} {query}".strip()
+
+    return query.strip()
+
+
 async def answer_query(
     workspace_id: str,
     query: str,
@@ -49,8 +72,7 @@ async def answer_query(
     mode: str = "auto",
 ) -> Dict[str, Any]:
     history = (history or [])[-8:]
-    prior_user_context = " ".join(turn["content"] for turn in history if turn.get("role") == "user")
-    retrieval_query = f"{prior_user_context} {query}".strip()
+    retrieval_query = _build_retrieval_query(query, history)
 
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
 
@@ -109,8 +131,7 @@ async def stream_query(
     collector: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[str, None]:
     history = (history or [])[-8:]
-    prior_user_context = " ".join(turn["content"] for turn in history if turn.get("role") == "user")
-    retrieval_query = f"{prior_user_context} {query}".strip()
+    retrieval_query = _build_retrieval_query(query, history)
 
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
 
