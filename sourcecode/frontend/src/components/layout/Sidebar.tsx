@@ -9,7 +9,6 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
-  Quote,
   Settings,
   Trash2,
   X,
@@ -41,7 +40,6 @@ export function AppSidebar() {
   const workspaces = useAppStore((s) => s.workspaces)
   const conversations = useAppStore((s) => s.conversations)
   const current = useAppStore((s) => s.currentWorkspaceId)
-  const setCitationOpen = useAppStore((s) => s.setCitationOpen)
 
   const createConversation = useAppStore((s) => s.createConversation)
   const renameConversation = useAppStore((s) => s.renameConversation)
@@ -51,7 +49,6 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [citationNavSelected, setCitationNavSelected] = useState(false)
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
 
@@ -73,7 +70,6 @@ export function AppSidebar() {
   )
 
   const handleNewChat = async () => {
-    setCitationNavSelected(false)
     if (getAuthToken()) {
       try {
         const created = await createConversationApi(currentWsId, "Cuộc trò chuyện mới")
@@ -103,14 +99,12 @@ export function AppSidebar() {
       location.pathname === "/studio" ||
       location.pathname === "/dashboard")
 
-  // Chỉ highlight duy nhất 1 mục đang active
-  const activeNavId: "chat" | "documents" | "citation" | "study" = isDocsRoute
+  // Chỉ highlight duy nhất 1 mục đang active: Chat AI, Tài liệu hoặc Học liệu
+  const activeNavId: "chat" | "documents" | "study" = isDocsRoute
     ? "documents"
     : isStudyRoute
       ? "study"
-      : citationNavSelected && isChatRoute
-        ? "citation"
-        : "chat"
+      : "chat"
 
   const navItems = [
     {
@@ -118,7 +112,6 @@ export function AppSidebar() {
       label: "Chat AI",
       icon: MessageSquare,
       onClick: () => {
-        setCitationNavSelected(false)
         navigate("/chat")
         setMobile(false)
       },
@@ -128,22 +121,7 @@ export function AppSidebar() {
       label: "Tài liệu",
       icon: FileText,
       onClick: () => {
-        setCitationNavSelected(false)
         navigate("/documents")
-        setMobile(false)
-      },
-    },
-    {
-      id: "citation" as const,
-      label: "Citation",
-      icon: Quote,
-      onClick: () => {
-        setCitationNavSelected(true)
-        setCitationOpen(true)
-        window.dispatchEvent(new CustomEvent("studio-context-tab", { detail: "citations" }))
-        if (!isChatRoute) {
-          navigate("/chat")
-        }
         setMobile(false)
       },
     },
@@ -152,7 +130,6 @@ export function AppSidebar() {
       label: "Học liệu",
       icon: GraduationCap,
       onClick: () => {
-        setCitationNavSelected(false)
         navigate("/study")
         setMobile(false)
       },
@@ -327,7 +304,6 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={() => {
-                          setCitationNavSelected(false)
                           navigate(`/chat/${c.id}`)
                           setMobile(false)
                         }}

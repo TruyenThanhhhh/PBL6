@@ -88,7 +88,7 @@ export function AppHeader() {
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
 
           {/* Tên Workspace hiện tại: Hiển thị đầy đủ, không bị chèn ép chữ */}
-          <div className="min-w-0 max-w-sm sm:max-w-md md:max-w-xl lg:max-w-2xl">
+          <div className="flex shrink-0 items-center max-w-[220px] sm:max-w-sm md:max-w-md lg:max-w-lg">
             <InlineEdit
               value={currentWs?.name ?? "Workspace"}
               ariaLabel="Tên Workspace"
@@ -107,8 +107,8 @@ export function AppHeader() {
                   })
                 }
               }}
-              className="truncate font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md transition-colors"
-              inputClassName="text-xs font-semibold text-[#172B29]"
+              className="truncate text-[13px] font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md transition-colors"
+              inputClassName="h-7 text-xs font-semibold text-[#172B29]"
             />
           </div>
 
