@@ -321,7 +321,68 @@ def search_relevant_chunks(
                 merged[chunk_id]["rrf_score"] += 1.0 / (RRF_K + rank)
         ranked = sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
 
-        # Rerank candidates
+        # A direct question about a named file (for example, "Data.txt chứa gì?")
+        # should retrieve that file even when its name is absent from extracted text.
+        query_terms = {term.lower() for term in tokens if len(term) > 2}
+        named_ids: set[str] = set()
+        if query_terms:
+            cursor.execute(
+                """
+                SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name
+                FROM documents d JOIN document_chunks c ON c.document_id = d.id
+                WHERE d.workspace_id = ?{document_filter}
+                ORDER BY d.created_at DESC, c.chunk_index ASC
+            """.format(document_filter=document_filter.replace("c.document_id", "d.id")),
+                (workspace_id, *document_params),
+            )
+            named_matches = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                stem = re.sub(r"\.[^.]+$", "", item["document_name"]).lower()
+                name_terms = set(re.findall(r"[\w]+", stem, flags=re.UNICODE))
+                if name_terms & query_terms:
+                    named_matches.append(item)
+            named_ids = {item["chunk_id"] for item in named_matches}
+            ranked = named_matches + [item for item in ranked if item["chunk_id"] not in named_ids]
+
+        if named_ids:
+            pinned = [item for item in ranked if item["chunk_id"] in named_ids][:top_k]
+            pinned = rerank_documents(query, pinned, len(pinned), max_candidates=len(pinned))
+            remaining = [item for item in ranked if item["chunk_id"] not in named_ids]
+            if len(pinned) < top_k:
+                remaining = rerank_documents(
+                    query,
+                    remaining,
+                    top_k - len(pinned),
+                    max_candidates=RERANK_MAX_CANDIDATES,
+                )
+            else:
+                remaining = []
+            return pinned + remaining
+
+        # An explicitly attached document must remain readable even when it
+        # has no dense vectors and the prompt is too generic for FTS5 (for
+        # example, "What is in this file?"). In that case, provide its first
+        # source chunks so the model can summarize the document instead of
+        # claiming no attachment was found.
+        if not ranked and (document_id or document_ids):
+            cursor.execute(
+                """
+                SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name
+                FROM documents d
+                JOIN document_chunks c ON c.document_id = d.id
+                WHERE d.workspace_id = ?{document_filter}
+                ORDER BY d.created_at DESC, c.chunk_index ASC
+                LIMIT ?
+                """.format(document_filter=document_filter.replace("c.document_id", "d.id")),
+                (workspace_id, *document_params, top_k),
+            )
+            attached_document_chunks = [dict(row) for row in cursor.fetchall()]
+            if attached_document_chunks:
+                return attached_document_chunks
+
         return rerank_documents(
             query,
             ranked,
