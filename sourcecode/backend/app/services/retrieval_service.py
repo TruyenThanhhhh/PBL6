@@ -168,6 +168,28 @@ def search_relevant_chunks(
                 remaining = []
             return pinned + remaining
 
+        # An explicitly attached document must remain readable even when it
+        # has no dense vectors and the prompt is too generic for FTS5 (for
+        # example, "What is in this file?"). In that case, provide its first
+        # source chunks so the model can summarize the document instead of
+        # claiming no attachment was found.
+        if not ranked and (document_id or document_ids):
+            cursor.execute(
+                """
+                SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                       c.page_number, c.chunk_index, d.file_name AS document_name
+                FROM documents d
+                JOIN document_chunks c ON c.document_id = d.id
+                WHERE d.workspace_id = ?{document_filter}
+                ORDER BY d.created_at DESC, c.chunk_index ASC
+                LIMIT ?
+                """.format(document_filter=document_filter.replace("c.document_id", "d.id")),
+                (workspace_id, *document_params, top_k),
+            )
+            attached_document_chunks = [dict(row) for row in cursor.fetchall()]
+            if attached_document_chunks:
+                return attached_document_chunks
+
         return rerank_documents(
             query,
             ranked,
