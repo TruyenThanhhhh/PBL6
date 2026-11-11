@@ -39,7 +39,7 @@ class ChatQueryRequest(BaseModel):
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
     web_search: bool = False
-    top_k: int = Field(default=4, ge=1, le=20)
+    top_k: int = Field(default=8, ge=1, le=30)
     selected_document_id: Optional[str] = Field(default=None, max_length=100)
     document_ids: Optional[List[str]] = None
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
@@ -71,7 +71,7 @@ class ChatStreamRequest(BaseModel):
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
-    top_k: int = Field(default=4, ge=1, le=20)
+    top_k: int = Field(default=8, ge=1, le=30)
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
     image_base64: Optional[str] = None
     image_mime_type: Optional[Literal["image/png", "image/jpeg", "image/webp"]] = None

@@ -17,22 +17,22 @@ DATABASE_PATH = DATA_DIR / "knowledge.db"
 
 # Cấu hình AI & LLM
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "qwen2.5:3b")
-OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120.0"))
+DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "qwen2.5:7b")
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "180.0"))
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl:2b-instruct")
 VISION_MODEL_FALLBACK = os.getenv("VISION_MODEL_FALLBACK", "qwen2.5vl:3b")
 
 # Cấu hình RAG & Chunking
-CHUNK_SIZE = 800       # ký tự mỗi chunk
-CHUNK_OVERLAP = 150    # độ gối đầu giữa các chunk
-TOP_K_RETRIEVAL = 4    # số chunk lấy ra đưa vào LLM
+CHUNK_SIZE = 1100      # ký tự mỗi chunk (tăng để giữ ngữ cảnh liên kết tốt hơn)
+CHUNK_OVERLAP = 200    # độ gối đầu giữa các chunk
+TOP_K_RETRIEVAL = 8    # số chunk lấy ra đưa vào LLM (tăng để AI có đủ nội dung tổng hợp)
 
 # Hybrid retrieval: lấy rộng rồi fuse bằng RRF, sau đó rerank.
 RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "6"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
-RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "24"))
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "32"))
 RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
 
 # Search, embedding and network fallback
