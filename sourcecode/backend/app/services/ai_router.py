@@ -5,7 +5,13 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import DEFAULT_LLM_MODEL, VISION_MODEL, TOP_K_RETRIEVAL
 from app.services.llm_service import generate_rag_answer, stream_rag_answer
-from app.services.retrieval_service import search_relevant_chunks
+from app.services.retrieval_service import (
+    search_relevant_chunks,
+    search_spanning_chunks,
+    search_section_chunks,
+    detect_section_intent,
+    is_global_summary_query,
+)
 from app.services.web_search_service import search_web
 
 logger = logging.getLogger(__name__)
@@ -39,24 +45,90 @@ def _resolve_routing_modes(mode: str, query: str, include_web: Optional[bool] = 
 def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] = None) -> str:
     """
     Xây dựng câu truy vấn độc lập và giàu ngữ cảnh cho RAG.
-    Đối với các câu hỏi nối tiếp (ngắn, chứa đại từ thay thế như 'nó', 'đó', 'ở đâu', 'như thế nào'),
-    trích xuất từ khóa trọng tâm của các câu hỏi user trước đó để bổ trợ tìm kiếm chính xác.
+    - Kết hợp câu hỏi user hiện tại với các từ khóa trọng tâm của câu hỏi user trước.
+    - Đối với câu hỏi ngắn / chứa đại từ, tái sử dụng câu hỏi gần nhất để giảm thiểu tìm kiếm lệch hướng.
     """
-    history_turns = (history or [])[-6:]
-    prior_user_queries = [turn["content"].strip() for turn in history_turns if turn.get("role") == "user" and turn.get("content")]
+    history_turns = (history or [])[-10:]
+    prior_user_queries = [
+        turn["content"].strip()
+        for turn in history_turns
+        if turn.get("role") == "user" and turn.get("content")
+    ]
     if not prior_user_queries:
         return query.strip()
 
     q_lower = query.lower().strip()
-    pronouns = ["nó", "đó", "này", "ở đâu", "khi nào", "thế nào", "sao lại", "còn gì", "chi tiết", "rõ hơn", "tiếp", "tại sao"]
-    is_follow_up = len(q_lower.split()) <= 6 or any(p in q_lower for p in pronouns)
+    pronouns = [
+        "nó", "đó", "này", "ở đâu", "khi nào", "thế nào", "sao lại", "còn gì",
+        "chi tiết", "rõ hơn", "tiếp", "tại sao", "vì sao", "như thế nào", "giải thích"
+    ]
+    is_follow_up = len(q_lower.split()) <= 7 or any(p in q_lower for p in pronouns)
 
     if is_follow_up:
-        # Bổ sung câu hỏi gần nhất của user vào truy vấn tìm kiếm
         last_query = prior_user_queries[-1]
-        return f"{last_query} {query}".strip()
+        combined = f"{last_query} {query}".strip()
+        if len(prior_user_queries) >= 2:
+            context_query = prior_user_queries[-2]
+            combined = f"{context_query} {combined}".strip()
+        return combined
 
     return query.strip()
+
+
+async def _retrieve_local_sources(
+    workspace_id: str,
+    query: str,
+    history: Optional[list[Dict[str, str]]],
+    top_k: int,
+    selected_document_id: Optional[str] = None,
+    document_ids: Optional[list[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Thuật toán chọn chiến lược truy xuất tối ưu:
+    1. Nếu hỏi về Bài/Chương/Lab cụ thể -> Lấy toàn bộ các chunk liên tục thuộc phần đó.
+    2. Nếu hỏi tóm tắt toàn bộ -> Lấy chunk phân phối đều khắp tài liệu.
+    3. Tra cứu chi tiết -> Hybrid RAG (BM25 + Dense + Rerank).
+    """
+    # 1. Kiểm tra xem có đang hỏi về một Bài/Chương/Lab cụ thể không
+    sec_intent = detect_section_intent(query, history)
+    if sec_intent:
+        sec_type, sec_num = sec_intent
+        section_chunks = await run_in_threadpool(
+            search_section_chunks,
+            workspace_id,
+            sec_type,
+            sec_num,
+            16,
+            selected_document_id,
+            document_ids,
+        )
+        if section_chunks:
+            return section_chunks
+
+    # 2. Kiểm tra câu hỏi tóm tắt toàn bộ tài liệu
+    if is_global_summary_query(query):
+        spanning_chunks = await run_in_threadpool(
+            search_spanning_chunks,
+            workspace_id,
+            query,
+            14,
+            selected_document_id,
+            document_ids,
+        )
+        if spanning_chunks:
+            return spanning_chunks
+
+    # 3. Hybrid RAG thông thường cho câu hỏi tra cứu khái niệm hoặc chi tiết
+    retrieval_query = _build_retrieval_query(query, history)
+    effective_top_k = max(top_k, 8)
+    return await run_in_threadpool(
+        search_relevant_chunks,
+        workspace_id,
+        retrieval_query,
+        effective_top_k,
+        selected_document_id,
+        document_ids,
+    )
 
 
 async def answer_query(
@@ -72,8 +144,6 @@ async def answer_query(
     mode: str = "auto",
 ) -> Dict[str, Any]:
     history = (history or [])[-8:]
-    retrieval_query = _build_retrieval_query(query, history)
-
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
 
     local_sources: List[Dict[str, Any]] = []
@@ -81,14 +151,13 @@ async def answer_query(
         if image_base64 and not (selected_document_id or document_ids):
             local_sources = []
         else:
-            retrieval_limit = min(top_k, 2) if image_base64 else top_k
-            local_sources = await run_in_threadpool(
-                search_relevant_chunks,
-                workspace_id,
-                retrieval_query,
-                retrieval_limit,
-                selected_document_id,
-                document_ids,
+            local_sources = await _retrieve_local_sources(
+                workspace_id=workspace_id,
+                query=query,
+                history=history,
+                top_k=top_k,
+                selected_document_id=selected_document_id,
+                document_ids=document_ids,
             )
 
     web_sources: List[Dict[str, Any]] = []
@@ -131,8 +200,6 @@ async def stream_query(
     collector: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[str, None]:
     history = (history or [])[-8:]
-    retrieval_query = _build_retrieval_query(query, history)
-
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
 
     local_sources: List[Dict[str, Any]] = []
@@ -140,14 +207,13 @@ async def stream_query(
         if image_base64 and not (selected_document_id or document_ids):
             local_sources = []
         else:
-            retrieval_limit = min(top_k, 2) if image_base64 else top_k
-            local_sources = await run_in_threadpool(
-                search_relevant_chunks,
-                workspace_id,
-                retrieval_query,
-                retrieval_limit,
-                selected_document_id,
-                document_ids,
+            local_sources = await _retrieve_local_sources(
+                workspace_id=workspace_id,
+                query=query,
+                history=history,
+                top_k=top_k,
+                selected_document_id=selected_document_id,
+                document_ids=document_ids,
             )
 
     web_sources: List[Dict[str, Any]] = []
