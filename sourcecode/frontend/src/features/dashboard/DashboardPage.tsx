@@ -125,7 +125,7 @@ export function DashboardPage() {
       <section className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div className="min-w-0 max-w-xl">
           <h1 className="text-2xl font-bold tracking-tight text-ink sm:text-[26px]">
-            {greeting()} 👋{" "}
+            {greeting()}{" "}
             <span className="font-editorial text-[28px] font-normal sm:text-[30px]">
               tri thức hôm nay.
             </span>
