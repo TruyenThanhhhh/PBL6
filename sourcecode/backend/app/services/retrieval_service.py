@@ -38,9 +38,9 @@ _GLOBAL_SUMMARY_KEYWORDS = [
     "nêu các", "kể tên", "có những gì", "gồm những gì",
 ]
 
-# Regex nhận diện "bài X", "chương X", "phần X", "lab X"
+# Regex nhận diện "bài X", "chương X", "phần X", "lab X", "bài tập X", "bài số X"
 _SECTION_PATTERN = re.compile(
-    r"\b(bài|chương|phần|lab|exercise|chapter|section)\s*(\d+)\b",
+    r"\b(?:(bài|chương|phần|lab|exercise|chapter|section|bai|chuong|phan)(?:\s+tập|\s+số|\s+tap|\s+so)?)\s*(\d+)\b",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -72,7 +72,14 @@ def detect_section_intent(
     q = query.lower().strip()
     m = _SECTION_PATTERN.search(q)
     if m:
-        return m.group(1).lower(), int(m.group(2))
+        sec_raw = m.group(1).lower()
+        sec_norm = (
+            "bài" if sec_raw in ("bài", "bai")
+            else "chương" if sec_raw in ("chương", "chuong")
+            else "phần" if sec_raw in ("phần", "phan")
+            else sec_raw
+        )
+        return sec_norm, int(m.group(2))
 
     # Nếu câu hỏi hiện tại là câu nối tiếp (ví dụ: "các bước tiếp theo đâu", "bước iếp theo")
     is_follow_up = any(kw in q for kw in _FOLLOW_UP_KEYWORDS) or len(q.split()) <= 5
@@ -82,7 +89,14 @@ def detect_section_intent(
                 prev_text = turn.get("content", "").lower()
                 pm = _SECTION_PATTERN.search(prev_text)
                 if pm:
-                    return pm.group(1).lower(), int(pm.group(2))
+                    psec_raw = pm.group(1).lower()
+                    psec_norm = (
+                        "bài" if psec_raw in ("bài", "bai")
+                        else "chương" if psec_raw in ("chương", "chuong")
+                        else "phần" if psec_raw in ("phần", "phan")
+                        else psec_raw
+                    )
+                    return psec_norm, int(pm.group(2))
 
     return None
 
@@ -136,8 +150,10 @@ def search_section_chunks(
         end_idx = None
 
         for i, c in enumerate(all_chunks):
-            # Bỏ qua 2 trang đầu nếu đó là trang Mục lục
-            if c["page_number"] > 2 and pat_start.search(c["content"]):
+            content_lower = c["content"].lower()
+            # Bỏ qua các trang Mục lục đầu tài liệu
+            is_toc = ("mục lục" in content_lower or "table of contents" in content_lower or "........" in c["content"]) and c["page_number"] <= 3
+            if not is_toc and pat_start.search(c["content"]):
                 if start_idx is None:
                     start_idx = i
             if start_idx is not None and i > start_idx:
