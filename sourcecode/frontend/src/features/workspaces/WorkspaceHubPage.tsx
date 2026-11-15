@@ -412,8 +412,7 @@ export function WorkspaceHubPage() {
                 {greeting()},{" "}
                 <span className="bg-gradient-to-r from-[#0F766E] via-[#0D9488] to-[#0284C7] bg-clip-text font-semibold italic text-transparent underline decoration-[#0D9488]/35 decoration-2 underline-offset-8">
                   {user?.name || "bạn"}
-                </span>{" "}
-                👋
+                </span>
               </h1>
 
               <p className="max-w-lg text-base font-medium leading-relaxed text-[#2C4A47] sm:text-lg">
@@ -571,16 +570,16 @@ export function WorkspaceHubPage() {
                 )}
               >
                 <div>
-                  {/* Hàng trên: Icon nét mảnh tinh tế + Danh mục/Thời gian + Menu 3 chấm */}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
+                  {/* Hàng trên: Icon nét mảnh tinh tế + Tên Workspace & Thời gian cập nhật + Menu 3 chấm */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D5E8E3] bg-[#F2F9F7] text-[#0F6E66] transition-colors duration-200 group-hover:border-[#0B1315] group-hover:bg-[#0B1315] group-hover:text-white">
                         <WorkspaceGlyph category={w.category} index={idx} />
                       </div>
-                      <div className="flex flex-col">
-                        <span className="text-[11px] font-semibold tracking-wide text-[#0F766E]">
-                          {w.category || "Cá nhân"}
-                        </span>
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <h3 className="truncate text-[15px] sm:text-[16px] leading-snug font-bold tracking-[-0.01em] text-[#0B1716] transition-colors group-hover:text-[#0F766E]">
+                          {w.name}
+                        </h3>
                         <span className="text-[11px] text-[#6E8582]">
                           Cập nhật {relativeTime(w.updatedAt)}
                         </span>
@@ -631,13 +630,10 @@ export function WorkspaceHubPage() {
                     </div>
                   </div>
 
-                  {/* Khối Tiêu đề & Mô tả với khoảng cách chuẩn xác */}
-                  <div className="mt-4">
-                    <h3 className="text-[16px] leading-snug font-bold tracking-[-0.01em] text-[#0B1716] transition-colors group-hover:text-[#0F766E]">
-                      {w.name}
-                    </h3>
-                    <p className="mt-1.5 line-clamp-2 text-[13px] leading-[1.55] text-[#526B68]">
-                      {w.description || "Không gian làm việc với tài liệu và trợ lý RAG cá nhân."}
+                  {/* Mô tả với khoảng cách chuẩn xác */}
+                  <div className="mt-3.5">
+                    <p className="line-clamp-2 min-h-[38px] text-[13px] leading-[1.55] text-[#526B68]">
+                      {w.description || "Không gian làm việc với tài liệu và trợ lý RAG."}
                     </p>
                   </div>
                 </div>
