@@ -539,19 +539,18 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
     throw new DOMException("Đã hủy yêu cầu.", "AbortError")
   }
 
-  const modeInfo = getModeDescriptor(req.mode)
-
-  // Khi backend online và chế độ đã được tích hợp (auto / local)
-  if (req.backendOnline && modeInfo.backendIntegrated) {
+  // Luôn thử gọi backend thật trước
+  try {
     const { result } = await tryStreamOrQueryBackend(req)
     const citations: Citation[] = (result.citations ?? []).map((c, i) => ({
       refId: c.ref_id ?? i + 1,
       documentId: c.document_id ?? null,
-      documentName: c.document_name ?? "Tài liệu",
+      documentName: c.document_name ?? (c.document_id ? "Tài liệu" : "Nguồn Web"),
       pageNumber: c.page_number ?? null,
       chunkIndex: c.chunk_index ?? null,
       snippet: c.snippet ?? "",
-      sourceKind: c.document_id ? "local" : "web",
+      sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
+      url: (c as any).url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined),
     }))
 
     return {
@@ -571,25 +570,14 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
         notebookScopeId: req.notebookScopeId ?? null,
       },
     }
-  }
-
-  // Chế độ mô phỏng: chờ ngắn 350ms để thể hiện trạng thái loading rõ ràng và cho phép bấm Hủy nếu cần
-  await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(resolve, 350)
-    if (req.signal) {
-      req.signal.addEventListener(
-        "abort",
-        () => {
-          window.clearTimeout(timer)
-          reject(new DOMException("Đã hủy yêu cầu.", "AbortError"))
-        },
-        { once: true },
-      )
+  } catch (backendError: any) {
+    if (backendError instanceof DOMException && backendError.name === "AbortError") {
+      throw backendError
     }
-  })
-
-  return {
-    message: generateMockChatResponse(req),
+    // Nếu backend đang offline, báo lỗi rõ ràng thay vì giả mạo dữ liệu mẫu gây hiểu lầm
+    throw new Error(
+      "Không thể kết nối đến máy chủ AI (Backend cổng 8000). Vui lòng đảm bảo server backend đang chạy."
+    )
   }
 }
 

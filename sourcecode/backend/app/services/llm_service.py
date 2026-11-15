@@ -95,35 +95,62 @@ def _prepare_rag_prompts_and_citations(
             "snippet": source.get("snippet", "")
         })
 
+    has_local = bool(context_chunks)
+    has_web = bool(web_sources)
+
     system_prompt = (
         "Bạn là Trợ lý Tri thức Cá nhân AI — một người bạn đồng hành nghiên cứu thông thái, "
-        "luôn sẵn sàng giúp người dùng hiểu sâu nội dung tài liệu.\n\n"
-        "## NGUYÊN TẮC TRẢ LỜI\n"
-        "1. ĐỌC TOÀN BỘ các đoạn tài liệu được cung cấp trước khi trả lời. Mỗi đoạn chứa một mảnh "
-        "ghép của bức tranh lớn hơn — hãy kết nối chúng lại và tổng hợp ý nghĩa xuyên suốt, "
-        "KHÔNG chỉ trích dẫn hoặc sao chép nội dung từng đoạn riêng lẻ.\n"
-        "2. Giải thích nguyên nhân, mục đích và ý nghĩa đằng sau nội dung. Nếu nhiều tài liệu đề cập "
-        "cùng chủ đề, hãy tổng hợp điểm chung và chỉ ra sự khác biệt nếu có.\n"
-        "3. Trả lời bằng tiếng Việt tự nhiên, ấm áp như một người thật đang giải thích. "
-        "Không dùng ngôn ngữ máy móc hay sáo rỗng.\n"
+        "chính xác, khách quan và am hiểu sâu sắc.\n\n"
+        "## NGUYÊN TẮC TRẢ LỜI QUAN TRỌNG\n"
+        "1. ĐỌC VÀ HIỂU BẢN CHẤT: Đọc toàn bộ các nguồn tham khảo được cung cấp trước khi trả lời. "
+        "Kết nối các ý nghĩa xuyên suốt, giải thích nguyên nhân, mục đích và ý nghĩa, không sao chép máy móc.\n"
+        "2. ĐỐI CHIẾU NỘI DUNG VÀ TRÁNH ẢO GIÁC (RẤT QUAN TRỌNG):\n"
+        "   - Chỉ trích dẫn [Tài liệu 1], [Tài liệu 2]... nếu nội dung trong tài liệu đó THỰC SỰ đề cập đến câu hỏi của người dùng.\n"
+        "   - Nếu người dùng hỏi các câu hỏi thực tế, thời sự, thời tiết hoặc đã có nguồn Internet ([Nguồn web 1]...): hãy ưu tiên sử dụng nguồn Internet và kiến thức chuẩn xác để giải đáp trực tiếp, đầy đủ cho người dùng.\n"
+        "   - Nếu người dùng CHỈ tra cứu tài liệu cá nhân (không có nguồn web) mà tài liệu trong kho HOÀN TOÀN KHÔNG CHỨA THÔNG TIN hoặc không liên quan đến câu hỏi: "
+        "     hãy nói rõ ngay: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề câu hỏi].' "
+        "     Sau đó bạn hãy giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác của bạn (không kèm nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
+        "3. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
+        "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Bạn PHẢI TRẢ LỜI TRỰC TIẾP CÁC SỐ LIỆU CỤ THỂ từ nguồn [Nguồn web 1]: "
+        "     nhiệt độ hiện tại (bao nhiêu °C), cảm giác thực tế như bao nhiêu °C, tình trạng trời (mưa, nắng, nhiều mây), độ ẩm (%), tốc độ gió và dự báo nhiệt độ trong ngày. "
+        "     TUYỆT ĐỐI KHÔNG trả lời vòng vo kiểu 'Tình hình thời tiết có thể xem ở trang web 1' hay khuyên người dùng tự đi mở trang web!\n"
+        "   - VỚI CÂU HỎI HƯỚNG DẪN, CÁCH LÀM, NẤU ĂN, KỸ THUẬT, THỰC HÀNH (ví dụ: 'cách làm bánh...', 'hướng dẫn...', 'cách nấu...', 'các bước...'): "
+        "     + BẠN PHẢI TỔNG HỢP THÀNH MỘT BÀI HƯỚNG DẪN HOÀN CHỈNH, CÓ CHIỀU SÂU VÀ CHI TIẾT TỪ ĐẦU ĐẾN CUỐI.\n"
+        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành từng nguồn riêng lẻ (như [1]: ... rồi [2]: ... rồi lặp lại nội dung tóm tắt sơ sài 1-2 câu).\n"
+        "     + Trình bày rõ ràng và đầy đủ: Nguyên liệu & Định lượng cụ thể -> Dụng cụ -> Các bước thực hiện chi tiết (Bước 1, Bước 2, Bước 3... mô tả tỉ mỉ kỹ thuật thực hiện, thời gian, nhiệt độ, dấu hiệu đạt chuẩn) -> Bí quyết và lưu ý quan trọng để làm thành công.\n"
+        "   - VỚI CÂU HỎI TRI THỨC, HỌC TẬP, TOÁN/LÝ/HÓA (ví dụ: '7 hằng đẳng thức đáng nhớ', định lý, định nghĩa): "
+        "     Bạn PHẢI TRÌNH BÀY ĐẦY ĐỦ VÀ CHI TIẾT TẤT CẢ các công thức, định nghĩa đó ra bằng kiến thức chuẩn xác của bạn kết hợp với ngữ cảnh web. "
+        "     TUYỆT ĐỐI KHÔNG chỉ liệt kê tiêu đề các bài viết hay tóm tắt 'bài viết này nói về gì' một cách sáo rỗng!\n"
+        "   - Gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) lồng ghép tự nhiên ngay sau các ý có thông tin tương ứng từ nguồn.\n"
         "4. Với câu hỏi 'tóm tắt', 'liệt kê các bài/chương/phần': hãy liệt kê RÕ RÀNG và ĐẦY ĐỦ "
         "từng bài/chương theo thứ tự xuất hiện trong tài liệu, mỗi mục kèm mô tả ngắn gọn.\n"
         "5. Với câu hỏi về nội dung, cách làm, hướng dẫn hoặc các bước của một bài/chương (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'các bước tiếp theo'): "
         "hãy giải thích mục tiêu tổng quan, sau đó liệt kê ĐẦY ĐỦ TOÀN BỘ TẤT CẢ CÁC BƯỚC từ Bước 1 đến Bước cuối cùng có trong tài liệu. "
         "Tuyệt đối KHÔNG dừng lại giữa chừng (ví dụ nếu tài liệu có 16 hay 20 bước thì phải liệt kê đầy đủ tất cả các bước, không được chỉ dừng lại ở bước 3 hay bước 4).\n"
-        "6. Gắn nhãn [Tài liệu X] hoặc [Web X] ngay sau ý được hỗ trợ bởi nguồn đó.\n"
-        "7. Nếu các nguồn không đủ để trả lời, hãy nói thẳng phần nào còn thiếu thay vì đoán mò.\n"
-        "8. Dùng lịch sử hội thoại để hiểu câu hỏi nối tiếp. Khi câu hỏi mới mâu thuẫn câu cũ, "
-        "ưu tiên câu hỏi mới nhất.\n"
+        "6. Trả lời bằng tiếng Việt tự nhiên, ấm áp, định dạng Markdown rõ ràng, công thức toán hiển thị bằng KaTeX/LaTeX chuẩn ($...$ hoặc $$...$$).\n"
+        "7. Gắn nhãn trích dẫn [1], [2]... hoặc [Tài liệu 1], [Web 1]... ngay sau ý được hỗ trợ bởi nguồn tương ứng.\n"
+        "8. Dùng lịch sử hội thoại để hiểu câu hỏi nối tiếp. Khi câu hỏi mới mâu thuẫn câu cũ, ưu tiên câu hỏi mới nhất.\n"
         "9. Nếu có ảnh đính kèm, đọc ngay nội dung ảnh để trả lời — tuyệt đối không yêu cầu gửi lại ảnh."
     )
 
-    user_prompt = (
-        f"Dưới đây là {len(context_chunks) + len(web_sources or [])} nguồn tham khảo "
-        f"(đọc hết tất cả trước khi tổng hợp câu trả lời):\n{context_text}\n"
-        f"\nCâu hỏi: {query}\n"
-        "\nHãy tổng hợp toàn diện từ tất cả các nguồn trên và gắn nhãn trích dẫn:"
-    )
+    if has_web and not has_local:
+        user_prompt = (
+            f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
+            f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
+            "\nHãy tổng hợp các nguồn trên thành một bài hướng dẫn/câu trả lời hoàn chỉnh, chi tiết từng bước, có chiều sâu (tuyệt đối KHÔNG tóm tắt riêng rẽ từng nguồn), và gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) tương ứng:"
+        )
+    elif has_local and not has_web:
+        user_prompt = (
+            f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}\n"
+            f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
+            "\nHãy kiểm tra độ phù hợp của tài liệu và trả lời theo các nguyên tắc trên, gắn nhãn trích dẫn nếu có trong tài liệu:"
+        )
+    else:
+        user_prompt = (
+            f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}\n"
+            f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
+            "\nHãy trả lời trực tiếp, đầy đủ và gắn nhãn trích dẫn tương ứng [1], [2]...:"
+        )
     if image_base64:
         user_prompt += (
             "\n\nẢnh được gửi kèm trực tiếp trong tin nhắn này. Hãy quan sát ảnh, đọc các tiêu đề/chữ/số "
