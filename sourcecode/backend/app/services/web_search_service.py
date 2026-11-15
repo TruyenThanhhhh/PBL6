@@ -4,12 +4,30 @@ import json
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 
 import httpx
 
 from app.config import DUCKDUCKGO_API_URL, WEB_SEARCH_ENABLED, WEB_SEARCH_TIMEOUT
 from app.database import get_db_connection
+
+
+def _clean_web_url(raw_url: str) -> str:
+    """Trích xuất URL thật từ link chuyển hướng của DuckDuckGo (//duckduckgo.com/l/?uddg=...)"""
+    if not raw_url:
+        return ""
+    if "uddg=" in raw_url:
+        try:
+            full_url = raw_url if raw_url.startswith("http") else ("https:" + raw_url if raw_url.startswith("//") else "https://" + raw_url)
+            parsed = urlparse(full_url)
+            qs = parse_qs(parsed.query)
+            if "uddg" in qs and qs["uddg"]:
+                return unquote(qs["uddg"][0])
+        except Exception:
+            pass
+    if raw_url.startswith("//"):
+        return "https:" + raw_url
+    return raw_url
 
 
 class _ResultParser(HTMLParser):
@@ -117,7 +135,7 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
                     {
                         "source_type": "web",
                         "title": item["title"].strip(),
-                        "url": item["url"],
+                        "url": _clean_web_url(item["url"]),
                         "snippet": item.get("snippet", "").strip() or item["title"].strip(),
                         "ref_id": index,
                     }
