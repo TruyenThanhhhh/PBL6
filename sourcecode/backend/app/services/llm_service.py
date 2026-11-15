@@ -114,10 +114,14 @@ def _prepare_rag_prompts_and_citations(
         "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Bạn PHẢI TRẢ LỜI TRỰC TIẾP CÁC SỐ LIỆU CỤ THỂ từ nguồn [Nguồn web 1]: "
         "     nhiệt độ hiện tại (bao nhiêu °C), cảm giác thực tế như bao nhiêu °C, tình trạng trời (mưa, nắng, nhiều mây), độ ẩm (%), tốc độ gió và dự báo nhiệt độ trong ngày. "
         "     TUYỆT ĐỐI KHÔNG trả lời vòng vo kiểu 'Tình hình thời tiết có thể xem ở trang web 1' hay khuyên người dùng tự đi mở trang web!\n"
+        "   - VỚI CÂU HỎI HƯỚNG DẪN, CÁCH LÀM, NẤU ĂN, KỸ THUẬT, THỰC HÀNH (ví dụ: 'cách làm bánh...', 'hướng dẫn...', 'cách nấu...', 'các bước...'): "
+        "     + BẠN PHẢI TỔNG HỢP THÀNH MỘT BÀI HƯỚNG DẪN HOÀN CHỈNH, CÓ CHIỀU SÂU VÀ CHI TIẾT TỪ ĐẦU ĐẾN CUỐI.\n"
+        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành từng nguồn riêng lẻ (như [1]: ... rồi [2]: ... rồi lặp lại nội dung tóm tắt sơ sài 1-2 câu).\n"
+        "     + Trình bày rõ ràng và đầy đủ: Nguyên liệu & Định lượng cụ thể -> Dụng cụ -> Các bước thực hiện chi tiết (Bước 1, Bước 2, Bước 3... mô tả tỉ mỉ kỹ thuật thực hiện, thời gian, nhiệt độ, dấu hiệu đạt chuẩn) -> Bí quyết và lưu ý quan trọng để làm thành công.\n"
         "   - VỚI CÂU HỎI TRI THỨC, HỌC TẬP, TOÁN/LÝ/HÓA (ví dụ: '7 hằng đẳng thức đáng nhớ', định lý, định nghĩa): "
         "     Bạn PHẢI TRÌNH BÀY ĐẦY ĐỦ VÀ CHI TIẾT TẤT CẢ các công thức, định nghĩa đó ra bằng kiến thức chuẩn xác của bạn kết hợp với ngữ cảnh web. "
         "     TUYỆT ĐỐI KHÔNG chỉ liệt kê tiêu đề các bài viết hay tóm tắt 'bài viết này nói về gì' một cách sáo rỗng!\n"
-        "   - Gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) ngay sau các ý có thông tin tương ứng từ nguồn (dùng số thứ tự thực tế của nguồn, không dùng chữ X).\n"
+        "   - Gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) lồng ghép tự nhiên ngay sau các ý có thông tin tương ứng từ nguồn.\n"
         "4. Với câu hỏi 'tóm tắt', 'liệt kê các bài/chương/phần': hãy liệt kê RÕ RÀNG và ĐẦY ĐỦ "
         "từng bài/chương theo thứ tự xuất hiện trong tài liệu, mỗi mục kèm mô tả ngắn gọn.\n"
         "5. Với câu hỏi về nội dung, cách làm, hướng dẫn hoặc các bước của một bài/chương (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'các bước tiếp theo'): "
@@ -133,7 +137,7 @@ def _prepare_rag_prompts_and_citations(
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ câu hỏi của người dùng bằng kiến thức chính xác kết hợp với nguồn web, và gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) tương ứng:"
+            "\nHãy tổng hợp các nguồn trên thành một bài hướng dẫn/câu trả lời hoàn chỉnh, chi tiết từng bước, có chiều sâu (tuyệt đối KHÔNG tóm tắt riêng rẽ từng nguồn), và gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) tương ứng:"
         )
     elif has_local and not has_web:
         user_prompt = (
