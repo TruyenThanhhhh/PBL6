@@ -39,10 +39,23 @@ export function fileKindFromName(name: string): FileKind {
   if (ext === "txt") return "txt"
   if (ext === "md" || ext === "markdown") return "md"
   if (ext === "xlsx") return "xlsx"
+  if (ext === "xls") return "xls"
+  if (ext === "csv") return "csv"
   return "other"
 }
 
-export const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".txt", ".md", ".xlsx"]
+export const ACCEPTED_EXTENSIONS = [
+  ".pdf",
+  ".docx",
+  ".doc",
+  ".pptx",
+  ".ppt",
+  ".txt",
+  ".md",
+  ".xlsx",
+  ".xls",
+  ".csv",
+]
 
 export function isAcceptedFile(name: string) {
   const ext = `.${name.split(".").pop()?.toLowerCase()}`

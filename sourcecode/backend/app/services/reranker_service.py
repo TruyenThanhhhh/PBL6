@@ -39,7 +39,7 @@ def rerank_documents(
         scores = list(
             model.rerank(
                 query,
-                [str(doc.get("content", ""))[:4000] for doc in candidates],
+                [str(doc.get("content", ""))[:1200] for doc in candidates],
                 batch_size=RERANK_BATCH_SIZE,
             )
         )

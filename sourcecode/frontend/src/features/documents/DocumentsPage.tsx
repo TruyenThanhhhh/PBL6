@@ -5,10 +5,8 @@ import {
   Eye,
   FileText,
   FolderInput,
-  LayoutList,
   MoreHorizontal,
   Search,
-  Table2,
   Trash2,
 } from "lucide-react"
 import { PageHeader } from "@/components/common/PageHeader"
@@ -65,7 +63,6 @@ export function DocumentsPage() {
   const [q, setQ] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<"all" | "ready" | "processing" | "failed">("all")
-  const [viewMode, setViewMode] = useState<"table" | "list">("table")
 
   // Dialog states
   const [deleteDoc, setDeleteDoc] = useState<KnowledgeDocument | null>(null)
@@ -92,7 +89,11 @@ export function DocumentsPage() {
       rows = rows.filter((d) => d.fileName.toLowerCase().includes(kw))
     }
     if (typeFilter !== "all") {
-      rows = rows.filter((d) => d.fileType === typeFilter)
+      if (typeFilter === "xlsx") {
+        rows = rows.filter((d) => d.fileType === "xlsx" || d.fileType === "xls")
+      } else {
+        rows = rows.filter((d) => d.fileType === typeFilter)
+      }
     }
     if (statusFilter === "ready") {
       rows = rows.filter((d) => d.status === "ready")
@@ -219,71 +220,49 @@ export function DocumentsPage() {
       />
 
       {/* 3. Bộ lọc tài liệu trong không gian hiện tại */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex flex-1 flex-wrap items-center gap-2">
-          <div className="relative w-full sm:w-64">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Tìm theo tên tài liệu..."
-              className="h-8 pl-8 text-xs"
-            />
-          </div>
-
-          <div className="w-36">
-            <Select
-              aria-label="Lọc theo loại tệp"
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="h-8 text-xs"
-            >
-              <option value="all">Tất cả định dạng</option>
-              <option value="pdf">PDF (.pdf)</option>
-              <option value="docx">DOCX (.docx)</option>
-              <option value="pptx">PPTX (.pptx)</option>
-              <option value="txt">TXT (.txt)</option>
-              <option value="md">Markdown (.md)</option>
-            </Select>
-          </div>
-
-          <div className="w-36">
-            <Select
-              aria-label="Lọc theo trạng thái"
-              value={statusFilter}
-              onChange={(e) =>
-                setStatusFilter(e.target.value as "all" | "ready" | "processing" | "failed")
-              }
-              className="h-8 text-xs"
-            >
-              <option value="all">Mọi trạng thái</option>
-              <option value="ready">Sẵn sàng</option>
-              <option value="processing">Đang xử lý</option>
-              <option value="failed">Lỗi</option>
-            </Select>
-          </div>
+      <div className="mb-4 flex flex-wrap items-center gap-2.5">
+        <div className="relative w-full sm:w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Tìm theo tên tài liệu..."
+            className="h-8 pl-8 text-xs"
+          />
         </div>
 
-        {/* Chuyển chế độ Bảng / Danh sách */}
-        <div className="flex items-center gap-0.5 rounded-lg border border-line bg-bg p-0.5">
-          <Button
-            variant={viewMode === "table" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7 px-2 text-xs"
-            leftIcon={<Table2 className="h-3.5 w-3.5" />}
-            onClick={() => setViewMode("table")}
+        <div className="w-36">
+          <Select
+            aria-label="Lọc theo loại tệp"
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="h-8 text-xs"
           >
-            Bảng
-          </Button>
-          <Button
-            variant={viewMode === "list" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7 px-2 text-xs"
-            leftIcon={<LayoutList className="h-3.5 w-3.5" />}
-            onClick={() => setViewMode("list")}
+            <option value="all">Tất cả định dạng</option>
+            <option value="pdf">PDF (.pdf)</option>
+            <option value="docx">DOCX (.docx)</option>
+            <option value="pptx">PPTX (.pptx)</option>
+            <option value="xlsx">Excel (.xlsx, .xls)</option>
+            <option value="csv">CSV (.csv)</option>
+            <option value="txt">TXT (.txt)</option>
+            <option value="md">Markdown (.md)</option>
+          </Select>
+        </div>
+
+        <div className="w-36">
+          <Select
+            aria-label="Lọc theo trạng thái"
+            value={statusFilter}
+            onChange={(e) =>
+              setStatusFilter(e.target.value as "all" | "ready" | "processing" | "failed")
+            }
+            className="h-8 text-xs"
           >
-            Danh sách
-          </Button>
+            <option value="all">Mọi trạng thái</option>
+            <option value="ready">Sẵn sàng</option>
+            <option value="processing">Đang xử lý</option>
+            <option value="failed">Lỗi</option>
+          </Select>
         </div>
       </div>
 
@@ -305,7 +284,7 @@ export function DocumentsPage() {
             </Button>
           }
         />
-      ) : viewMode === "table" ? (
+      ) : (
         <div className="motivo-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -372,59 +351,6 @@ export function DocumentsPage() {
               })}
             </TableBody>
           </Table>
-        </div>
-      ) : (
-        <div className="motivo-card divide-y divide-line/70 overflow-hidden">
-          {list.map((d) => {
-            const ws = workspaces.find((w) => w.id === d.workspaceId)
-            return (
-              <div
-                key={d.id}
-                className="flex flex-wrap items-center justify-between gap-3 p-3.5 transition-colors hover:bg-bg-hover/60"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <div className="max-w-[280px]">
-                      <InlineEdit
-                        value={d.fileName}
-                        ariaLabel="Tên tài liệu"
-                        validate={(next) => (!next.trim() ? "Tên tệp không được để trống." : null)}
-                        onSave={(next) => {
-                          if (next === d.fileName) return
-                          updateDocument(d.id, { fileName: next })
-                          toast({ title: "Đã đổi tên tài liệu", description: next, tone: "success" })
-                        }}
-                        className="truncate text-xs font-semibold text-ink hover:text-[#087F73]"
-                        inputClassName="text-xs font-semibold text-[#172B29]"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/documents/${d.id}`)}
-                      className="shrink-0 p-1 text-muted hover:text-[#087F73] rounded hover:bg-bg-hover transition-colors"
-                      title="Xem nội dung tài liệu"
-                      aria-label={`Xem ${d.fileName}`}
-                    >
-                      <Eye className="h-3.5 w-3.5" />
-                    </button>
-                    <Badge tone="neutral">{d.fileType.toUpperCase()}</Badge>
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
-                    <span>{ws?.name ?? "Không gian"}</span>
-                    <span>·</span>
-                    <span>{formatBytes(d.fileSize)}</span>
-                    <span>·</span>
-                    <span>Tải lên {formatDate(d.createdAt)}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <StatusBadge status={d.status} />
-                  {renderActionMenu(d)}
-                </div>
-              </div>
-            )
-          })}
         </div>
       )}
 
