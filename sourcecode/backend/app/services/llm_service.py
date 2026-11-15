@@ -105,23 +105,26 @@ def _prepare_rag_prompts_and_citations(
         "1. ĐỌC VÀ HIỂU BẢN CHẤT: Đọc toàn bộ các nguồn tham khảo được cung cấp trước khi trả lời. "
         "Kết nối các ý nghĩa xuyên suốt, giải thích nguyên nhân, mục đích và ý nghĩa, không sao chép máy móc.\n"
         "2. ĐỐI CHIẾU NỘI DUNG VÀ TRÁNH ẢO GIÁC (RẤT QUAN TRỌNG):\n"
-        "   - Chỉ trích dẫn [Tài liệu X] nếu nội dung trong tài liệu đó THỰC SỰ đề cập đến câu hỏi của người dùng.\n"
-        "   - Nếu tài liệu trong kho tri thức HOÀN TOÀN KHÔNG CHỨA THÔNG TIN hoặc không liên quan đến câu hỏi "
-        "     (ví dụ: người dùng hỏi toán học, công nghệ hoặc chủ đề khác mà tài liệu trong kho lại là sách tiếng Nhật hay đề thi không liên quan): "
+        "   - Chỉ trích dẫn [Tài liệu 1], [Tài liệu 2]... nếu nội dung trong tài liệu đó THỰC SỰ đề cập đến câu hỏi của người dùng.\n"
+        "   - Nếu người dùng hỏi các câu hỏi thực tế, thời sự, thời tiết hoặc đã có nguồn Internet ([Nguồn web 1]...): hãy ưu tiên sử dụng nguồn Internet và kiến thức chuẩn xác để giải đáp trực tiếp, đầy đủ cho người dùng.\n"
+        "   - Nếu người dùng CHỈ tra cứu tài liệu cá nhân (không có nguồn web) mà tài liệu trong kho HOÀN TOÀN KHÔNG CHỨA THÔNG TIN hoặc không liên quan đến câu hỏi: "
         "     hãy nói rõ ngay: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề câu hỏi].' "
-        "     TUYỆT ĐỐI KHÔNG tự bịa ra nội dung rồi gán ghép [Tài liệu X] vào các trang không liên quan!\n"
-        "   - Sau khi nêu rõ tài liệu không có thông tin, bạn hãy giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác của bạn (không kèm nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
-        "3. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web X]):\n"
-        "   - Bạn phải TRẢ LỜI TRỰC TIẾP VÀ ĐẦY ĐỦ câu hỏi của người dùng (ví dụ: người dùng hỏi công thức, định nghĩa, số liệu, sự kiện thì hãy trình bày chi tiết công thức, định nghĩa, số liệu đó ra).\n"
-        "   - TUYỆT ĐỐI KHÔNG chỉ liệt kê tiêu đề các bài viết hay tóm tắt 'bài viết này có nội dung gì' một cách sáo rỗng.\n"
-        "   - Sử dụng kiến thức chuẩn xác của bạn kết hợp với ngữ cảnh từ nguồn web để đưa ra câu trả lời chi tiết và hữu ích nhất. Gắn nhãn [Web X] ở các ý liên quan.\n"
+        "     Sau đó bạn hãy giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác của bạn (không kèm nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
+        "3. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
+        "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Bạn PHẢI TRẢ LỜI TRỰC TIẾP CÁC SỐ LIỆU CỤ THỂ từ nguồn [Nguồn web 1]: "
+        "     nhiệt độ hiện tại (bao nhiêu °C), cảm giác thực tế như bao nhiêu °C, tình trạng trời (mưa, nắng, nhiều mây), độ ẩm (%), tốc độ gió và dự báo nhiệt độ trong ngày. "
+        "     TUYỆT ĐỐI KHÔNG trả lời vòng vo kiểu 'Tình hình thời tiết có thể xem ở trang web 1' hay khuyên người dùng tự đi mở trang web!\n"
+        "   - VỚI CÂU HỎI TRI THỨC, HỌC TẬP, TOÁN/LÝ/HÓA (ví dụ: '7 hằng đẳng thức đáng nhớ', định lý, định nghĩa): "
+        "     Bạn PHẢI TRÌNH BÀY ĐẦY ĐỦ VÀ CHI TIẾT TẤT CẢ các công thức, định nghĩa đó ra bằng kiến thức chuẩn xác của bạn kết hợp với ngữ cảnh web. "
+        "     TUYỆT ĐỐI KHÔNG chỉ liệt kê tiêu đề các bài viết hay tóm tắt 'bài viết này nói về gì' một cách sáo rỗng!\n"
+        "   - Gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) ngay sau các ý có thông tin tương ứng từ nguồn (dùng số thứ tự thực tế của nguồn, không dùng chữ X).\n"
         "4. Với câu hỏi 'tóm tắt', 'liệt kê các bài/chương/phần': hãy liệt kê RÕ RÀNG và ĐẦY ĐỦ "
         "từng bài/chương theo thứ tự xuất hiện trong tài liệu, mỗi mục kèm mô tả ngắn gọn.\n"
         "5. Với câu hỏi về nội dung, cách làm, hướng dẫn hoặc các bước của một bài/chương (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'các bước tiếp theo'): "
         "hãy giải thích mục tiêu tổng quan, sau đó liệt kê ĐẦY ĐỦ TOÀN BỘ TẤT CẢ CÁC BƯỚC từ Bước 1 đến Bước cuối cùng có trong tài liệu. "
         "Tuyệt đối KHÔNG dừng lại giữa chừng (ví dụ nếu tài liệu có 16 hay 20 bước thì phải liệt kê đầy đủ tất cả các bước, không được chỉ dừng lại ở bước 3 hay bước 4).\n"
         "6. Trả lời bằng tiếng Việt tự nhiên, ấm áp, định dạng Markdown rõ ràng, công thức toán hiển thị bằng KaTeX/LaTeX chuẩn ($...$ hoặc $$...$$).\n"
-        "7. Gắn nhãn trích dẫn [Tài liệu X] hoặc [Web X] ngay sau ý được hỗ trợ bởi nguồn tương ứng.\n"
+        "7. Gắn nhãn trích dẫn [1], [2]... hoặc [Tài liệu 1], [Web 1]... ngay sau ý được hỗ trợ bởi nguồn tương ứng.\n"
         "8. Dùng lịch sử hội thoại để hiểu câu hỏi nối tiếp. Khi câu hỏi mới mâu thuẫn câu cũ, ưu tiên câu hỏi mới nhất.\n"
         "9. Nếu có ảnh đính kèm, đọc ngay nội dung ảnh để trả lời — tuyệt đối không yêu cầu gửi lại ảnh."
     )
@@ -130,7 +133,7 @@ def _prepare_rag_prompts_and_citations(
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ câu hỏi của người dùng bằng kiến thức chính xác kết hợp với nguồn web, và gắn nhãn [Web X] tương ứng:"
+            "\nHãy trả lời trực tiếp, đầy đủ câu hỏi của người dùng bằng kiến thức chính xác kết hợp với nguồn web, và gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) tương ứng:"
         )
     elif has_local and not has_web:
         user_prompt = (
@@ -142,7 +145,7 @@ def _prepare_rag_prompts_and_citations(
         user_prompt = (
             f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ và gắn nhãn trích dẫn tương ứng:"
+            "\nHãy trả lời trực tiếp, đầy đủ và gắn nhãn trích dẫn tương ứng [1], [2]...:"
         )
     if image_base64:
         user_prompt += (
