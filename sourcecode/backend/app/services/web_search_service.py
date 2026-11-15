@@ -1,6 +1,8 @@
 """Small, optional DuckDuckGo web search adapter with bounded network timeouts,
-real-time weather intelligence (wttr.in / Open-Meteo), and SQLite caching.
+real-time weather intelligence (wttr.in / Open-Meteo), deep web scraping (extracting
+actual webpage articles), and SQLite caching.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -120,7 +122,6 @@ def _detect_weather_location(query: str) -> Optional[Tuple[str, str, float, floa
         if re.search(rf"\b{re.escape(key)}\b", q):
             return VIETNAM_LOCATIONS[key]
 
-    # Regex trích xuất địa điểm tổng quát: "thời tiết tại/ở X"
     m = re.search(
         r"(?:thời tiết|nhiệt độ|weather)\s+(?:tại|ở|in\s+)?([a-zA-ZÀ-ỹ\s]+?)(?:\s+(?:hôm nay|hiện tại|ngày mai|bây giờ|tuần này)|$)",
         q,
@@ -140,11 +141,7 @@ async def _fetch_live_weather(
     lat: float = 0.0,
     lon: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Lấy thông số thời tiết thực tế (nhiệt độ, độ ẩm, tình trạng mưa/nắng, gió)
-    qua wttr.in với fallback sang Open-Meteo.
-    """
-    # 1. Thử wttr.in
+    """Lấy thông số thời tiết thực tế qua wttr.in với fallback Open-Meteo."""
     try:
         async with httpx.AsyncClient(
             timeout=3.5,
@@ -188,7 +185,6 @@ async def _fetch_live_weather(
     except Exception as exc:
         logger.warning("wttr.in fetch failed for %s: %s", display_name, exc)
 
-    # 2. Fallback sang Open-Meteo nếu có tọa độ
     if lat and lon:
         try:
             async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
@@ -241,6 +237,75 @@ async def _fetch_live_weather(
         except Exception as exc:
             logger.warning("Open-Meteo fetch failed for %s: %s", display_name, exc)
 
+    return None
+
+
+class MainContentExtractor(HTMLParser):
+    """Trích xuất văn bản thực tế từ bài viết (bỏ qua script, nav, header, footer, ads)."""
+    def __init__(self):
+        super().__init__()
+        self.paragraphs: List[str] = []
+        self._current_tag = ""
+        self._current_text: List[str] = []
+        self._ignore_depth = 0
+        self._ignored_tags = {
+            'script', 'style', 'nav', 'header', 'footer', 'aside',
+            'noscript', 'svg', 'form', 'button', 'iframe', 'select', 'input'
+        }
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t in self._ignored_tags:
+            self._ignore_depth += 1
+        elif self._ignore_depth == 0:
+            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'blockquote', 'article'):
+                self._current_tag = t
+                self._current_text = []
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t in self._ignored_tags:
+            if self._ignore_depth > 0:
+                self._ignore_depth -= 1
+        elif self._ignore_depth == 0:
+            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'blockquote', 'article') and self._current_text:
+                line = " ".join("".join(self._current_text).split())
+                if len(line) > 25:
+                    self.paragraphs.append(line)
+                self._current_text = []
+                self._current_tag = ""
+
+    def handle_data(self, data):
+        if self._ignore_depth == 0 and self._current_tag:
+            self._current_text.append(data)
+
+    def get_content(self, max_chars: int = 1500) -> str:
+        text = "\n".join(self.paragraphs)
+        if len(text) > max_chars:
+            return text[:max_chars] + "..."
+        return text
+
+
+async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Optional[str]:
+    """Tải và cào nội dung chi tiết bài viết thực tế từ trang web đích."""
+    if not url or not url.startswith("http"):
+        return None
+    headers = {
+        'User-Agent': 'KnowledgeRAGBot/1.0 (https://github.com/TruyenThanhhhh/PBL6; contact@example.com) Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200 and 'text/html' in resp.headers.get('content-type', ''):
+                parser = MainContentExtractor()
+                parser.feed(resp.text)
+                content = parser.get_content(1500)
+                if len(content) > 120:
+                    return content
+    except Exception:
+        pass
     return None
 
 
@@ -329,9 +394,11 @@ def _save_cached_results(
 
 async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
-    Thực hiện tìm kiếm Web với DuckDuckGo.
-    Nếu câu hỏi liên quan đến thời tiết, tự động lấy dữ liệu thời gian thực
-    (nhiệt độ, độ ẩm, trời nắng/mưa) chèn vào vị trí đầu tiên.
+    Thực hiện tìm kiếm Web:
+    1. Tự động kiểm tra thời tiết thời gian thực nếu câu hỏi về thời tiết/nhiệt độ.
+    2. Lấy danh sách kết quả tìm kiếm từ DuckDuckGo.
+    3. TỰ ĐỘNG CÀO NỘI DUNG THẬT (deep scraping) từ các trang web hàng đầu
+       để cung cấp đầy đủ nội dung bài viết thay vì chỉ lấy mô tả ngắn (snippet).
     """
     if not WEB_SEARCH_ENABLED or not query.strip():
         return []
@@ -349,7 +416,7 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         display_name, city_code, lat, lon = weather_loc
         weather_source = await _fetch_live_weather(display_name, city_code, lat, lon)
 
-    # 2. Tìm kiếm DuckDuckGo cho thông tin bổ trợ / bài viết
+    # 2. Tìm kiếm DuckDuckGo cho các bài viết liên quan
     web_results: List[Dict[str, Any]] = []
     try:
         url = DUCKDUCKGO_API_URL
@@ -392,7 +459,17 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("DuckDuckGo web search failed: %s", exc)
 
-    # 3. Kết hợp kết quả: Đưa live weather lên đầu nếu có
+    # 3. TỰ ĐỘNG CÀO NỘI DUNG BÀI VIẾT THẬT (Deep Content Extraction)
+    # Lấy nội dung chi tiết của tối đa 3 trang web đầu tiên song song (concurrent I/O)
+    scrape_candidates = web_results[:3]
+    if scrape_candidates:
+        tasks = [_fetch_webpage_content(item["url"]) for item in scrape_candidates]
+        scraped_contents = await asyncio.gather(*tasks, return_exceptions=True)
+        for item, content in zip(scrape_candidates, scraped_contents):
+            if isinstance(content, str) and content.strip():
+                item["snippet"] = content.strip()
+
+    # 4. Kết hợp kết quả: Đưa live weather lên đầu nếu có
     combined: List[Dict[str, Any]] = []
     if weather_source:
         combined.append(weather_source)
@@ -408,7 +485,7 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         item["ref_id"] = idx
 
     if combined:
-        ttl = 15 if weather_source else 360  # Dữ liệu thời tiết lưu cache 15 phút
+        ttl = 15 if weather_source else 360  # Dữ liệu thời tiết lưu cache 15 phút, nội dung web lưu 6 giờ
         _save_cached_results(query_hash, query.strip(), combined, ttl_minutes=ttl)
 
     return combined
