@@ -455,6 +455,102 @@ class WorkspaceAITestCase(unittest.TestCase):
         ).json()["artifacts"]
         self.assertEqual(after_del, [])
 
+    @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)
+    @patch("app.services.document_service.embed_texts", side_effect=_fake_topic_embed)
+    def test_notes_tags_search_document_filter_and_update(self, _mock_doc_emb, _mock_ws_emb):
+        ws_id = self.client.post(
+            "/api/v1/workspaces", json={"name": "WS Notes"}, headers=self.user_a_headers
+        ).json()["workspace"]["id"]
+        doc_res = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/documents/upload",
+            files={"file": ("bai_giang.txt", b"Noi dung chuong 1.", "text/plain")},
+            data={"defer_metadata": "true"},
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(doc_res.status_code, 200, doc_res.text)
+        doc_id = doc_res.json()["document"]["document_id"]
+
+        n1 = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            json={
+                "title": "Công thức quan trọng",
+                "content": "# Tiêu đề markdown không phải tag\nNhớ ôn phần này #CanOnTap trước khi thi.",
+                "document_id": doc_id,
+                "tags": ["#QuanTrong", "quantrong"],
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(n1.status_code, 201, n1.text)
+        note1 = n1.json()["note"]
+        self.assertEqual(note1["tags"], ["#QuanTrong", "#CanOnTap"])
+        self.assertEqual(note1["document_id"], doc_id)
+        self.assertTrue(note1["updated_at"].endswith("Z"))
+
+        n2 = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            json={
+                "title": "Ghi chép tự do",
+                "content": "Lịch học tuần sau",
+                "document_id": None,
+                "tags": ["#KeHoach"],
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(n2.status_code, 201, n2.text)
+
+        by_tag = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            params={"tag": "CanOnTap"},
+            headers=self.user_a_headers,
+        ).json()["notes"]
+        self.assertEqual([n["id"] for n in by_tag], [note1["id"]])
+
+        by_query = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            params={"q": "tuần sau"},
+            headers=self.user_a_headers,
+        ).json()["notes"]
+        self.assertEqual(len(by_query), 1)
+        self.assertEqual(by_query[0]["title"], "Ghi chép tự do")
+
+        by_doc = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            params={"document_id": doc_id},
+            headers=self.user_a_headers,
+        ).json()["notes"]
+        self.assertEqual([n["id"] for n in by_doc], [note1["id"]])
+
+        by_free = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/notes",
+            params={"document_id": "__none__"},
+            headers=self.user_a_headers,
+        ).json()["notes"]
+        self.assertEqual(len(by_free), 1)
+        self.assertEqual(by_free[0]["title"], "Ghi chép tự do")
+
+        patched = self.client.patch(
+            f"/api/v1/notes/{note1['id']}",
+            json={
+                "title": "Công thức cần nhớ",
+                "content": "Đã cập nhật #DeThi",
+                "tags": ["#QuanTrong"],
+                "document_id": None,
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        updated = patched.json()["note"]
+        self.assertEqual(updated["title"], "Công thức cần nhớ")
+        self.assertIsNone(updated["document_id"])
+        self.assertEqual(updated["tags"], ["#QuanTrong", "#DeThi"])
+
+        other_patch = self.client.patch(
+            f"/api/v1/notes/{note1['id']}",
+            json={"title": "Hack"},
+            headers=self.user_b_headers,
+        )
+        self.assertEqual(other_patch.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -145,6 +145,7 @@ interface AppState {
 
   saveNote: (note: Note) => void
   deleteNote: (id: string) => void
+  replaceNotesFromBackend: (workspaceId: string, rows: Note[]) => void
 
   saveSavedSummary: (summary: SavedSummary) => void
   deleteSavedSummary: (id: string) => void
@@ -371,6 +372,10 @@ export const useAppStore = create<AppState>()(
         })
       },
       deleteNote: (id) => set({ notes: get().notes.filter((n) => n.id !== id) }),
+      replaceNotesFromBackend: (workspaceId, rows) => {
+        const others = get().notes.filter((n) => n.workspaceId !== workspaceId)
+        set({ notes: [...rows, ...others] })
+      },
 
       saveSavedSummary: (summary) => {
         const currentList = get().savedSummaries ?? []

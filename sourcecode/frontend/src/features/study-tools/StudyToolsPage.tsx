@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm"
 import {
   BookmarkCheck,
   BookmarkPlus,
+  BookOpen,
   CalendarCheck,
   Check,
   CheckCircle2,
@@ -25,6 +26,7 @@ import {
   Save,
   Search,
   Sparkles,
+  Tag,
   Trash2,
   X,
   XCircle,
@@ -44,15 +46,18 @@ import {
 } from "@/components/ui"
 import { useAuthSession } from "@/hooks/useAuthSession"
 import {
+  createNoteApi,
+  deleteNoteApi,
   deleteStudyArtifactApi,
+  fetchNotesApi,
   fetchStudyArtifactsApi,
   saveStudyArtifactApi,
+  updateNoteApi,
   type StudyArtifactRecord,
 } from "@/services/api"
 import {
   generateStudyFlashcardsAsync,
   generateStudyMindmapAsync,
-  generateStudyNotesAsync,
   generateStudyPlanAsync,
   generateStudyQuizAsync,
   generateStudySummaryAsync,
@@ -61,6 +66,12 @@ import {
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
 import { formatDateTime, nowIso, relativeTime, uid } from "@/utils/format"
+import {
+  getNoteTags,
+  mergeNoteTags,
+  normalizeNoteTag,
+  SUGGESTED_NOTE_TAGS,
+} from "@/utils/note-tags"
 import { cn } from "@/utils/cn"
 import type { MindmapNode, Note, SavedSummary } from "@/types"
 
@@ -185,6 +196,7 @@ export function StudyToolsPage() {
 
   const saveNote = useAppStore((s) => s.saveNote)
   const deleteNote = useAppStore((s) => s.deleteNote)
+  const replaceNotesFromBackend = useAppStore((s) => s.replaceNotesFromBackend)
   const localSavedSummaries = useAppStore((s) => s.savedSummaries)
   const saveSavedSummaryLocal = useAppStore((s) => s.saveSavedSummary)
   const deleteSavedSummaryLocal = useAppStore((s) => s.deleteSavedSummary)
@@ -304,9 +316,72 @@ export function StudyToolsPage() {
     () => notes.filter((n) => n.workspaceId === wsId),
     [notes, wsId],
   )
-  const [isGeneratingNotes, setIsGeneratingNotes] = useState(false)
+  const [noteSearchQuery, setNoteSearchQuery] = useState("")
+  const [noteTagFilter, setNoteTagFilter] = useState("")
+  const [noteDocFilter, setNoteDocFilter] = useState<string>("all")
+  const [noteTagInput, setNoteTagInput] = useState("")
+  const [viewingNote, setViewingNote] = useState<Note | null>(null)
   const [editingNote, setEditingNote] = useState<Note | null>(null)
+  const [isSavingNote, setIsSavingNote] = useState(false)
+  const [copiedNoteId, setCopiedNoteId] = useState<string | null>(null)
   const [noteToDelete, setNoteToDelete] = useState<Note | null>(null)
+
+  useEffect(() => {
+    if (!useBackendHistory) return
+    let active = true
+    fetchNotesApi(wsId)
+      .then((list) => {
+        if (active) replaceNotesFromBackend(wsId, list)
+      })
+      .catch(() => {
+        // Giữ nguyên state cục bộ nếu lỗi mạng
+      })
+    return () => {
+      active = false
+    }
+  }, [wsId, useBackendHistory, replaceNotesFromBackend])
+
+  const wsNoteTags = useMemo(() => {
+    const counts = new Map<string, { tag: string; count: number }>()
+    for (const note of wsNotes) {
+      for (const tag of getNoteTags(note)) {
+        const key = tag.toLowerCase()
+        const prev = counts.get(key)
+        if (prev) {
+          prev.count += 1
+        } else {
+          counts.set(key, { tag, count: 1 })
+        }
+      }
+    }
+    return Array.from(counts.values()).sort(
+      (a, b) => b.count - a.count || a.tag.localeCompare(b.tag, "vi"),
+    )
+  }, [wsNotes])
+
+  const filteredWsNotes = useMemo(() => {
+    const q = noteSearchQuery.trim().toLowerCase()
+    const tagTarget = noteTagFilter.trim().toLowerCase()
+    return wsNotes.filter((n) => {
+      const noteTags = getNoteTags(n)
+      if (tagTarget && !noteTags.some((t) => t.toLowerCase() === tagTarget)) {
+        return false
+      }
+      if (noteDocFilter === "__none__" && n.documentId) {
+        return false
+      }
+      if (noteDocFilter !== "all" && noteDocFilter !== "__none__" && n.documentId !== noteDocFilter) {
+        return false
+      }
+      if (q) {
+        const inTitle = n.title.toLowerCase().includes(q)
+        const inContent = n.content.toLowerCase().includes(q)
+        const inTags = noteTags.some((t) => t.toLowerCase().includes(q))
+        if (!inTitle && !inContent && !inTags) return false
+      }
+      return true
+    })
+  }, [wsNotes, noteSearchQuery, noteTagFilter, noteDocFilter])
 
   // 3. Quiz State
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium")
@@ -366,21 +441,38 @@ export function StudyToolsPage() {
   const [editingTaskTitle, setEditingTaskTitle] = useState("")
 
   // Handlers
-  const handleSaveSummaryAsNote = () => {
+  const handleSaveSummaryAsNote = async () => {
     if (!summaryMarkdown) {
       toast({ title: "Chưa có bản tóm tắt để lưu", tone: "info" })
       return
     }
-    const note: Note = {
+    const title = summaryTitle || "Tóm tắt học tập"
+    const docId = summarySourceMeta.documentId ?? activeDoc?.id ?? null
+    if (useBackendHistory) {
+      try {
+        const created = await createNoteApi(wsId, {
+          title,
+          content: summaryMarkdown,
+          document_id: docId,
+          tags: ["#TomTat"],
+        })
+        saveNote(created)
+        toast({ title: "Đã lưu bản tóm tắt vào Ghi chú", tone: "success" })
+        return
+      } catch {
+        // Fallback lưu cục bộ nếu backend lỗi tạm thời
+      }
+    }
+    saveNote({
       id: uid("note"),
       workspaceId: wsId,
       notebookId: null,
-      documentId: summarySourceMeta.documentId ?? activeDoc?.id ?? null,
-      title: summaryTitle || "Tóm tắt học tập",
+      documentId: docId,
+      title,
       content: summaryMarkdown,
+      tags: ["#TomTat"],
       updatedAt: nowIso(),
-    }
-    saveNote(note)
+    })
     toast({ title: "Đã lưu bản tóm tắt vào Ghi chú", tone: "success" })
   }
 
@@ -542,30 +634,143 @@ export function StudyToolsPage() {
     toast({ title: "Đã hủy tạo bản tóm tắt AI", tone: "info" })
   }
 
-  const handleGenerateNotes = async () => {
-    setIsGeneratingNotes(true)
+  const handleOpenNewNoteEditor = () => {
+    setNoteTagInput("")
+    setEditingNote({
+      id: uid("note"),
+      workspaceId: wsId,
+      notebookId: null,
+      documentId: activeDoc?.id ?? null,
+      title: "",
+      content: "",
+      tags: [],
+      updatedAt: nowIso(),
+    })
+  }
+
+  const handleOpenEditNote = (note: Note) => {
+    setNoteTagInput("")
+    setEditingNote({
+      ...note,
+      tags: getNoteTags(note),
+    })
+  }
+
+  const handleAddTagsToEditingNote = (rawInput: string) => {
+    if (!editingNote) return
+    const tokens = rawInput
+      .split(/[\s,;]+/)
+      .map((t) => normalizeNoteTag(t))
+      .filter((t): t is string => Boolean(t))
+    if (tokens.length === 0) return
+    setEditingNote({
+      ...editingNote,
+      tags: mergeNoteTags([...(editingNote.tags ?? []), ...tokens]),
+    })
+    setNoteTagInput("")
+  }
+
+  const handleToggleTagOnEditingNote = (tag: string) => {
+    if (!editingNote) return
+    const currentTags = editingNote.tags ?? []
+    const exists = currentTags.some((t) => t.toLowerCase() === tag.toLowerCase())
+    const nextTags = exists
+      ? currentTags.filter((t) => t.toLowerCase() !== tag.toLowerCase())
+      : mergeNoteTags([...currentTags, tag])
+    setEditingNote({ ...editingNote, tags: nextTags })
+  }
+
+  const handleSubmitEditingNote = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingNote || isSavingNote) return
+
+    const finalTitle = editingNote.title.trim() || "Ghi chú mới"
+    const finalContent = editingNote.content
+    const finalTags = mergeNoteTags(editingNote.tags, `${finalTitle} ${finalContent}`)
+    const isExisting = wsNotes.some((n) => n.id === editingNote.id)
+
+    setIsSavingNote(true)
     try {
-      const res = await generateStudyNotesAsync(sourceContext)
-      setEditingNote({
-        id: uid("note"),
-        workspaceId: wsId,
-        notebookId: null,
-        documentId: activeDoc?.id ?? null,
-        title: res.title,
-        content: res.markdown,
-        updatedAt: nowIso(),
-      })
+      let saved: Note
+      if (useBackendHistory) {
+        const payload = {
+          title: finalTitle,
+          content: finalContent,
+          notebook_id: editingNote.notebookId ?? null,
+          document_id: editingNote.documentId ?? null,
+          tags: finalTags,
+        }
+        if (isExisting) {
+          try {
+            saved = await updateNoteApi(editingNote.id, payload)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : ""
+            if (msg.includes("404") || msg.includes("Không tìm thấy ghi chú")) {
+              saved = await createNoteApi(wsId, payload)
+              deleteNote(editingNote.id)
+            } else {
+              throw err
+            }
+          }
+        } else {
+          saved = await createNoteApi(wsId, payload)
+        }
+      } else {
+        saved = {
+          ...editingNote,
+          title: finalTitle,
+          content: finalContent,
+          tags: finalTags,
+          updatedAt: nowIso(),
+        }
+      }
+
+      saveNote(saved)
+      if (viewingNote?.id === editingNote.id) {
+        setViewingNote(saved)
+      }
+      setEditingNote(null)
+      setNoteTagInput("")
+      toast({ title: "Đã lưu ghi chú", tone: "success" })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : ""
       toast({
-        title: res.isMock ? "Đã tạo ghi chú (Mô phỏng)" : "Đã tạo ghi chú bằng AI thành công",
-        description: res.isMock
-          ? "Dịch vụ AI chưa sẵn sàng, đang dùng dữ liệu mô phỏng."
-          : "Bạn có thể chỉnh sửa nội dung trước khi lưu.",
-        tone: res.isMock ? "info" : "success",
+        title: "Không thể lưu ghi chú",
+        description: detail || "Vui lòng thử lại sau.",
+        tone: "error",
       })
-    } catch {
-      toast({ title: "Không thể tạo ghi chú AI", tone: "error" })
     } finally {
-      setIsGeneratingNotes(false)
+      setIsSavingNote(false)
+    }
+  }
+
+  const handleConfirmDeleteNote = async () => {
+    if (!noteToDelete) return
+    const target = noteToDelete
+    try {
+      if (useBackendHistory) {
+        try {
+          await deleteNoteApi(target.id)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : ""
+          if (!msg.includes("404") && !msg.includes("Không tìm thấy ghi chú")) {
+            throw err
+          }
+        }
+      }
+      deleteNote(target.id)
+      if (viewingNote?.id === target.id) {
+        setViewingNote(null)
+      }
+      setNoteToDelete(null)
+      toast({ title: "Đã xóa ghi chú", tone: "info" })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : ""
+      toast({
+        title: "Không thể xóa ghi chú",
+        description: detail || "Vui lòng thử lại sau.",
+        tone: "error",
+      })
     }
   }
 
@@ -1200,34 +1405,15 @@ export function StudyToolsPage() {
                   Sổ tay ghi chú ({wsNotes.length})
                 </h2>
                 <p className="mt-0.5 text-xs text-[#647C79]">
-                  Lưu trữ các kiến thức trọng tâm, trích lược và ghi chép cá nhân từ tài liệu.
+                  Lưu trữ kiến thức trọng tâm, phân loại theo #tag và đối chiếu theo tài liệu nguồn.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button
-                  variant="outline"
-                  size="sm"
-                  leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-                  loading={isGeneratingNotes}
-                  onClick={handleGenerateNotes}
-                >
-                  Trích xuất ghi chú AI
-                </Button>
-                <Button
                   size="sm"
                   leftIcon={<FilePlus2 className="h-3.5 w-3.5" />}
-                  onClick={() =>
-                    setEditingNote({
-                      id: uid("note"),
-                      workspaceId: wsId,
-                      notebookId: null,
-                      documentId: activeDoc?.id ?? null,
-                      title: "",
-                      content: "",
-                      updatedAt: nowIso(),
-                    })
-                  }
+                  onClick={handleOpenNewNoteEditor}
                   className="bg-[#087F73] hover:bg-[#076b61] text-white"
                 >
                   + Ghi chú mới
@@ -1235,47 +1421,147 @@ export function StudyToolsPage() {
               </div>
             </div>
 
+            {wsNotes.length > 0 ? (
+              <div className="space-y-3 rounded-xl border border-[#DCE7E4] bg-[#F9FCFB] p-3.5">
+                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                  <div className="relative flex-1">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#647C79]" />
+                    <Input
+                      value={noteSearchQuery}
+                      onChange={(e) => setNoteSearchQuery(e.target.value)}
+                      placeholder="Tìm ghi chú theo tiêu đề, nội dung hoặc #tag..."
+                      className="h-8 bg-white pl-8 pr-8 text-xs"
+                    />
+                    {noteSearchQuery ? (
+                      <button
+                        type="button"
+                        onClick={() => setNoteSearchQuery("")}
+                        aria-label="Xóa từ khóa tìm ghi chú"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-[#647C79] hover:text-[#172B29]"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <Select
+                    aria-label="Lọc ghi chú theo tài liệu nguồn"
+                    value={noteDocFilter}
+                    onChange={(e) => setNoteDocFilter(e.target.value)}
+                    className="h-8 w-full sm:w-60 bg-white text-xs"
+                  >
+                    <option value="all">Tất cả tài liệu nguồn</option>
+                    <option value="__none__">Ghi chép tự do</option>
+                    {wsDocs.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.fileName}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {wsNoteTags.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#647C79] mr-0.5">
+                      <Tag className="h-3 w-3 text-[#087F73]" />
+                      Phân loại:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setNoteTagFilter("")}
+                      className={cn(
+                        "rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors border",
+                        !noteTagFilter
+                          ? "border-[#087F73] bg-[#087F73] text-white"
+                          : "border-[#DCE7E4] bg-white text-[#647C79] hover:border-[#087F73] hover:text-[#087F73]",
+                      )}
+                    >
+                      Tất cả ({wsNotes.length})
+                    </button>
+                    {wsNoteTags.map(({ tag, count }) => {
+                      const active = noteTagFilter.toLowerCase() === tag.toLowerCase()
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => setNoteTagFilter(active ? "" : tag)}
+                          className={cn(
+                            "rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors border",
+                            active
+                              ? "border-[#087F73] bg-[#087F73] text-white"
+                              : "border-[#DCE7E4] bg-white text-[#172B29] hover:border-[#087F73] hover:text-[#087F73]",
+                          )}
+                        >
+                          {tag} ({count})
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+
+                {(noteSearchQuery || noteTagFilter || noteDocFilter !== "all") ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#DCE7E4]/70 pt-2 text-[11px] text-[#647C79]">
+                    <span>
+                      Hiển thị <strong className="text-[#172B29]">{filteredWsNotes.length}</strong> /{" "}
+                      {wsNotes.length} ghi chú
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNoteSearchQuery("")
+                        setNoteTagFilter("")
+                        setNoteDocFilter("all")
+                      }}
+                      className="font-medium text-[#087F73] hover:underline"
+                    >
+                      Xóa bộ lọc
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {wsNotes.length === 0 ? (
               <EmptyState
                 compact
                 icon={<PenSquare className="h-5 w-5 text-[#087F73]" />}
                 title="Chưa có ghi chú nào"
-                description="Tạo ghi chú thủ công hoặc dùng AI trích xuất các ý chính quan trọng từ tài liệu."
+                description="Tạo ghi chú mới để lưu trữ kiến thức trọng tâm, gắn #tag như #QuanTrong, #CanOnTap và đối chiếu theo tài liệu."
                 action={
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() =>
-                        setEditingNote({
-                          id: uid("note"),
-                          workspaceId: wsId,
-                          notebookId: null,
-                          documentId: activeDoc?.id ?? null,
-                          title: "",
-                          content: "",
-                          updatedAt: nowIso(),
-                        })
-                      }
-                      className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                    >
-                      Tạo ghi chú mới
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-                      loading={isGeneratingNotes}
-                      onClick={handleGenerateNotes}
-                    >
-                      AI Trích xuất
-                    </Button>
-                  </div>
+                  <Button
+                    size="sm"
+                    onClick={handleOpenNewNoteEditor}
+                    className="bg-[#087F73] hover:bg-[#076b61] text-white"
+                  >
+                    Tạo ghi chú mới
+                  </Button>
+                }
+              />
+            ) : filteredWsNotes.length === 0 ? (
+              <EmptyState
+                compact
+                icon={<Search className="h-5 w-5 text-[#087F73]" />}
+                title="Không tìm thấy ghi chú phù hợp"
+                description="Thử từ khóa khác, đổi tag phân loại hoặc bỏ bộ lọc tài liệu nguồn."
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setNoteSearchQuery("")
+                      setNoteTagFilter("")
+                      setNoteDocFilter("all")
+                    }}
+                  >
+                    Hiển thị tất cả ghi chú
+                  </Button>
                 }
               />
             ) : (
               <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-                {wsNotes.map((n) => {
+                {filteredWsNotes.map((n) => {
                   const doc = documents.find((x) => x.id === n.documentId)
+                  const tags = getNoteTags(n)
                   return (
                     <div
                       key={n.id}
@@ -1285,7 +1571,7 @@ export function StudyToolsPage() {
                         <div className="flex items-start justify-between gap-2">
                           <button
                             type="button"
-                            onClick={() => setEditingNote(n)}
+                            onClick={() => setViewingNote(n)}
                             className="min-w-0 flex-1 text-left"
                           >
                             <h3 className="text-sm font-bold text-[#172B29] group-hover:text-[#087F73] transition-colors line-clamp-1">
@@ -1296,8 +1582,17 @@ export function StudyToolsPage() {
                             <Button
                               variant="ghost"
                               size="sm"
+                              leftIcon={<Eye className="h-3 w-3" />}
+                              className="h-7 px-2 text-xs text-[#087F73] hover:bg-[#E6F3F1]"
+                              onClick={() => setViewingNote(n)}
+                            >
+                              Đọc
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               className="h-7 px-2 text-xs text-[#647C79] hover:text-[#172B29]"
-                              onClick={() => setEditingNote(n)}
+                              onClick={() => handleOpenEditNote(n)}
                             >
                               Sửa
                             </Button>
@@ -1313,20 +1608,50 @@ export function StudyToolsPage() {
                           </div>
                         </div>
 
-                        <p className="mt-2 line-clamp-3 whitespace-pre-line text-xs leading-relaxed text-[#647C79]">
-                          {n.content || "Chưa có nội dung"}
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setViewingNote(n)}
+                          className="mt-2 block w-full text-left"
+                        >
+                          <p className="line-clamp-3 whitespace-pre-line text-xs leading-relaxed text-[#647C79] hover:text-[#172B29] transition-colors">
+                            {n.content || "Chưa có nội dung"}
+                          </p>
+                        </button>
+
+                        {tags.length > 0 ? (
+                          <div className="mt-2.5 flex flex-wrap gap-1.5">
+                            {tags.map((tag) => {
+                              const selected = noteTagFilter.toLowerCase() === tag.toLowerCase()
+                              return (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onClick={() => setNoteTagFilter(selected ? "" : tag)}
+                                  className={cn(
+                                    "rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors border",
+                                    selected
+                                      ? "border-[#087F73] bg-[#087F73] text-white"
+                                      : "border-[#DCE7E4] bg-[#F1F6F5] text-[#087F73] hover:border-[#087F73]",
+                                  )}
+                                >
+                                  {tag}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#DCE7E4]/60 pt-2.5 text-[11px] text-[#647C79]">
                         {doc ? (
-                          <span className="truncate max-w-[180px] font-medium text-[#172B29]">
-                            {doc.fileName}
+                          <span className="inline-flex items-center gap-1 truncate max-w-[200px] font-medium text-[#172B29]">
+                            <FileText className="h-3 w-3 shrink-0 text-[#087F73]" />
+                            <span className="truncate">{doc.fileName}</span>
                           </span>
                         ) : (
                           <span>Ghi chép tự do</span>
                         )}
-                        <span>{relativeTime(n.updatedAt)}</span>
+                        <span title={formatDateTime(n.updatedAt)}>{relativeTime(n.updatedAt)}</span>
                       </div>
                     </div>
                   )
@@ -1985,45 +2310,250 @@ export function StudyToolsPage() {
         )}
       </div>
 
-      {/* Dialog chỉnh sửa / tạo Ghi chú (Đã loại bỏ Notebook) */}
+      {/* Dialog ĐỌC toàn bộ nội dung Ghi chú */}
+      <Dialog
+        open={Boolean(viewingNote)}
+        size="lg"
+        title={viewingNote?.title || "Chi tiết ghi chú"}
+        onClose={() => setViewingNote(null)}
+        className="max-w-3xl"
+      >
+        {viewingNote ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#647C79]">
+              <div className="flex flex-wrap items-center gap-2">
+                {(() => {
+                  const sourceDoc = documents.find((d) => d.id === viewingNote.documentId)
+                  return (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-[#DCE7E4] bg-[#F1F6F5] px-2.5 py-0.5 font-medium text-[#172B29]">
+                      <BookOpen className="h-3 w-3 text-[#087F73]" />
+                      {sourceDoc ? sourceDoc.fileName : "Ghi chép tự do"}
+                    </span>
+                  )
+                })()}
+                <span>Cập nhật: {formatDateTime(viewingNote.updatedAt)}</span>
+              </div>
+            </div>
+
+            {getNoteTags(viewingNote).length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {getNoteTags(viewingNote).map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center gap-1 rounded-full border border-[#DCE7E4] bg-[#F1F6F5] px-2.5 py-0.5 text-[11px] font-medium text-[#087F73]"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="max-h-[58vh] overflow-y-auto rounded-xl border border-[#DCE7E4] bg-[#FBFDFC] p-5">
+              <article className="markdown-body text-[14px] leading-relaxed text-[#172B29]">
+                <Markdown remarkPlugins={[remarkGfm]}>
+                  {viewingNote.content?.trim() || "*Ghi chú này chưa có nội dung.*"}
+                </Markdown>
+              </article>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#DCE7E4] pt-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {viewingNote.content.trim() ? (
+                  <>
+                    <ExportFormatMenu
+                      title={viewingNote.title || "Ghi_chu_hoc_tap"}
+                      content={viewingNote.content}
+                      label="Tải file"
+                      align="start"
+                      side="top"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      leftIcon={
+                        copiedNoteId === viewingNote.id ? (
+                          <Check className="h-3.5 w-3.5 text-[#087F73]" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )
+                      }
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(viewingNote.content)
+                        setCopiedNoteId(viewingNote.id)
+                        window.setTimeout(() => setCopiedNoteId(null), 1800)
+                        toast({ title: "Đã sao chép nội dung ghi chú", tone: "success" })
+                      }}
+                    >
+                      {copiedNoteId === viewingNote.id ? "Đã chép" : "Sao chép"}
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                  onClick={() => setNoteToDelete(viewingNote)}
+                >
+                  Xóa
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<PenSquare className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    const target = viewingNote
+                    setViewingNote(null)
+                    handleOpenEditNote(target)
+                  }}
+                >
+                  Chỉnh sửa
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-[#087F73] text-white hover:bg-[#076b61]"
+                  onClick={() => setViewingNote(null)}
+                >
+                  Đóng
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
+
+      {/* Dialog chỉnh sửa / tạo Ghi chú */}
       <Dialog
         open={Boolean(editingNote)}
-        title={editingNote?.title ? "Chỉnh sửa ghi chú" : "Ghi chú mới"}
-        onClose={() => setEditingNote(null)}
+        size="lg"
+        title={wsNotes.some((n) => n.id === editingNote?.id) ? "Chỉnh sửa ghi chú" : "Ghi chú mới"}
+        onClose={() => {
+          setEditingNote(null)
+          setNoteTagInput("")
+        }}
+        className="max-w-2xl"
       >
         {editingNote ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              saveNote({
-                ...editingNote,
-                title: editingNote.title.trim() || "Ghi chú mới",
-                updatedAt: nowIso(),
-              })
-              setEditingNote(null)
-              toast({ title: "Đã lưu ghi chú", tone: "success" })
-            }}
-            className="space-y-3"
-          >
-            <FormField label="Tiêu đề">
-              <Input
-                autoFocus
-                value={editingNote.title}
-                onChange={(e) =>
-                  setEditingNote({ ...editingNote, title: e.target.value })
-                }
-                placeholder="Nhập tiêu đề ghi chú..."
-              />
+          <form onSubmit={(e) => void handleSubmitEditingNote(e)} className="space-y-3.5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <FormField label="Tiêu đề">
+                <Input
+                  autoFocus
+                  value={editingNote.title}
+                  onChange={(e) =>
+                    setEditingNote({ ...editingNote, title: e.target.value })
+                  }
+                  placeholder="Nhập tiêu đề ghi chú..."
+                />
+              </FormField>
+
+              <FormField label="Tài liệu nguồn">
+                <Select
+                  value={editingNote.documentId ?? ""}
+                  onChange={(e) =>
+                    setEditingNote({
+                      ...editingNote,
+                      documentId: e.target.value || null,
+                    })
+                  }
+                >
+                  <option value="">Ghi chép tự do (không gắn tài liệu)</option>
+                  {wsDocs.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.fileName}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+            </div>
+
+            <FormField label="Tag phân loại (tùy chọn)">
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <Input
+                    value={noteTagInput}
+                    onChange={(e) => setNoteTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === ",") {
+                        e.preventDefault()
+                        handleAddTagsToEditingNote(noteTagInput)
+                      }
+                    }}
+                    placeholder="Nhập tag (vd: #QuanTrong, #CanOnTap) rồi nhấn Enter..."
+                    className="h-8 text-xs flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!normalizeNoteTag(noteTagInput)}
+                    onClick={() => handleAddTagsToEditingNote(noteTagInput)}
+                  >
+                    + Thêm
+                  </Button>
+                </div>
+
+                {(editingNote.tags ?? []).length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {(editingNote.tags ?? []).map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 rounded-full border border-[#087F73]/40 bg-[#E6F3F1] px-2.5 py-0.5 text-[11px] font-medium text-[#087F73]"
+                      >
+                        <span>{tag}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTagOnEditingNote(tag)}
+                          aria-label={`Bỏ tag ${tag}`}
+                          className="rounded-full p-0.5 hover:bg-[#087F73]/15"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-[#647C79]">Gợi ý:</span>
+                  {SUGGESTED_NOTE_TAGS.map((tag) => {
+                    const active = (editingNote.tags ?? []).some(
+                      (t) => t.toLowerCase() === tag.toLowerCase(),
+                    )
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => handleToggleTagOnEditingNote(tag)}
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors border",
+                          active
+                            ? "border-[#087F73] bg-[#087F73] text-white"
+                            : "border-[#DCE7E4] bg-white text-[#647C79] hover:border-[#087F73] hover:text-[#087F73]",
+                        )}
+                      >
+                        {tag}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             </FormField>
 
             <FormField label="Nội dung">
               <Textarea
-                rows={6}
+                rows={10}
                 value={editingNote.content}
                 onChange={(e) =>
                   setEditingNote({ ...editingNote, content: e.target.value })
                 }
-                placeholder="Nhập nội dung ghi chú..."
+                placeholder="Nhập nội dung ghi chú (hỗ trợ Markdown và #hashtag trực tiếp)..."
               />
             </FormField>
 
@@ -2043,11 +2573,18 @@ export function StudyToolsPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setEditingNote(null)}
+                  onClick={() => {
+                    setEditingNote(null)
+                    setNoteTagInput("")
+                  }}
                 >
                   Hủy
                 </Button>
-                <Button type="submit" className="bg-[#087F73] hover:bg-[#076b61] text-white">
+                <Button
+                  type="submit"
+                  loading={isSavingNote}
+                  className="bg-[#087F73] hover:bg-[#076b61] text-white"
+                >
                   Lưu ghi chú
                 </Button>
               </div>
@@ -2145,13 +2682,7 @@ export function StudyToolsPage() {
         title="Xóa ghi chú?"
         description={`Xóa "${noteToDelete?.title ?? ""}"?`}
         onClose={() => setNoteToDelete(null)}
-        onConfirm={() => {
-          if (noteToDelete) {
-            deleteNote(noteToDelete.id)
-            setNoteToDelete(null)
-            toast({ title: "Đã xóa ghi chú", tone: "info" })
-          }
-        }}
+        onConfirm={() => void handleConfirmDeleteNote()}
       />
 
       {/* Xác nhận xóa bản tóm tắt đã lưu */}

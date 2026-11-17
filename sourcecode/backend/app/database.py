@@ -247,10 +247,15 @@ def init_db() -> None:
         document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
+        tags_json TEXT DEFAULT '[]',
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
     );
     """)
+
+    _ensure_columns(cursor, "notes", {
+        "tags_json": "TEXT DEFAULT '[]'",
+    })
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS study_artifacts (

@@ -43,6 +43,7 @@ function NoteForm({
           documentId: documentId || null,
           title: trimmed,
           content: content.trim(),
+          tags: note?.tags,
           updatedAt: nowIso(),
         })
         if (!note) log(`Tạo ghi chú "${trimmed}"`, "study")

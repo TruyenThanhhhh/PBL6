@@ -38,6 +38,7 @@ import {
 import { CitationMarkdown } from "@/features/citations/CitationMarkdown"
 import {
   createConversationApi,
+  createNoteApi,
   deleteConversationApi,
   fetchConversationMessages,
   renameConversationApi,
@@ -576,15 +577,41 @@ export function ChatPage() {
     }
 
     if (kind === "summary") {
-      saveNote({
-        id: uid("note"),
-        workspaceId: currentWsId,
-        notebookId: selectedNotebookId,
-        documentId: citedDocId,
-        title: `Tóm tắt: ${promptTitle.slice(0, 48)}`,
-        content: effectiveContent,
-        updatedAt: nowIso(),
-      })
+      const noteTitle = `Tóm tắt: ${promptTitle.slice(0, 48)}`
+      if (getAuthToken() && status.backendOnline) {
+        try {
+          const created = await createNoteApi(currentWsId, {
+            title: noteTitle,
+            content: effectiveContent,
+            notebook_id: selectedNotebookId,
+            document_id: citedDocId,
+            tags: ["#TomTat"],
+          })
+          saveNote(created)
+        } catch {
+          saveNote({
+            id: uid("note"),
+            workspaceId: currentWsId,
+            notebookId: selectedNotebookId,
+            documentId: citedDocId,
+            title: noteTitle,
+            content: effectiveContent,
+            tags: ["#TomTat"],
+            updatedAt: nowIso(),
+          })
+        }
+      } else {
+        saveNote({
+          id: uid("note"),
+          workspaceId: currentWsId,
+          notebookId: selectedNotebookId,
+          documentId: citedDocId,
+          title: noteTitle,
+          content: effectiveContent,
+          tags: ["#TomTat"],
+          updatedAt: nowIso(),
+        })
+      }
       toast({
         title: "Đã lưu vào Học liệu",
         tone: "success",

@@ -1,9 +1,10 @@
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -53,9 +54,18 @@ class NotebookCreateRequest(BaseModel):
 
 class NoteCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1, max_length=50000)
+    content: str = Field(default="", max_length=50000)
     notebook_id: Optional[str] = None
     document_id: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class NoteUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    content: Optional[str] = Field(default=None, max_length=50000)
+    notebook_id: Optional[str] = None
+    document_id: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 class StudyArtifactCreateRequest(BaseModel):
@@ -508,18 +518,99 @@ async def reindex_document_vectors(document_id: str, user: Dict[str, Any] = Depe
 
 # --- Notes & Study Artifacts & Activities Endpoints ---
 
+_INLINE_TAG_RE = re.compile(r"(?:^|[\s(])(#[^\s#()\[\]{},;:\"'`<>]+)")
+
+
+def _normalize_note_tags(raw_tags: Optional[List[str]], text_for_hashtags: str = "") -> List[str]:
+    """Chuẩn hóa danh sách tag (#QuanTrong, #CanOnTap...) và gộp thêm #hashtag trong nội dung."""
+    seen: Dict[str, str] = {}
+
+    def _add(candidate: str) -> None:
+        cleaned = (candidate or "").strip().lstrip("#").strip()
+        cleaned = re.sub(r"[^\w\-]+", "", cleaned, flags=re.UNICODE)
+        if not cleaned or len(cleaned) > 40:
+            return
+        formatted = f"#{cleaned}"
+        key = formatted.lower()
+        if key not in seen:
+            seen[key] = formatted
+
+    for tag in raw_tags or []:
+        _add(str(tag))
+    for match in _INLINE_TAG_RE.finditer(text_for_hashtags or ""):
+        _add(match.group(1))
+    return list(seen.values())
+
+
+def _resolve_valid_doc_id(conn: Any, workspace_id: str, document_id: Optional[str]) -> Optional[str]:
+    if not document_id:
+        return None
+    row = conn.execute(
+        "SELECT 1 FROM documents WHERE id = ? AND workspace_id = ?",
+        (document_id, workspace_id),
+    ).fetchone()
+    return document_id if row else None
+
+
+def _serialize_note_row(row: Any) -> Dict[str, Any]:
+    item = dict(row)
+    raw_json = item.pop("tags_json", "[]")
+    try:
+        stored_tags = json.loads(raw_json or "[]")
+        if not isinstance(stored_tags, list):
+            stored_tags = []
+    except Exception:
+        stored_tags = []
+
+    combined_text = f"{item.get('title') or ''} {item.get('content') or ''}"
+    item["tags"] = _normalize_note_tags(stored_tags, combined_text)
+    item["updated_at"] = _normalize_utc_timestamp(item.get("updated_at"))
+    return item
+
+
 @router.get("/workspaces/{workspace_id}/notes")
-def list_notes(workspace_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+def list_notes(
+    workspace_id: str,
+    q: Optional[str] = None,
+    tag: Optional[str] = None,
+    document_id: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
     rows = [
-        dict(row)
+        _serialize_note_row(row)
         for row in conn.execute(
             "SELECT * FROM notes WHERE workspace_id = ? ORDER BY updated_at DESC",
             (workspace_id,),
         ).fetchall()
     ]
     conn.close()
+
+    clean_q = (q or "").strip().lower()
+    clean_tag = (tag or "").strip().lstrip("#").lower()
+    clean_doc = (document_id or "").strip()
+
+    if clean_q:
+        rows = [
+            n
+            for n in rows
+            if clean_q in (n.get("title") or "").lower()
+            or clean_q in (n.get("content") or "").lower()
+            or any(clean_q in t.lower() for t in (n.get("tags") or []))
+        ]
+    if clean_tag:
+        target_tag = f"#{clean_tag}"
+        rows = [
+            n
+            for n in rows
+            if any(t.lower() == target_tag for t in (n.get("tags") or []))
+        ]
+    if clean_doc == "__none__":
+        rows = [n for n in rows if not n.get("document_id")]
+    elif clean_doc:
+        rows = [n for n in rows if n.get("document_id") == clean_doc]
+
     return {"notes": rows}
 
 
@@ -529,18 +620,92 @@ async def create_note(
     req: NoteCreateRequest,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
+    clean_title = req.title.strip()
+    if not clean_title:
+        raise HTTPException(status_code=400, detail="Tiêu đề ghi chú không được để trống")
+
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
     note_id = str(uuid.uuid4())
+    clean_content = req.content.strip()
+    doc_id = _resolve_valid_doc_id(conn, workspace_id, req.document_id)
+    tags = _normalize_note_tags(req.tags, f"{clean_title} {clean_content}")
+    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO notes (id, workspace_id, notebook_id, document_id, title, content) VALUES (?, ?, ?, ?, ?, ?)",
-        (note_id, workspace_id, req.notebook_id, req.document_id, req.title.strip(), req.content.strip()),
+        """INSERT INTO notes (id, workspace_id, notebook_id, document_id, title, content, tags_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            note_id,
+            workspace_id,
+            req.notebook_id,
+            doc_id,
+            clean_title,
+            clean_content,
+            json.dumps(tags, ensure_ascii=False),
+            updated_at,
+        ),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     conn.close()
     await run_in_threadpool(upsert_workspace_embedding, workspace_id)
-    return {"note": dict(row)}
+    return {"note": _serialize_note_row(row)}
+
+
+@router.patch("/notes/{note_id}")
+async def update_note(
+    note_id: str,
+    req: NoteUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    conn = get_db_connection()
+    owned = conn.execute(
+        """SELECT n.* FROM notes n JOIN workspaces w ON w.id = n.workspace_id
+           WHERE n.id = ? AND w.owner_user_id = ?""",
+        (note_id, user["id"]),
+    ).fetchone()
+    if not owned:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Không tìm thấy ghi chú")
+
+    existing = _serialize_note_row(owned)
+    ws_id = existing["workspace_id"]
+    next_title = req.title.strip() if req.title is not None else existing["title"]
+    if not next_title:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Tiêu đề ghi chú không được để trống")
+
+    next_content = req.content.strip() if req.content is not None else existing["content"]
+    fields_set = getattr(req, "model_fields_set", set())
+    next_doc_id = (
+        _resolve_valid_doc_id(conn, ws_id, req.document_id)
+        if "document_id" in fields_set
+        else existing.get("document_id")
+    )
+    next_nb_id = req.notebook_id if "notebook_id" in fields_set else existing.get("notebook_id")
+    base_tags = req.tags if req.tags is not None else existing.get("tags", [])
+    next_tags = _normalize_note_tags(base_tags, f"{next_title} {next_content}")
+    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    conn.execute(
+        """UPDATE notes
+           SET title = ?, content = ?, notebook_id = ?, document_id = ?, tags_json = ?, updated_at = ?
+           WHERE id = ?""",
+        (
+            next_title,
+            next_content,
+            next_nb_id,
+            next_doc_id,
+            json.dumps(next_tags, ensure_ascii=False),
+            updated_at,
+            note_id,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, ws_id)
+    return {"note": _serialize_note_row(row)}
 
 
 @router.delete("/notes/{note_id}")
@@ -622,14 +787,7 @@ def create_study_artifact(
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
 
-    doc_id = req.document_id
-    if doc_id:
-        doc_exists = conn.execute(
-            "SELECT 1 FROM documents WHERE id = ? AND workspace_id = ?",
-            (doc_id, workspace_id),
-        ).fetchone()
-        if not doc_exists:
-            doc_id = None
+    doc_id = _resolve_valid_doc_id(conn, workspace_id, req.document_id)
 
     artifact_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

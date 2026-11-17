@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   Conversation,
   KnowledgeDocument,
+  Note,
   SearchHit,
   SystemStatus,
   Workspace,
@@ -679,6 +680,78 @@ export interface StudyArtifactRecord {
   title: string
   data: any
   created_at?: string
+}
+
+export function mapBackendNote(row: Record<string, unknown>): Note {
+  const rawTags = Array.isArray(row.tags) ? row.tags.map((t) => String(t)) : []
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    notebookId: row.notebook_id ? String(row.notebook_id) : null,
+    documentId: row.document_id ? String(row.document_id) : null,
+    title: String(row.title ?? ""),
+    content: String(row.content ?? ""),
+    tags: rawTags,
+    updatedAt: String(row.updated_at ?? nowIso()),
+  }
+}
+
+export async function fetchNotesApi(
+  workspaceId: string,
+  params?: { q?: string; tag?: string; documentId?: string },
+): Promise<Note[]> {
+  const qs = new URLSearchParams()
+  if (params?.q?.trim()) qs.set("q", params.q.trim())
+  if (params?.tag?.trim()) qs.set("tag", params.tag.trim())
+  if (params?.documentId?.trim()) qs.set("document_id", params.documentId.trim())
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  const data = await request<{ notes: Array<Record<string, unknown>> }>(
+    `/api/v1/workspaces/${workspaceId}/notes${suffix}`,
+  )
+  return (data.notes ?? []).map(mapBackendNote)
+}
+
+export async function createNoteApi(
+  workspaceId: string,
+  payload: {
+    title: string
+    content: string
+    notebook_id?: string | null
+    document_id?: string | null
+    tags?: string[]
+  },
+): Promise<Note> {
+  const data = await request<{ note: Record<string, unknown> }>(
+    `/api/v1/workspaces/${workspaceId}/notes`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  )
+  return mapBackendNote(data.note)
+}
+
+export async function updateNoteApi(
+  noteId: string,
+  payload: {
+    title?: string
+    content?: string
+    notebook_id?: string | null
+    document_id?: string | null
+    tags?: string[]
+  },
+): Promise<Note> {
+  const data = await request<{ note: Record<string, unknown> }>(`/api/v1/notes/${noteId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return mapBackendNote(data.note)
+}
+
+export async function deleteNoteApi(noteId: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/api/v1/notes/${noteId}`, { method: "DELETE" })
 }
 
 export async function fetchStudyArtifactsApi(

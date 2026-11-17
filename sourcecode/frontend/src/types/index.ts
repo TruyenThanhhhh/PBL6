@@ -72,6 +72,7 @@ export interface Note {
   documentId: string | null
   title: string
   content: string
+  tags?: string[]
   updatedAt: string
 }
 
