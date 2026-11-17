@@ -45,6 +45,7 @@ PBL6/
 │       ├── requirements.txt
 │       └── run.py
 ├── tailieu/                        # Tài liệu tổng quan đề tài gốc (.docx)
+├── TAI_LIEU_NANG_CAP_AI.md         # Báo cáo kỹ thuật nâng cấp Local AI & Hybrid RAG
 ├── .gitignore
 ├── start_app.bat                   # Script khởi động 1-click
 └── README.md
