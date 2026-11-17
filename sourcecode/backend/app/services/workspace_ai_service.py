@@ -165,20 +165,31 @@ def _looks_like_file_list_desc(desc: str) -> bool:
     return bool(_FALLBACK_LISTING_RE.match(d))
 
 
+def _clean_topic_label(file_name: str) -> str:
+    """Làm sạch tên tệp thành nhãn chủ đề dễ đọc (bỏ đuôi file, tag [share], dấu nối)."""
+    stem = re.sub(r"\.[^.]+$", "", (file_name or "").strip())
+    stem = re.sub(r"\[[^\]]*\]", " ", stem)
+    stem = re.sub(r"[_\-]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    return stem or "Tài liệu"
+
+
 def _build_fallback_metadata(
     doc_names: List[str],
     note_titles: List[str],
 ) -> Tuple[str, str, str]:
     if doc_names:
         stems = [_humanize_filename_stem(n) for n in doc_names]
+        topics = [_clean_topic_label(n) for n in doc_names]
         primary_stem = stems[0][:65]
         if len(doc_names) == 1:
             title = primary_stem
-            description = f"Không gian lưu trữ tài liệu và hỏi đáp AI về chủ đề {primary_stem}."
+            description = f"Không gian lưu trữ tài liệu và hỏi đáp AI về {topics[0]}."
         else:
-            title = f"{primary_stem[:50]} (+{len(doc_names) - 1} tệp)"
-            topics = ", ".join(s[:40] for s in stems[:3])
-            description = f"Không gian học tập và tra cứu kiến thức liên quan đến {topics}."
+            title = primary_stem
+            unique_topics = list(dict.fromkeys(t[:40] for t in topics if t))
+            listed = ", ".join(unique_topics[:4])
+            description = f"Workspace hiện có các tài liệu về {listed}."
         return title[:120], description[:500], "Chung"
 
     if note_titles:
@@ -193,14 +204,14 @@ def _collect_workspace_context(
     conn: Any,
     workspace_id: str,
     max_docs: int = 6,
-    max_chars: int = 1050,
+    max_chars: int = 1100,
 ) -> Dict[str, Any]:
     docs = conn.execute(
         """
         SELECT id, file_name, file_type, created_at
         FROM documents
         WHERE workspace_id = ?
-        ORDER BY created_at DESC
+        ORDER BY created_at ASC, rowid ASC
         """,
         (workspace_id,),
     ).fetchall()
@@ -219,12 +230,13 @@ def _collect_workspace_context(
     note_titles = [str(r["title"]) for r in notes if r["title"]]
 
     snippets: List[str] = []
+    first_doc_context = ""
     total_chars = 0
 
     if docs:
-        target_docs = docs[:max_docs]
+        target_docs = docs if len(docs) <= max_docs else [docs[0], *docs[-(max_docs - 1) :]]
         per_doc_budget = max(140, max_chars // len(target_docs))
-        for doc in target_docs:
+        for idx, doc in enumerate(target_docs):
             if total_chars >= max_chars:
                 break
             chunk_rows = conn.execute(
@@ -243,6 +255,8 @@ def _collect_workspace_context(
             if not combined:
                 continue
             excerpt = combined[:per_doc_budget]
+            if idx == 0:
+                first_doc_context = f"[{doc['file_name']}]: {combined[:450]}"
             part = f"[{doc['file_name']}]: {excerpt}"
             remaining = max_chars - total_chars
             if len(part) > remaining:
@@ -261,6 +275,8 @@ def _collect_workspace_context(
     return {
         "doc_names": doc_names,
         "note_titles": note_titles,
+        "first_doc_name": doc_names[0] if doc_names else "",
+        "first_doc_context": first_doc_context,
         "context_text": "\n".join(snippets),
     }
 
@@ -376,7 +392,7 @@ async def generate_and_apply_workspace_metadata(
     workspace_id: str,
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
-    """Tự động sinh & cập nhật Title, Description, Category cho Workspace từ toàn bộ tài liệu."""
+    """Tự động sinh & cập nhật Title (theo file đầu tiên) và Description (cho biết workspace có những tài liệu nào)."""
     conn = get_db_connection()
     try:
         ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
@@ -384,9 +400,14 @@ async def generate_and_apply_workspace_metadata(
             return {"updated": False, "source": "not_found", "workspace": None}
 
         owner_user_id = ws["owner_user_id"]
+        existing_name = (ws["name"] or "").strip()
+        is_default_name = _is_default_workspace_name(existing_name)
+
         ctx = _collect_workspace_context(conn, workspace_id)
         doc_names: List[str] = ctx["doc_names"]
         note_titles: List[str] = ctx["note_titles"]
+        first_doc_name: str = ctx["first_doc_name"]
+        first_doc_context: str = ctx["first_doc_context"]
         context_text: str = ctx["context_text"]
 
         if not doc_names and not note_titles:
@@ -400,28 +421,65 @@ async def generate_and_apply_workspace_metadata(
     finally:
         conn.close()
 
-    system_prompt = (
-        "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Dựa trên trích đoạn nội dung của TẤT CẢ tài liệu trong workspace, "
-        "hãy đặt tiêu đề tổng quát và viết mô tả TỔNG HỢP CHỦ ĐỀ CHUNG bằng TIẾNG VIỆT.\n\n"
-        "BẮT BUỘC TRẢ VỀ DUY NHẤT MỘT JSON OBJECT:\n"
-        "{\n"
-        '  "title": "Tên workspace ngắn gọn bằng tiếng Việt (3-8 từ, tối đa 70 ký tự, bao quát các tài liệu)",\n'
-        '  "description": "Tóm tắt 1-2 câu bằng tiếng Việt (tối đa 220 ký tự) về nội dung kiến thức và mục đích học tập chung của workspace",\n'
-        '  "category": "Chọn ĐÚNG 1 giá trị trong: Kỹ thuật | Nghiên cứu | Ngoại ngữ | Đại học | Dự án | Chung"\n'
-        "}\n"
-        "QUY TẮC BẮT BUỘC:\n"
-        "- Viết cả title và description bằng tiếng Việt (chỉ giữ tên riêng/thuật ngữ như JLPT N3, Kanji, TCP/IP).\n"
-        "- TUYỆT ĐỐI KHÔNG liệt kê tên tệp, KHÔNG chép đuôi tệp (.pdf, .xlsx, .docx) và KHÔNG viết kiểu 'Tổng hợp 3 tài liệu: ...' vào description."
-    )
-
-    files_summary = ", ".join(doc_names[:12])
+    is_multi_doc = len(doc_names) >= 2
+    need_title = (len(doc_names) <= 1) or is_default_name
     avoid_names = ", ".join(other_names[:12]) if other_names else "(không có)"
-    user_prompt = (
-        f"Các tệp hiện có ({len(doc_names)} tệp): {files_summary}\n"
-        f"Tránh đặt trùng tên: {avoid_names}\n\n"
-        f"Trích đoạn nội dung từ các tài liệu:\n{context_text or '(chỉ có tên tệp)'}\n\n"
-        "Trả về JSON object gồm title, description, category bằng tiếng Việt:"
-    )
+
+    if not is_multi_doc:
+        system_prompt = (
+            "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Dựa trên tài liệu đầu tiên được tải vào workspace, "
+            "hãy đặt tiêu đề ngắn gọn và mô tả tóm tắt nội dung chính của tài liệu đó bằng TIẾNG VIỆT.\n\n"
+            "BẮT BUỘC TRẢ VỀ DUY NHẤT MỘT JSON OBJECT:\n"
+            "{\n"
+            '  "title": "Tên workspace ngắn gọn bằng tiếng Việt (3-7 từ, tối đa 65 ký tự)",\n'
+            '  "description": "Tóm tắt 1-2 câu bằng tiếng Việt (tối đa 200 ký tự) về nội dung chính của tài liệu",\n'
+            '  "category": "Chọn ĐÚNG 1 giá trị trong: Kỹ thuật | Nghiên cứu | Ngoại ngữ | Đại học | Dự án | Chung"\n'
+            "}\n"
+            "QUY TẮC: Viết bằng tiếng Việt tự nhiên (chỉ giữ tên riêng/thuật ngữ như JLPT N3, Kanji, TCP/IP)."
+        )
+        user_prompt = (
+            f"Tài liệu đầu tiên: {first_doc_name or '(ghi chú)'}\n"
+            f"Tránh đặt trùng tên: {avoid_names}\n\n"
+            f"Nội dung:\n{first_doc_context or context_text or '(chỉ có tên tệp)'}\n\n"
+            "Trả về JSON object:"
+        )
+    elif need_title:
+        files_summary = ", ".join(doc_names[:12])
+        system_prompt = (
+            "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Workspace hiện có NHIỀU tài liệu khác nhau.\n"
+            "1. 'title': Đặt tên ngắn gọn (3-7 từ tiếng Việt) theo CHỦ ĐỀ NỘI DUNG của TÀI LIỆU ĐẦU TIÊN "
+            "(KHÔNG copy tên tệp thô hay đuôi .pdf/.docx/.xlsx).\n"
+            "2. 'description': Viết 1-2 câu tiếng Việt (tối đa 220 ký tự) cho biết TRONG WORKSPACE HIỆN ĐANG CÓ NHỮNG TÀI LIỆU / CHỦ ĐỀ NÀO "
+            "(bao quát hết các tài liệu hiện có, KHÔNG chỉ chọn nói về 1 tài liệu, KHÔNG liệt kê thô tên tệp kèm đuôi .pdf/.xlsx/.docx).\n"
+            "3. 'category': Chọn ĐÚNG 1 giá trị trong: Kỹ thuật | Nghiên cứu | Ngoại ngữ | Đại học | Dự án | Chung.\n\n"
+            "TRẢ VỀ DUY NHẤT MỘT JSON OBJECT: "
+            '{"title": "...", "description": "...", "category": "..."}'
+        )
+        user_prompt = (
+            f"Tài liệu đầu tiên (chỉ dùng nội dung này để đặt title): {first_doc_context or first_doc_name}\n"
+            f"Toàn bộ tài liệu hiện có ({len(doc_names)} tệp, dùng để mô tả workspace đang có những tài liệu nào): {files_summary}\n"
+            f"Tránh đặt trùng tên: {avoid_names}\n\n"
+            f"Trích đoạn tất cả các tài liệu:\n{context_text}\n\n"
+            "Trả về JSON object bằng tiếng Việt:"
+        )
+    else:
+        files_summary = ", ".join(doc_names[:12])
+        system_prompt = (
+            "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Workspace hiện có NHIỀU tài liệu khác nhau.\n"
+            "Nhiệm vụ của bạn là viết 1 mô tả tiếng Việt ngắn gọn (1-2 câu, tối đa 220 ký tự) giúp người dùng biết "
+            "TRONG WORKSPACE HIỆN ĐANG CÓ NHỮNG TÀI LIỆU / MẢNG NỘI DUNG NÀO.\n"
+            "QUY TẮC BẮT BUỘC:\n"
+            "- Phải phản ánh ĐẦY ĐỦ các loại tài liệu đang có (không chỉ nói về 1 tài liệu).\n"
+            "- Diễn đạt tự nhiên bằng tiếng Việt (ví dụ: 'Workspace gồm bảng từ vựng tiếng Nhật Mimikara N3 cùng các đề thi JLPT N3 qua các năm để ôn luyện.'), "
+            "KHÔNG liệt kê thô nguyên văn tên tệp kèm đuôi .pdf/.xlsx/.docx và KHÔNG viết 'Tổng hợp N tài liệu: ...'.\n\n"
+            'TRẢ VỀ DUY NHẤT MỘT JSON OBJECT: {"description": "...", "category": "Kỹ thuật | Nghiên cứu | Ngoại ngữ | Đại học | Dự án | Chung"}'
+        )
+        user_prompt = (
+            f"Tên workspace giữ nguyên: {existing_name}\n"
+            f"Các tài liệu hiện có ({len(doc_names)} tệp): {files_summary}\n\n"
+            f"Trích đoạn từng tài liệu:\n{context_text}\n\n"
+            "Trả về JSON object gồm description và category bằng tiếng Việt:"
+        )
 
     ai_res = await call_ollama_json(
         system_prompt=system_prompt,
@@ -435,9 +493,13 @@ async def generate_and_apply_workspace_metadata(
 
     source = "ai"
     raw_data = ai_res.get("data") if ai_res.get("ok") else None
-    if isinstance(raw_data, dict) and (raw_data.get("title") or raw_data.get("name")):
-        raw_title = str(raw_data.get("title") or raw_data.get("name") or "").strip()
+    if isinstance(raw_data, dict) and (
+        raw_data.get("description") or raw_data.get("title") or raw_data.get("name")
+    ):
+        raw_title = str(raw_data.get("title") or raw_data.get("name") or existing_name).strip()
+        raw_title = re.sub(r"\.(?:pdf|docx|pptx|xlsx|xls|txt|md|csv|json)$", "", raw_title, flags=re.IGNORECASE).strip()
         raw_desc = str(raw_data.get("description") or "").strip()
+        raw_desc = re.sub(r"^WORKSPACE\b", "Workspace", raw_desc)
         raw_cat = _normalize_category(raw_data.get("category"))
     else:
         source = "fallback"
@@ -449,11 +511,22 @@ async def generate_and_apply_workspace_metadata(
         if not ws:
             return {"updated": False, "source": "not_found", "workspace": None}
 
+        existing_name = (ws["name"] or "").strip()
         existing_desc = (ws["description"] or "").strip()
-        if source == "fallback" and not _is_default_workspace_name(ws["name"]) and len(doc_names) > 1:
-            final_title = ws["name"]
+
+        if is_multi_doc and not _is_default_workspace_name(existing_name):
+            # Khi workspace đã có tên từ file đầu tiên và có thêm file mới -> giữ nguyên tiêu đề
+            final_title = existing_name
             final_cat = ws["category"] or raw_cat
-            final_desc = existing_desc if (existing_desc and not _looks_like_file_list_desc(existing_desc)) else raw_desc[:500]
+            if source == "fallback":
+                final_desc = (
+                    existing_desc
+                    if (existing_desc and not _looks_like_file_list_desc(existing_desc))
+                    else raw_desc[:500]
+                )
+            else:
+                final_desc = raw_desc[:500] if raw_desc else existing_desc
+                final_cat = raw_cat
         else:
             final_title = _deduplicate_workspace_title(
                 conn, workspace_id, ws["owner_user_id"], raw_title

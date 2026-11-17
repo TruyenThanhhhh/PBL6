@@ -130,13 +130,14 @@ class WorkspaceAITestCase(unittest.TestCase):
         self.assertEqual(up2.json()["metadata_source"], "deferred")
         self.assertEqual(mock_ollama.await_count, call_count_before)
 
-        # Kết thúc batch mới gọi generate-metadata 1 lần
+        # Kết thúc batch mới gọi generate-metadata 1 lần:
+        # Tiêu đề giữ nguyên theo file đầu tiên ('Mạng Máy Tính Cơ Bản'), mô tả cập nhật bao quát các file đang có
         mock_ollama.return_value = {
             "ok": True,
             "model_used": "qwen2.5:7b",
             "data": {
-                "title": "Mạng & Bảo Mật Hệ Thống",
-                "description": "Tổng hợp kiến thức TCP/IP, định tuyến và tường lửa bảo mật.",
+                "title": "Tên Khác Không Được Ghi Đè",
+                "description": "Workspace hiện có tài liệu hướng dẫn TCP/IP cùng tài liệu cấu hình tường lửa bảo mật mạng.",
                 "category": "Kỹ thuật",
             },
         }
@@ -145,7 +146,8 @@ class WorkspaceAITestCase(unittest.TestCase):
             headers=self.user_a_headers,
         )
         self.assertEqual(gen.status_code, 200, gen.text)
-        self.assertEqual(gen.json()["workspace"]["name"], "Mạng & Bảo Mật Hệ Thống")
+        self.assertEqual(gen.json()["workspace"]["name"], "Mạng Máy Tính Cơ Bản")
+        self.assertIn("tường lửa", gen.json()["workspace"]["description"])
         self.assertEqual(gen.json()["workspace"]["doc_count"], 2)
 
     @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)

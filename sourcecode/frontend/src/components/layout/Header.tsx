@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom"
 import {
   ArrowLeft,
   ChevronRight,
+  Info,
   LogIn,
   LogOut,
   Menu,
@@ -87,8 +88,8 @@ export function AppHeader() {
 
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#B6C8C4]" />
 
-          {/* Tên Workspace hiện tại: Hiển thị đầy đủ, không bị chèn ép chữ */}
-          <div className="flex shrink-0 items-center max-w-[220px] sm:max-w-sm md:max-w-md lg:max-w-lg">
+          {/* Tên Workspace hiện tại + icon (i) xem mô tả khi hover */}
+          <div className="flex shrink-0 items-center gap-1 max-w-[240px] sm:max-w-sm md:max-w-md lg:max-w-lg">
             <InlineEdit
               value={currentWs?.name ?? "Workspace"}
               ariaLabel="Tên Workspace"
@@ -110,6 +111,24 @@ export function AppHeader() {
               className="truncate text-[13px] font-semibold text-[#172B29] hover:bg-[#F0F5F4] px-1.5 py-0.5 rounded-md transition-colors"
               inputClassName="h-7 text-xs font-semibold text-[#172B29]"
             />
+            {currentWs ? (
+              <Tooltip
+                side="bottom"
+                content={
+                  currentWs.description ||
+                  "Chưa có mô tả. Tải tài liệu lên để AI tự động tạo mô tả."
+                }
+                className="w-72 max-w-[85vw] whitespace-normal rounded-lg px-3 py-2 text-left text-[11.5px] leading-relaxed font-normal shadow-lg"
+              >
+                <button
+                  type="button"
+                  aria-label="Xem mô tả workspace"
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#7A9490] transition-colors hover:bg-[#F0F5F4] hover:text-[#087F73] focus:outline-hidden"
+                >
+                  <Info className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            ) : null}
           </div>
 
           {/* Trạng thái đồng bộ gọn gàng */}
