@@ -257,9 +257,9 @@ export function CitationPanel({
                       </h4>
                     </div>
 
-                    {evidence.pageNumber != null ? (
+                    {evidence.pageLabel || evidence.pageNumber != null ? (
                       <span className="shrink-0 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10px] font-medium text-[#172B29]">
-                        Trang {evidence.pageNumber}
+                        {evidence.pageLabel || `Trang ${evidence.pageNumber}`}
                       </span>
                     ) : null}
                   </div>

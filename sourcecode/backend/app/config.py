@@ -28,7 +28,7 @@ CHUNK_OVERLAP = 200    # độ gối đầu giữa các chunk
 TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "4"))    # số chunk tối ưu đưa vào LLM trên CPU
 
 # Hybrid retrieval: lấy rộng rồi fuse bằng RRF, sau đó rerank.
-RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "3"))
+RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "4"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")

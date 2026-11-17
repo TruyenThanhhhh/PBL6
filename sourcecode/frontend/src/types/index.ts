@@ -80,6 +80,7 @@ export interface Citation {
   documentId: string | null
   documentName: string
   pageNumber: number | null
+  pageLabel?: string | null
   chunkIndex: number | null
   snippet: string
   sourceKind: SourceKind
@@ -104,6 +105,7 @@ export interface EvidenceItem {
   citation: Citation
   source: SourceDescriptor
   pageNumber: number | null
+  pageLabel?: string | null
   chunkId: string | null
   snippet: string
   hasExactOffset: boolean

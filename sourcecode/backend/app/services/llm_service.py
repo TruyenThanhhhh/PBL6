@@ -16,18 +16,30 @@ logger = logging.getLogger(__name__)
 
 def is_conversational_query(query: str) -> bool:
     """
-    Phát hiện các câu chào hỏi, giao tiếp xã giao thông thường không cần tra cứu tài liệu
+    Phát hiện các câu chào hỏi, giao tiếp xã giao thông thường không cần tra cứu tài liệu.
+    Dùng regex nguyên từ (\b) để không match nhầm 'thi', 'nghi', 'nhiều' khi gặp 'hi'.
     """
     q = query.lower().strip()
-    greetings = [
-        "chào", "hello", "hi", "alo", "xin chào", "bạn là ai", "bạn có thể làm gì",
-        "giới thiệu bản thân", "giúp tôi được gì", "cảm ơn", "thank you", "tạm biệt", "bye"
+    words = q.split()
+    if len(words) > 5:
+        return False
+
+    # Loại trừ nếu chứa các từ khóa học tập / tra cứu / câu hỏi nghiệp vụ
+    study_keywords = [
+        "thi", "đề", "bài", "chương", "lab", "tài liệu", "sách", "giáo trình",
+        "là gì", "thế nào", "cách", "hướng dẫn", "bao nhiêu", "mấy", "tại sao", "ở đâu"
     ]
-    if len(q.split()) <= 4:
-        for g in greetings:
-            if g in q:
-                return True
-    return False
+    if any(re.search(rf"\b{re.escape(k)}\b", q) for k in study_keywords):
+        return False
+
+    standalone_greetings = [
+        r"chào", r"chào bạn", r"hello", r"hi", r"alo", r"xin chào",
+        r"bạn là ai", r"bạn có thể làm gì", r"giới thiệu bản thân",
+        r"giúp tôi được gì", r"cảm ơn", r"thank you", r"thanks",
+        r"tạm biệt", r"bye", r"good morning", r"good afternoon"
+    ]
+    pattern = rf"^\s*(?:{'|'.join(standalone_greetings)})\s*[!?.~]*$"
+    return bool(re.match(pattern, q, re.IGNORECASE))
 
 
 async def check_ollama_status() -> Dict[str, Any]:
@@ -70,8 +82,12 @@ def _prepare_rag_prompts_and_citations(
 
     for i, chunk in enumerate(context_chunks):
         ref_id = i + 1
+        page_label = chunk.get("page_label") or (
+            f"Trang {chunk['page_number']}" if chunk.get("page_number") is not None else ""
+        )
+        page_suffix = f" ({page_label})" if page_label else ""
         context_text += (
-            f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']} (Trang {chunk['page_number']}) ---\n"
+            f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
             f"{chunk['content']}\n"
         )
         citations.append({
@@ -79,8 +95,9 @@ def _prepare_rag_prompts_and_citations(
             "source_type": "document",
             "document_id": chunk["document_id"],
             "document_name": chunk["document_name"],
-            "page_number": chunk["page_number"],
-            "chunk_index": chunk["chunk_index"],
+            "page_number": chunk.get("page_number"),
+            "page_label": page_label or None,
+            "chunk_index": chunk.get("chunk_index"),
             "snippet": chunk["content"][:200] + "..." if len(chunk["content"]) > 200 else chunk["content"]
         })
 
@@ -99,57 +116,68 @@ def _prepare_rag_prompts_and_citations(
     has_web = bool(web_sources)
 
     system_prompt = (
-        "Bạn là Trợ lý Tri thức Cá nhân AI — một người bạn đồng hành nghiên cứu thông thái, "
-        "chính xác, khách quan và am hiểu sâu sắc.\n\n"
-        "## NGUYÊN TẮC TRẢ LỜI QUAN TRỌNG\n"
-        "1. ĐỌC VÀ HIỂU BẢN CHẤT: Đọc toàn bộ các nguồn tham khảo được cung cấp trước khi trả lời. "
-        "Kết nối các ý nghĩa xuyên suốt, giải thích nguyên nhân, mục đích và ý nghĩa, không sao chép máy móc.\n"
-        "2. ĐỐI CHIẾU NỘI DUNG VÀ TRÁNH ẢO GIÁC (RẤT QUAN TRỌNG):\n"
+        "Bạn là Trợ lý Tri thức Cá nhân AI (Personal Knowledge AI) — một chuyên gia phân tích và người bạn đồng hành nghiên cứu thông thái, "
+        "chính xác, khách quan và sư phạm theo tiêu chuẩn NotebookLM.\n\n"
+        "## NGUYÊN TẮC TRẢ LỜI CỐT LÕI:\n"
+        "1. ĐỌC HIỂU SÂU SẮC & TOÀN DIỆN: Đọc toàn bộ các nguồn tham khảo (tài liệu hoặc web) được cung cấp. "
+        "Tổng hợp logic mạch lạc, giải thích nguyên nhân, mục đích và bản chất vấn đề; tuyệt đối không sao chép máy móc hay cắt xén thông tin.\n"
+        "2. ĐỐI CHIẾU NGUỒN VÀ TRÁNH ẢO GIÁC (RẤT QUAN TRỌNG):\n"
         "   - Chỉ trích dẫn [Tài liệu 1], [Tài liệu 2]... nếu nội dung trong tài liệu đó THỰC SỰ đề cập đến câu hỏi của người dùng.\n"
-        "   - Nếu người dùng hỏi các câu hỏi thực tế, thời sự, thời tiết hoặc đã có nguồn Internet ([Nguồn web 1]...): hãy ưu tiên sử dụng nguồn Internet và kiến thức chuẩn xác để giải đáp trực tiếp, đầy đủ cho người dùng.\n"
-        "   - Nếu người dùng CHỈ tra cứu tài liệu cá nhân (không có nguồn web) mà tài liệu trong kho HOÀN TOÀN KHÔNG CHỨA THÔNG TIN hoặc không liên quan đến câu hỏi: "
-        "     hãy nói rõ ngay: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề câu hỏi].' "
-        "     Sau đó bạn hãy giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác của bạn (không kèm nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
-        "3. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
-        "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Bạn PHẢI TRẢ LỜI TRỰC TIẾP CÁC SỐ LIỆU CỤ THỂ từ nguồn [Nguồn web 1]: "
-        "     nhiệt độ hiện tại (bao nhiêu °C), cảm giác thực tế như bao nhiêu °C, tình trạng trời (mưa, nắng, nhiều mây), độ ẩm (%), tốc độ gió và dự báo nhiệt độ trong ngày. "
-        "     TUYỆT ĐỐI KHÔNG trả lời vòng vo kiểu 'Tình hình thời tiết có thể xem ở trang web 1' hay khuyên người dùng tự đi mở trang web!\n"
-        "   - VỚI CÂU HỎI HƯỚNG DẪN, CÁCH LÀM, NẤU ĂN, KỸ THUẬT, THỰC HÀNH (ví dụ: 'cách làm bánh...', 'hướng dẫn...', 'cách nấu...', 'các bước...'): "
-        "     + BẠN PHẢI TỔNG HỢP THÀNH MỘT BÀI HƯỚNG DẪN HOÀN CHỈNH, CÓ CHIỀU SÂU VÀ CHI TIẾT TỪ ĐẦU ĐẾN CUỐI.\n"
-        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành từng nguồn riêng lẻ (như [1]: ... rồi [2]: ... rồi lặp lại nội dung tóm tắt sơ sài 1-2 câu).\n"
-        "     + Trình bày rõ ràng và đầy đủ: Nguyên liệu & Định lượng cụ thể -> Dụng cụ -> Các bước thực hiện chi tiết (Bước 1, Bước 2, Bước 3... mô tả tỉ mỉ kỹ thuật thực hiện, thời gian, nhiệt độ, dấu hiệu đạt chuẩn) -> Bí quyết và lưu ý quan trọng để làm thành công.\n"
-        "   - VỚI CÂU HỎI TRI THỨC, HỌC TẬP, TOÁN/LÝ/HÓA (ví dụ: '7 hằng đẳng thức đáng nhớ', định lý, định nghĩa): "
-        "     Bạn PHẢI TRÌNH BÀY ĐẦY ĐỦ VÀ CHI TIẾT TẤT CẢ các công thức, định nghĩa đó ra bằng kiến thức chuẩn xác của bạn kết hợp với ngữ cảnh web. "
-        "     TUYỆT ĐỐI KHÔNG chỉ liệt kê tiêu đề các bài viết hay tóm tắt 'bài viết này nói về gì' một cách sáo rỗng!\n"
-        "   - Gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) lồng ghép tự nhiên ngay sau các ý có thông tin tương ứng từ nguồn.\n"
-        "4. Với câu hỏi 'tóm tắt', 'liệt kê các bài/chương/phần': hãy liệt kê RÕ RÀNG và ĐẦY ĐỦ "
-        "từng bài/chương theo thứ tự xuất hiện trong tài liệu, mỗi mục kèm mô tả ngắn gọn.\n"
-        "5. Với câu hỏi về nội dung, cách làm, hướng dẫn hoặc các bước của một bài/chương (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'các bước tiếp theo'): "
-        "hãy giải thích mục tiêu tổng quan, sau đó liệt kê ĐẦY ĐỦ TOÀN BỘ TẤT CẢ CÁC BƯỚC từ Bước 1 đến Bước cuối cùng có trong tài liệu. "
-        "Tuyệt đối KHÔNG dừng lại giữa chừng (ví dụ nếu tài liệu có 16 hay 20 bước thì phải liệt kê đầy đủ tất cả các bước, không được chỉ dừng lại ở bước 3 hay bước 4).\n"
-        "6. Trả lời bằng tiếng Việt tự nhiên, ấm áp, định dạng Markdown rõ ràng, công thức toán hiển thị bằng KaTeX/LaTeX chuẩn ($...$ hoặc $$...$$).\n"
-        "7. Gắn nhãn trích dẫn [1], [2]... hoặc [Tài liệu 1], [Web 1]... ngay sau ý được hỗ trợ bởi nguồn tương ứng.\n"
-        "8. Dùng lịch sử hội thoại để hiểu câu hỏi nối tiếp. Khi câu hỏi mới mâu thuẫn câu cũ, ưu tiên câu hỏi mới nhất.\n"
-        "9. Nếu có ảnh đính kèm, đọc ngay nội dung ảnh để trả lời — tuyệt đối không yêu cầu gửi lại ảnh."
+        "   - Khi tra cứu tài liệu cá nhân mà kho tài liệu HOÀN TOÀN KHÔNG CHỨA THÔNG TIN liên quan: "
+        "     Nói rõ ngay: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].' "
+        "     Sau đó bạn hãy giải đáp bằng kiến thức chuẩn xác của bạn (không gắn nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
+        "3. TRÌNH BÀY HƯỚNG DẪN / BÀI LAB / CÁC BƯỚC THỰC HÀNH (ĐẶC BIỆT CHÚ Ý):\n"
+        "   - Khi người dùng hỏi về nội dung, hướng dẫn, cách làm hoặc các bước của một bài/chương/lab (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'hướng dẫn thực hành...'):\n"
+        "     + Bắt đầu bằng mục tiêu tổng quan của bài thực hành.\n"
+        "     + Liệt kê ĐẦY ĐỦ TẤT CẢ CÁC BƯỚC từ Bước 1 đến Bước cuối cùng có trong tài liệu (ví dụ nếu tài liệu có 16 bước thì phải trình bày đủ từ Bước 1 đến Bước 16, TUYỆT ĐỐI KHÔNG dừng ở bước 3 hay bước 4).\n"
+        "     + Mỗi bước cần nêu rõ: Thao tác cụ thể (click đâu, nhập lệnh gì, thiết lập thông số nào) và lưu ý kỹ thuật nếu có.\n"
+        "4. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
+        "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Trả lời trực tiếp các số liệu cụ thể từ nguồn: nhiệt độ (°C), độ ẩm (%), tình trạng trời, gió và dự báo; tuyệt đối không bảo người dùng tự truy cập trang web.\n"
+        "   - VỚI CÂU HỎI CÁCH LÀM / CÔNG THỨC / KỸ THUẬT TỪ WEB (ví dụ: cách làm bánh, nấu ăn, lập trình...):\n"
+        "     + Phải tổng hợp thành một bài hướng dẫn hoàn chỉnh, chi tiết từ đầu đến cuối: Nguyên liệu/Chuẩn bị -> Các bước thực hiện chi tiết (Bước 1, Bước 2...) -> Lưu ý/Bí quyết thành công.\n"
+        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành từng nguồn riêng lẻ như '[1]: ... rồi [2]: ...' với nội dung tóm tắt sơ sài 1-2 câu!\n"
+        "   - VỚI CÂU HỎI TRI THỨC / ĐỊNH LÝ / CÔNG THỨC (ví dụ: hằng đẳng thức, định lý toán học): Trình bày đầy đủ toàn bộ các công thức/định lý một cách chính xác và rõ ràng.\n"
+        "5. CÂU HỎI TỔNG HỢP / TÓM TẮT TOÀN BỘ TÀI LIỆU: Liệt kê rõ ràng và đầy đủ từng bài/chương theo thứ tự trong tài liệu, mỗi mục kèm mô tả súc tích về mục tiêu và nội dung chính.\n"
+        "6. ĐỊNH DẠNG & TRÍCH DẪN:\n"
+        "   - Trả lời bằng tiếng Việt tự nhiên, chuẩn mực, định dạng Markdown rõ ràng (tiêu đề, danh sách, in đậm, bảng biểu nếu cần so sánh).\n"
+        "   - Công thức toán/khoa học hiển thị bằng KaTeX chuẩn: inline `$x$` hoặc display `$$x$$`.\n"
+        "   - Gắn nhãn trích dẫn [1], [2]... hoặc [Tài liệu 1], [Nguồn web 1]... ngay sau các ý có thông tin từ nguồn tương ứng.\n"
+        "7. NỐI TIẾP HỘI THOẠI: Sử dụng lịch sử hội thoại để hiểu câu hỏi nối tiếp (ví dụ: 'các bước tiếp theo', 'chi tiết hơn', 'giải thích thêm').\n"
+        "8. GỢI Ý CÂU HỎI TIẾP THEO (CHUẨN NOTEBOOKLM):\n"
+        "   - Ở CUỐI CÙNG của câu trả lời, hãy LUÔN LUÔN tạo đúng 3 gợi ý câu hỏi tiếp theo sâu sắc, kích thích tìm hiểu hoặc thực hành dựa trên nội dung vừa trả lời.\n"
+        "   - Định dạng bắt buộc ở cuối câu trả lời:\n"
+        "---GỢI Ý TIẾP THEO---\n"
+        "- [Gợi ý câu hỏi hoặc bước đào sâu 1]\n"
+        "- [Gợi ý câu hỏi hoặc bước đào sâu 2]\n"
+        "- [Gợi ý câu hỏi hoặc bước đào sâu 3]\n"
     )
 
-    if has_web and not has_local:
+    if not has_local and not has_web:
+        user_prompt = (
+            f"Câu hỏi của người dùng: {query}\n\n"
+            "LƯU Ý ĐẶC BIỆT: Tài liệu trong kho tri thức của người dùng KHÔNG chứa thông tin về câu hỏi này.\n"
+            "1. Hãy thông báo rõ ràng cho người dùng biết điều đó (ví dụ: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về...').\n"
+            "2. Sau đó, giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác, đầy đủ của bạn.\n"
+            "3. TUYỆT ĐỐI KHÔNG gắn bất kỳ nhãn trích dẫn tài liệu nào như [1], [2], [Tài liệu 1].\n"
+            "4. Kết thúc câu trả lời bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+        )
+    elif has_web and not has_local:
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy tổng hợp các nguồn trên thành một bài hướng dẫn/câu trả lời hoàn chỉnh, chi tiết từng bước, có chiều sâu (tuyệt đối KHÔNG tóm tắt riêng rẽ từng nguồn), và gắn nhãn trích dẫn [1], [2] (hoặc [Web 1], [Web 2]) tương ứng:"
+            "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, chi tiết từng bước, có chiều sâu (tuyệt đối KHÔNG tóm tắt riêng rẽ từng nguồn), gắn nhãn trích dẫn [1], [2] tương ứng, và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     elif has_local and not has_web:
         user_prompt = (
             f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy kiểm tra độ phù hợp của tài liệu và trả lời theo các nguyên tắc trên, gắn nhãn trích dẫn nếu có trong tài liệu:"
+            "\nHãy kiểm tra độ phù hợp của tài liệu và trả lời đầy đủ, chi tiết từng bước (nếu là bài thực hành/lab), gắn nhãn trích dẫn [1], [2]..., và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     else:
         user_prompt = (
             f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ và gắn nhãn trích dẫn tương ứng [1], [2]...:"
+            "\nHãy trả lời trực tiếp, đầy đủ từng bước, gắn nhãn trích dẫn tương ứng [1], [2]..., và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     if image_base64:
         user_prompt += (
@@ -179,11 +207,13 @@ async def generate_rag_answer(
                 model_name = candidate
                 model_available = True
                 break
-    history_messages = [
-        {"role": turn["role"], "content": turn["content"][:3000]}
-        for turn in (history or [])[-8:]
-        if turn.get("role") in {"user", "assistant"} and turn.get("content")
-    ]
+    history_messages = []
+    for turn in (history or [])[-8:]:
+        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
+            content = turn["content"]
+            if "---GỢI Ý TIẾP THEO---" in content:
+                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+            history_messages.append({"role": turn["role"], "content": content[:2000]})
 
     # 1. Chitchat
     if is_conversational_query(query) and not image_base64:
@@ -269,7 +299,7 @@ async def generate_rag_answer(
                         "temperature": 0.60,
                         "top_p": 0.9,
                         "repeat_penalty": 1.1,
-                        "num_ctx": 8192,
+                        "num_ctx": 4096,
                     },
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
@@ -334,11 +364,13 @@ async def stream_rag_answer(
                 model_available = True
                 break
 
-    history_messages = [
-        {"role": turn["role"], "content": turn["content"][:3000]}
-        for turn in (history or [])[-8:]
-        if turn.get("role") in {"user", "assistant"} and turn.get("content")
-    ]
+    history_messages = []
+    for turn in (history or [])[-8:]:
+        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
+            content = turn["content"]
+            if "---GỢI Ý TIẾP THEO---" in content:
+                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+            history_messages.append({"role": turn["role"], "content": content[:2000]})
 
     # 1. Chitchat stream
     if is_conversational_query(query) and not image_base64:

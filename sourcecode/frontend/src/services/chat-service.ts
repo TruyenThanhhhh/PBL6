@@ -547,6 +547,7 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
       documentId: c.document_id ?? null,
       documentName: c.document_name ?? (c.document_id ? "Tài liệu" : "Nguồn Web"),
       pageNumber: c.page_number ?? null,
+      pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
       chunkIndex: c.chunk_index ?? null,
       snippet: c.snippet ?? "",
       sourceKind: (c.document_id ? "local" : "web") as "local" | "web",

@@ -46,17 +46,42 @@ import {
   sendChatMessageService,
 } from "@/services/chat-service"
 import {
-  generateStudyFlashcards,
-  generateStudyQuiz,
+  generateStudyFlashcardsAsync,
+  generateStudyQuizAsync,
   type StudySourceContext,
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
 import { formatDate, nowIso, uid } from "@/utils/format"
-import type { AIMode, ChatMessage, Conversation, Flashcard } from "@/types"
+import type { AIMode, ChatMessage, Conversation } from "@/types"
 import { cn } from "@/utils/cn"
 import { ModeSelector } from "./ModeSelector"
 import { CitationPanel } from "./CitationPanel"
 import { ChatComposer } from "./ChatComposer"
+
+function parseMessageSuggestions(rawContent: string): { mainContent: string; suggestions: string[] } {
+  if (!rawContent) return { mainContent: "", suggestions: [] }
+  const separator = "---GỢI Ý TIẾP THEO---"
+  const idx = rawContent.indexOf(separator)
+  if (idx === -1) {
+    // Ẩn marker đang stream dở ở cuối nếu có (ví dụ: "\n\n---GỢI...")
+    const streamTrim = rawContent.replace(/\n+---(?:G(?:Ợ(?:I(?: (?:\w*)?)?)?)?)?$/i, "")
+    return { mainContent: streamTrim, suggestions: [] }
+  }
+  const mainContent = rawContent.slice(0, idx).trimEnd()
+  const rawSuggestions = rawContent.slice(idx + separator.length).trim()
+  const suggestions = rawSuggestions
+    .split("\n")
+    .map((line) =>
+      line
+        // Xóa gạch đầu dòng, số thứ tự dạng 1., 1), [1], (1), v.v.
+        .replace(/^[-*•\s]*(?:\[?\d+[\]\).:]\s*)?/, "")
+        .trim()
+    )
+    .filter((line) => line.length > 3 && line.length < 150 && !line.startsWith("---"))
+    .slice(0, 3)
+
+  return { mainContent, suggestions }
+}
 
 export function ChatPage() {
   const { conversationId } = useParams()
@@ -510,8 +535,9 @@ export function ChatPage() {
 
   const handleCopyMessage = async (msg: ChatMessage) => {
     if (!msg.content) return
+    const { mainContent } = parseMessageSuggestions(msg.content)
     try {
-      await navigator.clipboard.writeText(msg.content)
+      await navigator.clipboard.writeText(mainContent || msg.content)
       setCopiedMsgId(msg.id)
       window.setTimeout(() => setCopiedMsgId(null), 1800)
       toast({ title: "Đã sao chép câu trả lời", tone: "success" })
@@ -528,10 +554,12 @@ export function ChatPage() {
     })
   }
 
-  const handleCreateStudyFromMessage = (
+  const handleCreateStudyFromMessage = async (
     msg: ChatMessage,
     kind: "summary" | "quiz" | "flashcards",
   ) => {
+    const { mainContent } = parseMessageSuggestions(msg.content)
+    const effectiveContent = mainContent || msg.content
     const promptTitle = findPrecedingUserPrompt(msg.id) || conversation?.title || "Nội dung AI"
     const citedDocId = msg.citations[0]?.documentId ?? workspaceDocuments[0]?.id ?? null
     const citedDoc = workspaceDocuments.find((d) => d.id === citedDocId) ?? null
@@ -549,7 +577,7 @@ export function ChatPage() {
         notebookId: selectedNotebookId,
         documentId: citedDocId,
         title: `Tóm tắt: ${promptTitle.slice(0, 48)}`,
-        content: msg.content,
+        content: effectiveContent,
         updatedAt: nowIso(),
       })
       toast({
@@ -561,46 +589,49 @@ export function ChatPage() {
     }
 
     if (kind === "quiz") {
-      const quiz = generateStudyQuiz(ctx, "medium", 5)
-      upsertQuiz({
-        ...quiz,
-        title: `Quiz: ${promptTitle.slice(0, 40)}`,
-      })
       toast({
-        title: "Đã tạo bộ câu hỏi Quiz",
-        tone: "success",
+        title: "AI đang soạn bộ câu hỏi Quiz...",
+        tone: "info",
       })
-      navigate("/study?tab=quiz")
+      try {
+        const quiz = await generateStudyQuizAsync(ctx, "medium", 5)
+        upsertQuiz({
+          ...quiz,
+          title: `Quiz: ${promptTitle.slice(0, 40)}`,
+        })
+        toast({
+          title: "Đã tạo bộ câu hỏi Quiz AI thành công",
+          tone: "success",
+        })
+        navigate("/study?tab=quiz")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo Quiz lúc này",
+          tone: "error",
+        })
+      }
       return
     }
 
     if (kind === "flashcards") {
-      const lines = msg.content
-        .split(/\n+/)
-        .map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim())
-        .filter((l) => l.length > 24)
-
-      let cards: Flashcard[]
-      if (lines.length >= 2) {
-        cards = lines.slice(0, 4).map((line, i) => ({
-          id: uid("fc"),
-          workspaceId: currentWsId,
-          documentId: citedDocId,
-          front: `${promptTitle.slice(0, 52)} — Ý #${i + 1}`,
-          back: line,
-          status: "new",
-          isMock: true,
-        }))
-      } else {
-        cards = generateStudyFlashcards(ctx)
-      }
-
-      addFlashcards(cards)
       toast({
-        title: `Đã tạo ${cards.length} Flashcards`,
-        tone: "success",
+        title: "AI đang tạo bộ Flashcards...",
+        tone: "info",
       })
-      navigate("/study?tab=flashcards")
+      try {
+        const cards = await generateStudyFlashcardsAsync(ctx, 6)
+        addFlashcards(cards)
+        toast({
+          title: `Đã tạo ${cards.length} Flashcards AI thành công`,
+          tone: "success",
+        })
+        navigate("/study?tab=flashcards")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo Flashcards lúc này",
+          tone: "error",
+        })
+      }
     }
   }
 
@@ -757,6 +788,9 @@ export function ChatPage() {
               <div className="space-y-6 pb-4">
                 {conversation.messages.map((m) => {
                   const isUser = m.role === "user"
+                  const { mainContent, suggestions } = isUser
+                    ? { mainContent: m.content, suggestions: [] }
+                    : parseMessageSuggestions(m.content)
                   const attachedDocsForMsg = documents.filter((d) =>
                     m.attachedDocumentIds?.includes(d.id),
                   )
@@ -840,9 +874,33 @@ export function ChatPage() {
                         </div>
                       ) : (
                         <div className="text-[#172B29]">
-                          <CitationMarkdown content={m.content} />
+                          <CitationMarkdown content={mainContent} />
                         </div>
                       )}
+
+                      {/* Gợi ý câu hỏi tiếp theo chuẩn NotebookLM */}
+                      {!isUser && suggestions.length > 0 && !m.streaming ? (
+                        <div className="mt-3.5 space-y-2 border-t border-[#DCE7E4]/70 pt-3">
+                          <div className="flex items-center gap-1.5 text-xs font-medium text-[#087F73]">
+                            <Sparkles className="h-3.5 w-3.5" />
+                            <span>Gợi ý tìm hiểu tiếp:</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {suggestions.map((sug, sIdx) => (
+                              <button
+                                key={sIdx}
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void sendQuery(sug)}
+                                className="group inline-flex items-center gap-1.5 rounded-full border border-[#DCE7E4] bg-white px-3 py-1.5 text-left text-xs text-[#172B29] shadow-xs transition hover:border-[#087F73] hover:bg-[#F1F6F5] hover:text-[#087F73] disabled:opacity-50"
+                              >
+                                <span>{sug}</span>
+                                <ArrowUpRight className="h-3 w-3 text-[#647C79] transition group-hover:text-[#087F73]" />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
 
                       {/* Thanh công cụ dưới mỗi câu trả lời AI */}
                       {!isUser && !m.streaming && !m.error ? (
@@ -868,8 +926,8 @@ export function ChatPage() {
                                 >
                                   <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
                                   <span className="max-w-[140px] truncate">{c.documentName}</span>
-                                  {c.pageNumber != null ? (
-                                    <span className="text-[10px] text-[#647C79]">· Tr.{c.pageNumber}</span>
+                                  {c.pageLabel || c.pageNumber != null ? (
+                                    <span className="text-[10px] text-[#647C79]">· {c.pageLabel || `Tr.${c.pageNumber}`}</span>
                                   ) : null}
                                 </button>
                               ))}

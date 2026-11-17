@@ -173,6 +173,21 @@ def process_and_index_document(
     file_size = len(file_bytes)
     content_hash = hashlib.sha256(file_bytes).hexdigest()
 
+    # Khử trùng lặp: Nếu tài liệu đã được tải lên trong không gian này, tái sử dụng để tránh nhân bản dữ liệu
+    conn_dedup = get_db_connection()
+    try:
+        cur_dedup = conn_dedup.cursor()
+        existing = cur_dedup.execute(
+            "SELECT id, file_name, file_type, file_size, total_pages, total_chunks, status "
+            "FROM documents WHERE workspace_id = ? AND content_hash = ?",
+            (workspace_id, content_hash),
+        ).fetchone()
+        if existing:
+            saved_path.unlink(missing_ok=True)
+            return dict(existing)
+    finally:
+        conn_dedup.close()
+
     # 1. Trích xuất text sạch
     try:
         pages = extract_text_from_file(saved_path, ext)
