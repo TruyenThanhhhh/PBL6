@@ -542,17 +542,34 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
   // Luôn thử gọi backend thật trước
   try {
     const { result } = await tryStreamOrQueryBackend(req)
-    const citations: Citation[] = (result.citations ?? []).map((c, i) => ({
-      refId: c.ref_id ?? i + 1,
-      documentId: c.document_id ?? null,
-      documentName: c.document_name ?? (c.document_id ? "Tài liệu" : "Nguồn Web"),
-      pageNumber: c.page_number ?? null,
-      pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
-      chunkIndex: c.chunk_index ?? null,
-      snippet: c.snippet ?? "",
-      sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
-      url: (c as any).url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined),
-    }))
+    const citations: Citation[] = (result.citations ?? []).map((c, i) => {
+      const rawName = c.document_name ?? (c as any).title
+      let docName = rawName
+      const url = (c as any).url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined)
+      if (!docName || docName.toLowerCase() === "nguồn web" || docName.toLowerCase() === "web") {
+        if (url) {
+          try {
+            docName = new URL(url).hostname.replace(/^www\./, "")
+          } catch {
+            docName = "Nguồn Web"
+          }
+        } else {
+          docName = c.document_id ? "Tài liệu" : "Nguồn Web"
+        }
+      }
+
+      return {
+        refId: c.ref_id ?? i + 1,
+        documentId: c.document_id ?? null,
+        documentName: docName,
+        pageNumber: c.page_number ?? null,
+        pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
+        chunkIndex: c.chunk_index ?? null,
+        snippet: c.snippet ?? "",
+        sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
+        url,
+      }
+    })
 
     return {
       message: {

@@ -27,9 +27,22 @@ export function resolveCitationEvidence(
   const stableId = citation.sourceId ?? citation.documentId ?? citation.url ?? `ref-${citation.refId}`
 
   if (citation.sourceKind === "web" || (!citation.documentId && citation.url)) {
+    let cleanTitle = citation.documentName
+    if (!cleanTitle || cleanTitle === "Nguồn Web" || cleanTitle === "Web") {
+      if (citation.url) {
+        try {
+          cleanTitle = new URL(citation.url).hostname.replace(/^www\./, "")
+        } catch {
+          cleanTitle = "Nguồn Web"
+        }
+      } else {
+        cleanTitle = "Nguồn Web"
+      }
+    }
+
     const source: SourceDescriptor = {
       id: stableId,
-      title: citation.documentName || citation.url || "Nguồn Web",
+      title: cleanTitle,
       kind: "web",
       url: citation.url,
       exists: Boolean(citation.url || citation.snippet),
