@@ -169,23 +169,48 @@ export interface ResearchProject {
   updatedAt: string
 }
 
+export interface QuizCitation {
+  documentId: string | null
+  documentName: string
+  pageNumber: number | null
+  chunkIndex?: number | null
+  snippet?: string
+}
+
 export interface QuizQuestion {
   id: string
   prompt: string
   options: string[]
   answerIndex: number
   explanation: string
+  citation?: QuizCitation | null
+}
+
+export interface QuizAttempt {
+  id: string
+  submittedAt: string
+  score: number
+  total: number
+  percentage: number
+  durationSeconds?: number
+  answers: Record<string, number>
+  wrongQuestionIds: string[]
 }
 
 export interface Quiz {
   id: string
   workspaceId: string
   documentId: string | null
+  documentName?: string | null
+  focusPrompt?: string
   title: string
   difficulty: "easy" | "medium" | "hard"
   questions: QuizQuestion[]
   answers: Record<string, number>
   submitted: boolean
+  timeLimitMinutes?: number | null
+  createdAt?: string
+  attempts?: QuizAttempt[]
   isMock?: boolean
 }
 

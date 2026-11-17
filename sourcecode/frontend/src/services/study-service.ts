@@ -8,7 +8,7 @@ import type {
   StudyTask,
 } from "@/types"
 import { useAppStore } from "@/store/app-store"
-import { uid } from "@/utils/format"
+import { nowIso, uid } from "@/utils/format"
 import {
   fetchAiFlashcardsApi,
   fetchAiMindmapApi,
@@ -84,40 +84,64 @@ export async function generateStudyQuizAsync(
   difficulty: "easy" | "medium" | "hard",
   questionCount: number,
   focusPrompt?: string,
+  signal?: AbortSignal,
 ): Promise<Quiz> {
-  const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Kho tri thức"
+  const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Toàn bộ workspace"
+  const cleanFocus = focusPrompt?.trim() || undefined
   try {
-    const res = await fetchAiQuizApi({
-      workspace_id: ctx.workspaceId,
-      document_id: ctx.document?.id ?? null,
-      document_ids: !ctx.document && ctx.documentsInScope.length > 0
-        ? ctx.documentsInScope.map((d) => d.id)
-        : null,
-      difficulty,
-      question_count: questionCount,
-      focus_prompt: focusPrompt?.trim() || undefined,
-      model: getPreferredLlmModel(),
-    })
+    const res = await fetchAiQuizApi(
+      {
+        workspace_id: ctx.workspaceId,
+        document_id: ctx.document?.id ?? null,
+        document_ids: !ctx.document && ctx.documentsInScope.length > 0
+          ? ctx.documentsInScope.map((d) => d.id)
+          : null,
+        difficulty,
+        question_count: questionCount,
+        focus_prompt: cleanFocus,
+        model: getPreferredLlmModel(),
+      },
+      signal,
+    )
     if (res.questions && res.questions.length > 0) {
       return {
         id: uid("quiz"),
         workspaceId: ctx.workspaceId,
         documentId: ctx.document?.id ?? null,
-        title: res.title || `Quiz AI · ${sourceLabel}`,
+        documentName: ctx.document?.fileName ?? null,
+        focusPrompt: cleanFocus,
+        title: res.title || `Quiz · ${cleanFocus || sourceLabel}`,
         difficulty: res.difficulty || difficulty,
         questions: res.questions.map((q, idx) => ({
-          ...q,
           id: q.id || uid(`qq-${idx}`),
+          prompt: q.prompt,
+          options: q.options,
+          answerIndex: q.answerIndex,
+          explanation: q.explanation,
+          citation: q.citation
+            ? {
+                documentId: q.citation.documentId ?? ctx.document?.id ?? null,
+                documentName: q.citation.documentName || sourceLabel,
+                pageNumber: q.citation.pageNumber ?? 1,
+                chunkIndex: q.citation.chunkIndex ?? null,
+                snippet: q.citation.snippet,
+              }
+            : null,
         })),
         answers: {},
         submitted: false,
+        createdAt: nowIso(),
+        attempts: [],
         isMock: res.is_mock ?? false,
       }
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err
+    }
     console.warn("AI quiz fallback:", err)
   }
-  return generateStudyQuiz(ctx, difficulty, questionCount)
+  return generateStudyQuiz(ctx, difficulty, questionCount, cleanFocus)
 }
 
 /**
@@ -322,9 +346,14 @@ export function generateStudyQuiz(
   ctx: StudySourceContext,
   difficulty: "easy" | "medium" | "hard",
   questionCount: number,
+  focusPrompt?: string,
 ): Quiz {
   const sourceLabel =
     ctx.document?.fileName ?? ctx.notebook?.name ?? "Kho tri thức"
+  const refDoc = ctx.document ?? ctx.documentsInScope[0] ?? null
+  const refSnippet = refDoc?.extractedText
+    ? refDoc.extractedText.trim().slice(0, 220)
+    : undefined
 
   const questionBank: Omit<QuizQuestion, "id">[] = [
     {
@@ -393,17 +422,30 @@ export function generateStudyQuiz(
   const questions: QuizQuestion[] = questionBank.slice(0, count).map((q) => ({
     ...q,
     id: uid("qq"),
+    citation: refDoc
+      ? {
+          documentId: refDoc.id,
+          documentName: refDoc.fileName,
+          pageNumber: 1,
+          chunkIndex: 0,
+          snippet: refSnippet,
+        }
+      : null,
   }))
 
   return {
     id: uid("quiz"),
     workspaceId: ctx.workspaceId,
     documentId: ctx.document?.id ?? null,
-    title: `Quiz · ${sourceLabel}`,
+    documentName: ctx.document?.fileName ?? null,
+    focusPrompt: focusPrompt?.trim() || undefined,
+    title: `Quiz · ${focusPrompt?.trim() || sourceLabel}`,
     difficulty,
     questions,
     answers: {},
     submitted: false,
+    createdAt: nowIso(),
+    attempts: [],
     isMock: true,
   }
 }

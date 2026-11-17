@@ -40,7 +40,7 @@ class StudyQuizRequest(BaseModel):
     document_id: Optional[str] = None
     document_ids: Optional[List[str]] = None
     difficulty: str = Field(default="medium", pattern="^(easy|medium|hard)$")
-    question_count: int = Field(default=5, ge=1, le=10)
+    question_count: int = Field(default=5, ge=1, le=20)
     focus_prompt: Optional[str] = None
     model: Optional[str] = None
 

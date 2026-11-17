@@ -50,8 +50,9 @@ class StudyServiceTestCase(unittest.TestCase):
         with patch("app.services.workspace_ai_service.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
             with patch("app.services.document_service.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
                 up = self.client.post(
-                    f"/api/v1/workspaces/{self.workspace_id}/documents/upload?defer_metadata=true",
+                    f"/api/v1/workspaces/{self.workspace_id}/documents/upload",
                     files={"file": ("sample.txt", b"Cau truc de thi JLPT N3 gom Tu vung, Ngu phap, Doc hieu va Nghe hieu.", "text/plain")},
+                    data={"defer_metadata": "true"},
                     headers=self.headers,
                 )
         self.assertEqual(up.status_code, 200, up.text)
@@ -170,18 +171,21 @@ class StudyServiceTestCase(unittest.TestCase):
 
         fake_resp.json.return_value = {
             "message": {
-                "content": '{"questions":[{"prompt":"JLPT N3 có gì?","options":["Từ vựng","Ngữ pháp","Đọc hiểu","Nghe hiểu"],"answerIndex":0,"explanation":"Theo tài liệu."}]}'
+                "content": '{"questions":[{"prompt":"JLPT N3 có gì?","options":["Từ vựng","Ngữ pháp","Đọc hiểu","Nghe hiểu"],"answerIndex":0,"explanation":"Theo tài liệu.","sourceIndex":1}]}'
             }
         }
         quiz_resp = self.client.post(
             "/api/v1/study/quiz",
-            json={"workspace_id": self.workspace_id, "question_count": 1},
+            json={"workspace_id": self.workspace_id, "question_count": 20, "focus_prompt": "JLPT N3"},
             headers=self.headers,
         )
         self.assertEqual(quiz_resp.status_code, 200, quiz_resp.text)
         quiz_body = quiz_resp.json()
         self.assertFalse(quiz_body["is_mock"])
         self.assertEqual(len(quiz_body["questions"]), 1)
+        self.assertEqual(quiz_body["questions"][0]["citation"]["documentName"], "sample.txt")
+        self.assertEqual(quiz_body["questions"][0]["citation"]["pageNumber"], 1)
+        self.assertTrue(quiz_body["questions"][0]["citation"]["documentId"])
         self.assertEqual(fake_client.post.call_args.kwargs["json"]["model"], "qwen2.5:3b")
 
     def test_run_until_disconnect_cancels_task_when_client_aborts(self):

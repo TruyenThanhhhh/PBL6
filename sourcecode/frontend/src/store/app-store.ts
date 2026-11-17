@@ -162,6 +162,8 @@ interface AppState {
   deleteResearch: (id: string) => void
 
   upsertQuiz: (quiz: Quiz) => void
+  deleteQuiz: (id: string) => void
+  replaceWorkspaceQuizzes: (workspaceId: string, rows: Quiz[]) => void
   setFlashStatus: (id: string, status: Flashcard["status"]) => void
   addFlashcards: (cards: Flashcard[]) => void
   deleteFlashcard: (id: string) => void
@@ -461,6 +463,12 @@ export const useAppStore = create<AppState>()(
           quizzes: get().quizzes.some((q) => q.id === quiz.id)
             ? get().quizzes.map((q) => (q.id === quiz.id ? quiz : q))
             : [quiz, ...get().quizzes],
+        }),
+      deleteQuiz: (id) =>
+        set({ quizzes: get().quizzes.filter((q) => q.id !== id) }),
+      replaceWorkspaceQuizzes: (workspaceId, rows) =>
+        set({
+          quizzes: [...rows, ...get().quizzes.filter((q) => q.workspaceId !== workspaceId)],
         }),
       setFlashStatus: (id, status) =>
         set({

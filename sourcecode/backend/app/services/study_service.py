@@ -36,49 +36,94 @@ def _resolve_document_ids(
     return [row["document_id"] for row in rows]
 
 
-def _get_document_context(
+def _get_document_context_items(
     workspace_id: str,
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
     max_chunks: int = 12,
     max_chars: int = 6000,
     focus_prompt: Optional[str] = None,
-) -> str:
+    numbered_sources: bool = False,
+) -> tuple[str, List[Dict[str, Any]]]:
     """
-    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database:
-    1. Nếu có focus_prompt: Sử dụng Hybrid Search (BM25 + Semantic) để truy xuất các đoạn khớp chủ đề nhất.
-    2. Nếu không có focus_prompt: Sử dụng thuật toán Spanning Sampling lấy mẫu trải đều từ đầu đến cuối
-       tài liệu (thay vì chỉ lấy vài trang đầu), giúp AI bao quát toàn bộ các chương/mục học tập.
+    Trích xuất ngữ cảnh tài liệu kèm metadata nguồn (document_id, page_number, chunk_index, snippet)
+    để phục vụ sinh nội dung học tập và đối chiếu Citation.
     """
-    # 1. Nếu có yêu cầu trọng tâm, sử dụng hệ thống truy xuất thông minh
+    source_refs: List[Dict[str, Any]] = []
+    parts: List[str] = []
+    total_len = 0
+
+    def _append_chunk(
+        c_text: str,
+        doc_id: Optional[str],
+        doc_name: str,
+        page_num: int,
+        chunk_idx: Optional[int],
+    ) -> bool:
+        nonlocal total_len
+        clean_text = (c_text or "").strip()
+        if not clean_text:
+            return True
+        ref_idx = len(source_refs) + 1
+        prefix = (
+            f"[Nguồn {ref_idx} · {doc_name} - Trang {page_num}]"
+            if numbered_sources
+            else f"[{doc_name} - Trang {page_num}]"
+        )
+        part = f"{prefix}:\n{clean_text}"
+        remaining = max_chars - total_len
+        if remaining <= 0:
+            return False
+        if len(part) > remaining:
+            part = part[:remaining]
+            total_len = max_chars
+        else:
+            total_len += len(part)
+
+        parts.append(part)
+        source_refs.append(
+            {
+                "ref_index": ref_idx,
+                "documentId": doc_id,
+                "documentName": doc_name,
+                "pageNumber": page_num,
+                "chunkIndex": chunk_idx,
+                "snippet": clean_text[:280].strip(),
+                "_search_text": clean_text.lower(),
+            }
+        )
+        return total_len < max_chars
+
+    # 1. Nếu có yêu cầu trọng tâm, sử dụng Hybrid Search
     if focus_prompt and focus_prompt.strip():
         try:
             from app.services.retrieval_service import search_relevant_chunks
+
             relevant = search_relevant_chunks(
                 workspace_id=workspace_id,
                 query=focus_prompt.strip(),
                 top_k=max_chunks,
-                selected_document_id=document_id,
+                document_id=document_id,
                 document_ids=document_ids,
             )
             if relevant:
-                parts: List[str] = []
-                t_len = 0
                 for r in relevant:
-                    c_text = (r.get("content") or "").strip()
-                    if not c_text:
-                        continue
-                    p_num = r.get("page_number") or 1
-                    doc_n = r.get("document_name") or "Tài liệu"
-                    part = f"[{doc_n} - Trang {p_num}]:\n{c_text}"
-                    if t_len + len(part) > max_chars:
+                    ok = _append_chunk(
+                        str(r.get("content") or ""),
+                        r.get("document_id"),
+                        str(r.get("document_name") or "Tài liệu"),
+                        int(r.get("page_number") or 1),
+                        r.get("chunk_index"),
+                    )
+                    if not ok:
                         break
-                    parts.append(part)
-                    t_len += len(part)
                 if parts:
-                    return "\n\n".join(parts)
+                    return "\n\n".join(parts), source_refs
         except Exception as exc:
             logger.warning("Truy xuất theo trọng tâm thất bại, chuyển về spanning sampling: %s", exc)
+            source_refs.clear()
+            parts.clear()
+            total_len = 0
 
     # 2. Spanning Sampling: Lấy mẫu trải đều qua toàn bộ tài liệu
     conn = get_db_connection()
@@ -86,11 +131,9 @@ def _get_document_context(
         cursor = conn.cursor()
         resolved_ids = _resolve_document_ids(cursor, workspace_id, document_id, document_ids)
         if not resolved_ids:
-            return ""
+            return "", []
 
         per_doc = max(1, max_chunks // len(resolved_ids))
-        context_parts: List[str] = []
-        total_len = 0
 
         for doc_id in resolved_ids:
             if total_len >= max_chars:
@@ -101,14 +144,13 @@ def _get_document_context(
                 (workspace_id, doc_id),
             ).fetchone()
             total_doc_chunks = total_row[0] if total_row else 0
-
             if total_doc_chunks == 0:
                 continue
 
             if total_doc_chunks <= per_doc:
                 rows = cursor.execute(
                     """
-                    SELECT c.content, d.file_name, c.page_number
+                    SELECT c.content, c.document_id, d.file_name, c.page_number, c.chunk_index
                     FROM document_chunks c
                     JOIN documents d ON d.id = c.document_id
                     WHERE c.workspace_id = ? AND c.document_id = ?
@@ -122,7 +164,7 @@ def _get_document_context(
                 placeholders = ",".join("?" for _ in sampled_indices)
                 rows = cursor.execute(
                     f"""
-                    SELECT c.content, d.file_name, c.page_number
+                    SELECT c.content, c.document_id, d.file_name, c.page_number, c.chunk_index
                     FROM document_chunks c
                     JOIN documents d ON d.id = c.document_id
                     WHERE c.workspace_id = ? AND c.document_id = ? AND c.chunk_index IN ({placeholders})
@@ -132,24 +174,42 @@ def _get_document_context(
                 ).fetchall()
 
             for row in rows:
-                content = (row["content"] or "").strip()
-                if not content:
-                    continue
-                page = row["page_number"] or 1
-                part = f"[{row['file_name']} - Trang {page}]:\n{content}"
-                remaining = max_chars - total_len
-                if remaining <= 0:
+                ok = _append_chunk(
+                    str(row["content"] or ""),
+                    row["document_id"],
+                    str(row["file_name"] or "Tài liệu"),
+                    int(row["page_number"] or 1),
+                    row["chunk_index"],
+                )
+                if not ok:
                     break
-                if len(part) > remaining:
-                    context_parts.append(part[:remaining])
-                    total_len = max_chars
-                    break
-                context_parts.append(part)
-                total_len += len(part)
 
-        return "\n\n".join(context_parts)
+        return "\n\n".join(parts), source_refs
     finally:
         conn.close()
+
+
+def _get_document_context(
+    workspace_id: str,
+    document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+    max_chunks: int = 12,
+    max_chars: int = 6000,
+    focus_prompt: Optional[str] = None,
+) -> str:
+    """
+    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database.
+    """
+    text, _ = _get_document_context_items(
+        workspace_id=workspace_id,
+        document_id=document_id,
+        document_ids=document_ids,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+        focus_prompt=focus_prompt,
+        numbered_sources=False,
+    )
+    return text
 
 
 def _parse_json_response(raw: str) -> Any:
@@ -226,6 +286,7 @@ async def _call_ollama_chat(
     model: str = DEFAULT_LLM_MODEL,
     json_mode: bool = False,
     timeout_sec: float = OLLAMA_TIMEOUT,
+    num_predict: int = 1200,
 ) -> str:
     payload: Dict[str, Any] = {
         "model": model,
@@ -238,7 +299,7 @@ async def _call_ollama_chat(
         "options": {
             "temperature": 0.4 if json_mode else 0.7,
             "top_p": 0.9,
-            "num_predict": 1200,
+            "num_predict": num_predict,
             "num_ctx": 4096,
         },
     }
@@ -330,6 +391,47 @@ async def generate_ai_summary(
         }
 
 
+def _resolve_question_citation(
+    raw_q: Dict[str, Any],
+    source_refs: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Ánh xạ câu hỏi Quiz về đoạn nguồn tài liệu gốc để người học kiểm chứng."""
+    if not source_refs:
+        return None
+
+    chosen: Optional[Dict[str, Any]] = None
+    src_idx = raw_q.get("sourceIndex") or raw_q.get("source_index")
+    if src_idx is not None:
+        try:
+            idx_num = int(src_idx)
+            if 1 <= idx_num <= len(source_refs):
+                chosen = source_refs[idx_num - 1]
+        except (TypeError, ValueError):
+            chosen = None
+
+    if chosen is None:
+        q_text = f"{raw_q.get('prompt', '')} {raw_q.get('explanation', '')}".lower()
+        q_terms = {t for t in re.findall(r"[\w]{3,}", q_text, flags=re.UNICODE)}
+        best_score = -1
+        for ref in source_refs:
+            haystack = ref.get("_search_text") or ""
+            score = sum(1 for term in q_terms if term in haystack)
+            if score > best_score:
+                best_score = score
+                chosen = ref
+
+    if chosen is None:
+        chosen = source_refs[0]
+
+    return {
+        "documentId": chosen.get("documentId"),
+        "documentName": chosen.get("documentName") or "Tài liệu",
+        "pageNumber": chosen.get("pageNumber") or 1,
+        "chunkIndex": chosen.get("chunkIndex"),
+        "snippet": chosen.get("snippet") or "",
+    }
+
+
 async def generate_ai_quiz(
     workspace_id: str,
     document_id: Optional[str] = None,
@@ -340,9 +442,20 @@ async def generate_ai_quiz(
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
-    Sinh danh sách câu hỏi trắc nghiệm kiểm tra kiến thức dựa trên nội dung tài liệu.
+    Sinh danh sách câu hỏi trắc nghiệm kiểm tra kiến thức dựa trên nội dung tài liệu kèm citation.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000, focus_prompt=focus_prompt)
+    count = min(max(question_count, 1), 20)
+    max_chunks = min(22, max(14, count + 2))
+    max_chars = 9500 if count > 10 else 7500
+    context, source_refs = _get_document_context_items(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+        focus_prompt=focus_prompt,
+        numbered_sources=True,
+    )
     if not context:
         return {
             "title": "Quiz trắc nghiệm",
@@ -360,11 +473,10 @@ async def generate_ai_quiz(
             "is_mock": True,
         }
 
-    count = min(max(question_count, 1), 10)
     system_prompt = (
         "Bạn là Chuyên gia Khảo thí và Thiết kế đề thi giáo dục. "
-        "Nhiệm vụ của bạn là đọc kỹ tài liệu nguồn và soạn một bộ câu hỏi trắc nghiệm (Multiple Choice Questions) "
-        "bằng tiếng Việt.\n\n"
+        "Nhiệm vụ của bạn là đọc kỹ các đoạn nguồn [Nguồn 1], [Nguồn 2]... và soạn một bộ câu hỏi trắc nghiệm "
+        "(Multiple Choice Questions) bằng tiếng Việt.\n\n"
         "BẠN PHẢI TRẢ VỀ DUY NHẤT MỘT JSON OBJECT CÓ DẠNG:\n"
         "{\n"
         '  "questions": [\n'
@@ -372,20 +484,30 @@ async def generate_ai_quiz(
         '      "prompt": "Nội dung câu hỏi trắc nghiệm?",\n'
         '      "options": ["Lựa chọn A", "Lựa chọn B", "Lựa chọn C", "Lựa chọn D"],\n'
         '      "answerIndex": 0,\n'
-        '      "explanation": "Giải thích chi tiết vì sao đáp án này đúng dựa trên tài liệu"\n'
+        '      "explanation": "Giải thích chi tiết vì sao đáp án này đúng dựa trên tài liệu",\n'
+        '      "sourceIndex": 1\n'
         "    }\n"
         "  ]\n"
         "}\n"
-        f"LƯU Ý: answerIndex là số nguyên từ 0 đến 3. Hãy tạo đúng {count} câu hỏi."
+        f"LƯU Ý: answerIndex là số nguyên từ 0 đến 3, sourceIndex là số thứ tự của [Nguồn N] chứa thông tin câu hỏi. "
+        f"Hãy tạo đúng {count} câu hỏi."
     )
 
+    clean_focus = (focus_prompt or "").strip()
     user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
-    if focus_prompt and focus_prompt.strip():
-        user_prompt += f"TRỌNG TÂM KIẾN THỨC CẦN HỎI: {focus_prompt.strip()}\n\n"
+    if clean_focus:
+        user_prompt += f"TRỌNG TÂM KIẾN THỨC CẦN HỎI: {clean_focus}\n\n"
     user_prompt += f"Hãy tạo đúng {count} câu hỏi trắc nghiệm độ khó {difficulty} dưới dạng JSON object có key 'questions':"
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
+        predict_tokens = min(3200, max(1200, count * 220))
+        raw_res = await _call_ollama_chat(
+            system_prompt,
+            user_prompt,
+            model=chosen_model,
+            json_mode=True,
+            num_predict=predict_tokens,
+        )
         data = _parse_json_response(raw_res)
 
         questions = []
@@ -406,16 +528,22 @@ async def generate_ai_quiz(
                     ans_idx = int(q.get("answerIndex", 0))
                     if ans_idx < 0 or ans_idx >= len(options):
                         ans_idx = 0
-                    valid_questions.append({
+                    item_q: Dict[str, Any] = {
                         "id": f"ai-q-{i+1}",
                         "prompt": str(q["prompt"]),
                         "options": options,
                         "answerIndex": ans_idx,
                         "explanation": str(q.get("explanation", "Theo nội dung bài học trong tài liệu.")),
-                    })
+                    }
+                    citation = _resolve_question_citation(q, source_refs)
+                    if citation:
+                        item_q["citation"] = citation
+                    valid_questions.append(item_q)
 
+        primary_doc_name = source_refs[0]["documentName"] if source_refs else "Tài liệu học tập"
+        title_topic = clean_focus[:48] if clean_focus else primary_doc_name[:48]
         return {
-            "title": f"Quiz AI ({difficulty}) · {len(valid_questions)} câu",
+            "title": f"Quiz · {title_topic}",
             "questions": valid_questions,
             "difficulty": difficulty,
             "is_mock": False,
