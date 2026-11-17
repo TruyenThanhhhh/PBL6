@@ -60,6 +60,7 @@ export async function generateStudyQuizAsync(
   ctx: StudySourceContext,
   difficulty: "easy" | "medium" | "hard",
   questionCount: number,
+  focusPrompt?: string,
 ): Promise<Quiz> {
   const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Kho tri thức"
   try {
@@ -71,6 +72,7 @@ export async function generateStudyQuizAsync(
         : null,
       difficulty,
       question_count: questionCount,
+      focus_prompt: focusPrompt?.trim() || undefined,
     })
     if (res.questions && res.questions.length > 0) {
       return {
@@ -100,6 +102,7 @@ export async function generateStudyQuizAsync(
 export async function generateStudyFlashcardsAsync(
   ctx: StudySourceContext,
   count = 6,
+  focusPrompt?: string,
 ): Promise<Flashcard[]> {
   try {
     const res = await fetchAiFlashcardsApi({
@@ -109,6 +112,7 @@ export async function generateStudyFlashcardsAsync(
         ? ctx.documentsInScope.map((d) => d.id)
         : null,
       count,
+      focus_prompt: focusPrompt?.trim() || undefined,
     })
     if (res.flashcards && res.flashcards.length > 0) {
       return res.flashcards.map((c) => ({
@@ -197,6 +201,7 @@ export async function generateStudyPlanAsync(
   ctx: StudySourceContext,
   startDate: string,
   daySpan = 7,
+  focusPrompt?: string,
 ): Promise<{ tasks: StudyTask[]; isMock: boolean }> {
   try {
     const res = await fetchAiPlanApi({
@@ -207,6 +212,7 @@ export async function generateStudyPlanAsync(
         : null,
       start_date: startDate,
       day_span: daySpan,
+      focus_prompt: focusPrompt?.trim() || undefined,
     })
     if (res.tasks && res.tasks.length > 0) {
       return {

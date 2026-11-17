@@ -438,6 +438,7 @@ export interface StudyQuizPayload {
   document_ids?: string[] | null
   difficulty?: "easy" | "medium" | "hard"
   question_count?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -468,6 +469,7 @@ export interface StudyFlashcardsPayload {
   document_id?: string | null
   document_ids?: string[] | null
   count?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -550,6 +552,7 @@ export interface StudyPlanPayload {
   document_ids?: string[] | null
   start_date?: string
   day_span?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -570,5 +573,39 @@ export async function fetchAiPlanApi(payload: StudyPlanPayload): Promise<StudyPl
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyArtifactRecord {
+  id: string
+  workspace_id: string
+  document_id?: string | null
+  artifact_type: string
+  title: string
+  data: any
+  created_at?: string
+}
+
+export async function fetchStudyArtifactsApi(workspaceId: string): Promise<{ artifacts: StudyArtifactRecord[] }> {
+  return request<{ artifacts: StudyArtifactRecord[] }>(`/api/v1/workspaces/${workspaceId}/study-artifacts`)
+}
+
+export async function saveStudyArtifactApi(
+  workspaceId: string,
+  payload: { document_id?: string | null; artifact_type: string; title: string; data: any }
+): Promise<{ artifact: StudyArtifactRecord }> {
+  return request<{ artifact: StudyArtifactRecord }>(`/api/v1/workspaces/${workspaceId}/study-artifacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteStudyArtifactApi(
+  workspaceId: string,
+  artifactId: string
+): Promise<{ message: string; id: string }> {
+  return request<{ message: string; id: string }>(`/api/v1/workspaces/${workspaceId}/study-artifacts/${artifactId}`, {
+    method: "DELETE",
   })
 }

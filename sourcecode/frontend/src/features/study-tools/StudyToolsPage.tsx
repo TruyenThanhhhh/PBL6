@@ -128,6 +128,18 @@ function MindmapTreeItem({
   )
 }
 
+function downloadMarkdownFile(title: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${title.replace(/[^a-zA-Z0-9\u00C0-\u1EF9_-]/g, "_") || "study_document"}.md`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 export function StudyToolsPage() {
   const [params, setParams] = useSearchParams()
   const rawTab = params.get("tab") as StudyToolId | null
@@ -207,6 +219,7 @@ export function StudyToolsPage() {
   // 3. Quiz State
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium")
   const [questionCount, setQuestionCount] = useState<number>(3)
+  const [quizFocusPrompt, setQuizFocusPrompt] = useState("")
   const [activeQuizId, setActiveQuizId] = useState<string | null>(null)
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false)
 
@@ -228,6 +241,7 @@ export function StudyToolsPage() {
     () => flashcards.filter((f) => f.workspaceId === wsId),
     [flashcards, wsId],
   )
+  const [flashcardFocusPrompt, setFlashcardFocusPrompt] = useState("")
   const [cardIndex, setCardIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
   const [newCardOpen, setNewCardOpen] = useState(false)
@@ -327,7 +341,7 @@ export function StudyToolsPage() {
   const handleGenerateQuiz = async () => {
     setIsGeneratingQuiz(true)
     try {
-      const nextQuiz = await generateStudyQuizAsync(sourceContext, difficulty, questionCount)
+      const nextQuiz = await generateStudyQuizAsync(sourceContext, difficulty, questionCount, quizFocusPrompt)
       upsertQuiz(nextQuiz)
       setActiveQuizId(nextQuiz.id)
       toast({
@@ -345,7 +359,7 @@ export function StudyToolsPage() {
   const handleGenerateFlashcards = async () => {
     setIsGeneratingFlashcards(true)
     try {
-      const created = await generateStudyFlashcardsAsync(sourceContext, 6)
+      const created = await generateStudyFlashcardsAsync(sourceContext, 6, flashcardFocusPrompt)
       addFlashcards(created)
       setCardIndex(0)
       setFlipped(false)
@@ -744,6 +758,21 @@ export function StudyToolsPage() {
                     {summaryTitle || "Bản tóm tắt học tập"}
                   </span>
                   <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => downloadMarkdownFile(summaryTitle || "Tom_tat_hoc_tap", summaryMarkdown)}
+                    >
+                      Tải file .md
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs bg-[#087F73] text-white hover:bg-[#076b61]"
+                      onClick={handleSaveSummaryAsNote}
+                    >
+                      Lưu vào Ghi chú
+                    </Button>
                     {summaryIsMock ? (
                       <Badge tone="neutral">Mô phỏng</Badge>
                     ) : (
@@ -918,11 +947,18 @@ export function StudyToolsPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  placeholder="Trọng tâm chủ đề (vd: Chương 2, Lab 1...)"
+                  value={quizFocusPrompt}
+                  onChange={(e) => setQuizFocusPrompt(e.target.value)}
+                  className="h-8 w-52 text-xs"
+                />
+
                 <Select
                   aria-label="Độ khó Quiz"
                   value={difficulty}
                   onChange={(e) => setDifficulty(e.target.value as typeof difficulty)}
-                  className="h-8 w-32 text-xs"
+                  className="h-8 w-28 text-xs"
                 >
                   <option value="easy">Độ khó: Dễ</option>
                   <option value="medium">Độ khó: Vừa</option>
@@ -933,10 +969,11 @@ export function StudyToolsPage() {
                   aria-label="Số lượng câu hỏi"
                   value={String(questionCount)}
                   onChange={(e) => setQuestionCount(Number(e.target.value))}
-                  className="h-8 w-28 text-xs"
+                  className="h-8 w-24 text-xs"
                 >
-                  <option value="3">3 câu hỏi</option>
-                  <option value="5">5 câu hỏi</option>
+                  <option value="3">3 câu</option>
+                  <option value="5">5 câu</option>
+                  <option value="10">10 câu</option>
                 </Select>
 
                 <Button
@@ -1155,6 +1192,12 @@ export function StudyToolsPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  placeholder="Trọng tâm thuật ngữ (vd: Khái niệm cốt lõi...)"
+                  value={flashcardFocusPrompt}
+                  onChange={(e) => setFlashcardFocusPrompt(e.target.value)}
+                  className="h-8 w-56 text-xs"
+                />
                 <Button
                   variant="outline"
                   size="sm"

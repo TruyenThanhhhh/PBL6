@@ -21,6 +21,8 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Network,
+  Calendar,
 } from "lucide-react"
 import { InlineEdit } from "@/components/common/InlineEdit"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
@@ -47,6 +49,8 @@ import {
 } from "@/services/chat-service"
 import {
   generateStudyFlashcardsAsync,
+  generateStudyMindmapAsync,
+  generateStudyPlanAsync,
   generateStudyQuizAsync,
   type StudySourceContext,
 } from "@/services/study-service"
@@ -102,6 +106,7 @@ export function ChatPage() {
   const saveNote = useAppStore((s) => s.saveNote)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
   const addFlashcards = useAppStore((s) => s.addFlashcards)
+  const addStudyTask = useAppStore((s) => s.addStudyTask)
 
   const aiMode = useAppStore((s) => s.aiMode)
   const setAiMode = useAppStore((s) => s.setAiMode)
@@ -556,7 +561,7 @@ export function ChatPage() {
 
   const handleCreateStudyFromMessage = async (
     msg: ChatMessage,
-    kind: "summary" | "quiz" | "flashcards",
+    kind: "summary" | "quiz" | "flashcards" | "mindmap" | "plan",
   ) => {
     const { mainContent } = parseMessageSuggestions(msg.content)
     const effectiveContent = mainContent || msg.content
@@ -594,7 +599,7 @@ export function ChatPage() {
         tone: "info",
       })
       try {
-        const quiz = await generateStudyQuizAsync(ctx, "medium", 5)
+        const quiz = await generateStudyQuizAsync(ctx, "medium", 5, promptTitle.slice(0, 50))
         upsertQuiz({
           ...quiz,
           title: `Quiz: ${promptTitle.slice(0, 40)}`,
@@ -619,7 +624,7 @@ export function ChatPage() {
         tone: "info",
       })
       try {
-        const cards = await generateStudyFlashcardsAsync(ctx, 6)
+        const cards = await generateStudyFlashcardsAsync(ctx, 6, promptTitle.slice(0, 50))
         addFlashcards(cards)
         toast({
           title: `Đã tạo ${cards.length} Flashcards AI thành công`,
@@ -632,6 +637,53 @@ export function ChatPage() {
           tone: "error",
         })
       }
+      return
+    }
+
+    if (kind === "mindmap") {
+      toast({
+        title: "AI đang kiến tạo Sơ đồ tư duy...",
+        tone: "info",
+      })
+      try {
+        await generateStudyMindmapAsync(ctx, promptTitle.slice(0, 50))
+        toast({
+          title: "Đã tạo Sơ đồ tư duy AI thành công",
+          tone: "success",
+        })
+        navigate("/study?tab=mindmap")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo Mindmap lúc này",
+          tone: "error",
+        })
+      }
+      return
+    }
+
+    if (kind === "plan") {
+      toast({
+        title: "AI đang thiết kế Lộ trình học tập...",
+        tone: "info",
+      })
+      try {
+        const today = new Date().toISOString().slice(0, 10)
+        const res = await generateStudyPlanAsync(ctx, today, 7, promptTitle.slice(0, 50))
+        for (const item of res.tasks) {
+          addStudyTask(item)
+        }
+        toast({
+          title: `Đã tạo ${res.tasks.length} nhiệm vụ học tập thành công`,
+          tone: "success",
+        })
+        navigate("/study?tab=plan")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo lộ trình học tập lúc này",
+          tone: "error",
+        })
+      }
+      return
     }
   }
 
@@ -1027,6 +1079,18 @@ export function ChatPage() {
                                 onClick={() => handleCreateStudyFromMessage(m, "flashcards")}
                               >
                                 Tạo thẻ nhớ Flashcards
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                icon={<Network className="h-3.5 w-3.5" />}
+                                onClick={() => handleCreateStudyFromMessage(m, "mindmap")}
+                              >
+                                Tạo Sơ đồ tư duy (Mindmap)
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                icon={<Calendar className="h-3.5 w-3.5" />}
+                                onClick={() => handleCreateStudyFromMessage(m, "plan")}
+                              >
+                                Tạo Lộ trình học tập (Plan)
                               </DropdownMenuItem>
                             </DropdownMenu>
                           </div>
