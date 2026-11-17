@@ -23,6 +23,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { PageHeader } from "@/components/common/PageHeader"
 import { ConfirmDialog } from "@/components/common/NameDialog"
 import {
@@ -126,18 +127,6 @@ function MindmapTreeItem({
       ) : null}
     </div>
   )
-}
-
-function downloadMarkdownFile(title: string, content: string) {
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = `${title.replace(/[^a-zA-Z0-9\u00C0-\u1EF9_-]/g, "_") || "study_document"}.md`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
 }
 
 export function StudyToolsPage() {
@@ -301,8 +290,10 @@ export function StudyToolsPage() {
       setSummaryIsMock(res.isMock)
       toast({
         title: res.isMock ? "Đã tạo bản tóm tắt (Mô phỏng)" : "Đã tạo bản tóm tắt bằng AI thành công",
-        description: res.isMock ? "Dịch vụ AI cục bộ chưa chạy." : "Nội dung đã được AI đọc hiểu và tổng hợp.",
-        tone: res.isMock ? "info" : "success",
+        description: res.isMock
+          ? res.error || "Dịch vụ AI cục bộ chưa chạy."
+          : "Nội dung đã được AI đọc hiểu và tổng hợp.",
+        tone: res.isMock ? (res.error ? "warning" : "info") : "success",
       })
     } catch {
       toast({ title: "Không thể tạo tóm tắt", tone: "error" })
@@ -758,14 +749,12 @@ export function StudyToolsPage() {
                     {summaryTitle || "Bản tóm tắt học tập"}
                   </span>
                   <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
+                    <ExportFormatMenu
+                      title={summaryTitle || "Tom_tat_hoc_tap"}
+                      content={summaryMarkdown}
+                      label="Tải file"
                       className="h-7 text-xs"
-                      onClick={() => downloadMarkdownFile(summaryTitle || "Tom_tat_hoc_tap", summaryMarkdown)}
-                    >
-                      Tải file .md
-                    </Button>
+                    />
                     <Button
                       size="sm"
                       className="h-7 text-xs bg-[#087F73] text-white hover:bg-[#076b61]"
@@ -1624,17 +1613,30 @@ export function StudyToolsPage() {
               />
             </FormField>
 
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setEditingNote(null)}
-              >
-                Hủy
-              </Button>
-              <Button type="submit" className="bg-[#087F73] hover:bg-[#076b61] text-white">
-                Lưu ghi chú
-              </Button>
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+              {editingNote.content.trim() ? (
+                <ExportFormatMenu
+                  title={editingNote.title || "Ghi_chu_hoc_tap"}
+                  content={editingNote.content}
+                  label="Tải file"
+                  align="start"
+                  side="top"
+                />
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditingNote(null)}
+                >
+                  Hủy
+                </Button>
+                <Button type="submit" className="bg-[#087F73] hover:bg-[#076b61] text-white">
+                  Lưu ghi chú
+                </Button>
+              </div>
             </div>
           </form>
         ) : null}
