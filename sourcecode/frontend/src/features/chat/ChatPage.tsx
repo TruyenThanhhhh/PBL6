@@ -956,36 +956,7 @@ export function ChatPage() {
 
                       {/* Thanh công cụ dưới mỗi câu trả lời AI */}
                       {!isUser && !m.streaming && !m.error ? (
-                        <div className="mt-3 space-y-2 pt-1">
-                          {m.citations.length > 0 ? (
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-[#647C79]">
-                                <Quote className="h-2.5 w-2.5 text-[#087F73]" />
-                                Trích dẫn:
-                              </span>
-                              {m.citations.map((c) => (
-                                <button
-                                  key={c.refId}
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveCitation(c.refId)
-                                    setCitationOpen(true)
-                                    window.dispatchEvent(
-                                      new CustomEvent("studio-context-tab", { detail: "citations" }),
-                                    )
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10.5px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
-                                >
-                                  <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
-                                  <span className="max-w-[140px] truncate">{c.documentName}</span>
-                                  {c.pageLabel || c.pageNumber != null ? (
-                                    <span className="text-[10px] text-[#647C79]">· {c.pageLabel || `Tr.${c.pageNumber}`}</span>
-                                  ) : null}
-                                </button>
-                              ))}
-                            </div>
-                          ) : null}
-
+                        <div className="mt-3 pt-1">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-1">
                               <button

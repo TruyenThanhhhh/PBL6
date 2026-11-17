@@ -7,6 +7,7 @@ import type {
   QuizQuestion,
   StudyTask,
 } from "@/types"
+import { useAppStore } from "@/store/app-store"
 import { uid } from "@/utils/format"
 import {
   fetchAiFlashcardsApi,
@@ -18,6 +19,11 @@ import {
 } from "./api"
 
 export type StudyToolId = "summary" | "notes" | "quiz" | "flashcards" | "mindmap" | "plan"
+
+function getPreferredLlmModel(): string | undefined {
+  const configured = useAppStore.getState().localLlmModel?.trim()
+  return configured || undefined
+}
 
 export interface StudySourceContext {
   workspaceId: string
@@ -32,7 +38,7 @@ export interface StudySourceContext {
 export async function generateStudySummaryAsync(
   ctx: StudySourceContext,
   focusPrompt?: string,
-): Promise<{ title: string; markdown: string; isMock: boolean }> {
+): Promise<{ title: string; markdown: string; isMock: boolean; error?: string }> {
   try {
     const res = await fetchAiSummaryApi({
       workspace_id: ctx.workspaceId,
@@ -41,16 +47,26 @@ export async function generateStudySummaryAsync(
         ? ctx.documentsInScope.map((d) => d.id)
         : null,
       focus_prompt: focusPrompt,
+      model: getPreferredLlmModel(),
     })
-    return {
-      title: res.title,
-      markdown: res.markdown,
-      isMock: res.is_mock,
+    if (res.markdown?.trim() && !res.error) {
+      return {
+        title: res.title,
+        markdown: res.markdown,
+        isMock: res.is_mock,
+      }
+    }
+    if (res.error) {
+      console.warn("AI summary fallback:", res.error)
+      return {
+        ...generateStudySummary(ctx, focusPrompt),
+        error: res.error,
+      }
     }
   } catch (err) {
     console.warn("AI summary fallback:", err)
-    return generateStudySummary(ctx, focusPrompt)
   }
+  return generateStudySummary(ctx, focusPrompt)
 }
 
 /**
@@ -73,6 +89,7 @@ export async function generateStudyQuizAsync(
       difficulty,
       question_count: questionCount,
       focus_prompt: focusPrompt?.trim() || undefined,
+      model: getPreferredLlmModel(),
     })
     if (res.questions && res.questions.length > 0) {
       return {
@@ -113,6 +130,7 @@ export async function generateStudyFlashcardsAsync(
         : null,
       count,
       focus_prompt: focusPrompt?.trim() || undefined,
+      model: getPreferredLlmModel(),
     })
     if (res.flashcards && res.flashcards.length > 0) {
       return res.flashcards.map((c) => ({
@@ -148,6 +166,7 @@ export async function generateStudyMindmapAsync(
         : null,
       focus_prompt: focusPrompt?.trim() || undefined,
       max_depth: maxDepth,
+      model: getPreferredLlmModel(),
     })
     if (res.root && res.root.label) {
       return { root: res.root as MindmapNode, isMock: res.is_mock }
@@ -174,6 +193,7 @@ export async function generateStudyNotesAsync(
         ? ctx.documentsInScope.map((d) => d.id)
         : null,
       focus_prompt: focusPrompt?.trim() || undefined,
+      model: getPreferredLlmModel(),
     })
     if (res.markdown?.trim()) {
       return {
@@ -213,6 +233,7 @@ export async function generateStudyPlanAsync(
       start_date: startDate,
       day_span: daySpan,
       focus_prompt: focusPrompt?.trim() || undefined,
+      model: getPreferredLlmModel(),
     })
     if (res.tasks && res.tasks.length > 0) {
       return {
