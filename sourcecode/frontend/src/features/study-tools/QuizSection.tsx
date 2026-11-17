@@ -516,7 +516,8 @@ export function QuizSection({
       })
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return
-      toast({ title: "Không thể tạo Quiz", tone: "error" })
+      const msg = err instanceof Error && err.message ? err.message : "Vui lòng thử lại sau."
+      toast({ title: "Không thể tạo Quiz", description: msg, tone: "error" })
     } finally {
       if (quizAbortRef.current === controller) {
         quizAbortRef.current = null

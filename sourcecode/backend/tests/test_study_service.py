@@ -211,6 +211,72 @@ class StudyServiceTestCase(unittest.TestCase):
         asyncio.run(run_case())
         self.assertTrue(cancelled)
 
+    @patch("app.services.study_service.check_ollama_status", new_callable=AsyncMock)
+    @patch("app.services.study_service.httpx.AsyncClient")
+    def test_quiz_returns_exact_requested_count_and_respects_japanese_vocab_scope(
+        self, mock_async_client, mock_ollama_status
+    ):
+        mock_ollama_status.return_value = {
+            "running": True,
+            "available_models": ["qwen2.5:3b"],
+        }
+
+        vocab_text = (
+            "1 | 男性 | だんせい | đàn ông | 61 | 約束 | やくそく | lời hứa | 121 | 渇く | かわく | khát\n"
+            "2 | 女性 | じょせい | phụ nữ | 62 | 読書 | どくしょ | đọc sách | 122 | 影響 | えいきょう | ảnh hưởng\n"
+            "3 | 高齢 | こうれい | cao tuổi | 63 | 遠慮 | えんりょ | ngại ngần | 123 | 効果 | こうか | hiệu quả\n"
+            "4 | 先輩 | せんぱい | tiền bối | 64 | 我慢 | がまん | chịu đựng | 124 | 希望 | きぼう | hi vọng\n"
+            "5 | 目上 | めうえ | bề trên | 65 | 迷惑 | めわく | làm phiền | 125 | 検査 | けんさ | kiểm tra\n"
+        )
+        with patch("app.services.workspace_ai_service.embed_texts", return_value=[[0.2, 0.3, 0.4]]):
+            with patch("app.services.document_service.embed_texts", return_value=[[0.2, 0.3, 0.4]]):
+                up = self.client.post(
+                    f"/api/v1/workspaces/{self.workspace_id}/documents/upload",
+                    files={"file": ("mimikara_n3_vocab.txt", vocab_text.encode("utf-8"), "text/plain")},
+                    data={"defer_metadata": "true"},
+                    headers=self.headers,
+                )
+        self.assertEqual(up.status_code, 200, up.text)
+        vocab_doc_id = up.json()["document"]["document_id"]
+
+        # Model chỉ trả về 2 câu với key 'quizQuestions'/'question'/'answer'
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {
+            "message": {
+                "content": (
+                    '{"quizQuestions":['
+                    '{"question":"Từ 「男性」 (だんせい) có nghĩa là gì?","options":["đàn ông","phụ nữ","lời hứa","cao tuổi"],"answer":"đàn ông","sourceIndex":1},'
+                    '{"question":"Từ 「約束」 (やくそく) có nghĩa là gì?","options":["khát","lời hứa","tiền bối","làm phiền"],"answer":"lời hứa","sourceIndex":1}'
+                    ']}'
+                )
+            }
+        }
+        fake_client = AsyncMock()
+        fake_client.post.return_value = fake_resp
+        mock_async_client.return_value.__aenter__.return_value = fake_client
+
+        quiz_resp = self.client.post(
+            "/api/v1/study/quiz",
+            json={
+                "workspace_id": self.workspace_id,
+                "document_id": vocab_doc_id,
+                "difficulty": "medium",
+                "question_count": 10,
+                "focus_prompt": "test",
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(quiz_resp.status_code, 200, quiz_resp.text)
+        quiz_body = quiz_resp.json()
+        self.assertFalse(quiz_body["is_mock"])
+        self.assertEqual(len(quiz_body["questions"]), 10)
+        for q in quiz_body["questions"]:
+            self.assertEqual(len(q["options"]), 4)
+            self.assertEqual(q["citation"]["documentId"], vocab_doc_id)
+            self.assertEqual(q["citation"]["documentName"], "mimikara_n3_vocab.txt")
+            self.assertNotIn("Hybrid RAG", q["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

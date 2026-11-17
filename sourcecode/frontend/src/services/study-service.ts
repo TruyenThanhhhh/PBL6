@@ -135,8 +135,14 @@ export async function generateStudyQuizAsync(
         isMock: res.is_mock ?? false,
       }
     }
+    if (res.error) {
+      throw new Error(res.error)
+    }
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
+      throw err
+    }
+    if (err instanceof Error && err.message) {
       throw err
     }
     console.warn("AI quiz fallback:", err)
@@ -418,20 +424,42 @@ export function generateStudyQuiz(
     },
   ]
 
-  const count = Math.min(Math.max(questionCount, 1), questionBank.length)
-  const questions: QuizQuestion[] = questionBank.slice(0, count).map((q) => ({
-    ...q,
-    id: uid("qq"),
-    citation: refDoc
-      ? {
-          documentId: refDoc.id,
-          documentName: refDoc.fileName,
-          pageNumber: 1,
-          chunkIndex: 0,
-          snippet: refSnippet,
-        }
-      : null,
+  const count = Math.min(Math.max(questionCount, 1), 20)
+  const docs = ctx.document ? [ctx.document] : ctx.documentsInScope
+  const docSentences = docs
+    .flatMap((d) => (d.extractedText || "").split(/\n+/))
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 25)
+  const dynamicBank: Omit<QuizQuestion, "id">[] = docSentences.map((stmt: string, idx: number) => ({
+    prompt: `Theo tài liệu "${refDoc?.fileName ?? sourceLabel}", nội dung nào sau đây được đề cập chính xác (câu #${idx + 1})?`,
+    options: [
+      stmt.slice(0, 160),
+      "Thông tin không có trong tài liệu nguồn đang chọn",
+      "Nội dung suy diễn ngoài phạm vi tài liệu",
+      "Nhận định trái ngược với nội dung văn bản gốc",
+    ],
+    answerIndex: 0,
+    explanation: `Trích trực tiếp từ tài liệu "${refDoc?.fileName ?? sourceLabel}": "${stmt.slice(0, 180)}".`,
   }))
+
+  const pool = dynamicBank.length > 0 ? [...dynamicBank, ...questionBank] : questionBank
+  const questions: QuizQuestion[] = Array.from({ length: count }, (_, idx) => {
+    const base = pool[idx % pool.length]
+    return {
+      ...base,
+      id: uid("qq"),
+      prompt: idx >= pool.length ? `${base.prompt} (#${idx + 1})` : base.prompt,
+      citation: refDoc
+        ? {
+            documentId: refDoc.id,
+            documentName: refDoc.fileName,
+            pageNumber: 1,
+            chunkIndex: 0,
+            snippet: refSnippet,
+          }
+        : null,
+    }
+  })
 
   return {
     id: uid("quiz"),
