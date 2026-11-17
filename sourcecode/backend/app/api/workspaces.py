@@ -443,14 +443,22 @@ def delete_note(note_id: str, user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @router.get("/workspaces/{workspace_id}/study-artifacts")
-def list_study_artifacts(workspace_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+def list_study_artifacts(
+    workspace_id: str,
+    artifact_type: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
     rows = []
-    for row in conn.execute(
-        "SELECT * FROM study_artifacts WHERE workspace_id = ? ORDER BY created_at DESC",
-        (workspace_id,),
-    ).fetchall():
+    query = "SELECT * FROM study_artifacts WHERE workspace_id = ?"
+    params: list[Any] = [workspace_id]
+    if artifact_type and artifact_type.strip():
+        query += " AND artifact_type = ?"
+        params.append(artifact_type.strip().lower())
+    query += " ORDER BY created_at DESC"
+
+    for row in conn.execute(query, params).fetchall():
         item = dict(row)
         try:
             item["data"] = json.loads(item.pop("data_json", "{}"))

@@ -655,3 +655,74 @@ def clear_conversation_messages(
         return {"message": "Đã xóa sạch lịch sử tin nhắn của cuộc trò chuyện"}
     finally:
         conn.close()
+
+
+@router.get("/conversations/{conversation_id}/export")
+def export_conversation_markdown(
+    conversation_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Xuất toàn bộ nội dung cuộc trò chuyện thành file Markdown có cấu trúc chuẩn NotebookLM.
+    """
+    conn = get_db_connection()
+    try:
+        session = conn.execute(
+            """
+            SELECT s.id, s.title, s.created_at, w.name as workspace_name
+            FROM chat_sessions s
+            JOIN workspaces w ON w.id = s.workspace_id
+            WHERE s.id = ? AND w.owner_user_id = ?
+            """,
+            (conversation_id, user["id"]),
+        ).fetchone()
+        if not session:
+            raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
+
+        rows = conn.execute(
+            """
+            SELECT sender, content, citations_json, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+
+        title = session["title"] or "Cuộc trò chuyện AI"
+        lines = [
+            f"# 💬 {title}",
+            f"- **Không gian làm việc:** {session['workspace_name']}",
+            f"- **Thời gian khởi tạo:** {session['created_at']}",
+            "\n---\n",
+        ]
+
+        for r in rows:
+            sender = "👤 **Người dùng**" if r["sender"] == "user" else "🤖 **Trợ lý AI**"
+            time_str = r["created_at"] or ""
+            lines.append(f"### {sender} ({time_str})\n")
+            lines.append(r["content"].strip())
+
+            citations_raw = r.get("citations_json")
+            if citations_raw:
+                try:
+                    cites = json.loads(citations_raw)
+                    if cites:
+                        lines.append("\n**Nguồn tham khảo:**")
+                        for c in cites:
+                            ref_id = c.get("ref_id", "")
+                            d_name = c.get("document_name") or c.get("title") or "Nguồn"
+                            p_label = f" (Trang {c['page_number']})" if c.get("page_number") else ""
+                            lines.append(f"- `[{ref_id}]` {d_name}{p_label}")
+                except Exception:
+                    pass
+            lines.append("\n---\n")
+
+        markdown_text = "\n\n".join(lines)
+        return {
+            "title": title,
+            "markdown": markdown_text,
+            "message_count": len(rows),
+        }
+    finally:
+        conn.close()

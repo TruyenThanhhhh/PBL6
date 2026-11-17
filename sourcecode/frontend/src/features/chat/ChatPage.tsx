@@ -6,6 +6,7 @@ import {
   Check,
   Compass,
   Copy,
+  Download,
   FileQuestion,
   FileText,
   GraduationCap,
@@ -693,6 +694,60 @@ export function ChatPage() {
     )
   }
 
+  const handleExportConversationMarkdown = async () => {
+    if (!conversation || conversation.messages.length === 0) {
+      toast({ title: "Chưa có tin nhắn để xuất", tone: "info" })
+      return
+    }
+
+    try {
+      const token = getAuthToken()
+      const res = await fetch(`/api/v1/conversations/${conversation.id}/export`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (res.ok) {
+        const mdText = await res.text()
+        const blob = new Blob([mdText], { type: "text/markdown;charset=utf-8" })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `${conversation.title.replace(/[/\\?%*:|"<>]/g, "_")}.md`
+        a.click()
+        URL.revokeObjectURL(url)
+        toast({ title: "Đã xuất cuộc trò chuyện (.md)", tone: "success" })
+        return
+      }
+    } catch {
+      // Fallback xuống xuất phía client nếu mạng có lỗi
+    }
+
+    const lines = [
+      `# 💬 ${conversation.title}`,
+      `*Ngày xuất: ${formatDate(nowIso())}*\n`,
+      `---`,
+    ]
+    conversation.messages.forEach((m) => {
+      const sender = m.role === "user" ? "👤 **Bạn**" : "🤖 **AI Trợ lý**"
+      lines.push(`\n### ${sender} (${formatDate(m.createdAt)})\n`)
+      lines.push(m.content)
+      if (m.citations && m.citations.length > 0) {
+        lines.push(`\n**Nguồn trích dẫn:**`)
+        m.citations.forEach((c) => {
+          lines.push(`- [${c.refId}] *${c.documentName}* ${c.pageNumber ? `(trang ${c.pageNumber})` : ""}: "${c.snippet}"`)
+        })
+      }
+      lines.push(`\n---`)
+    })
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${conversation.title.replace(/[/\\?%*:|"<>]/g, "_")}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast({ title: "Đã xuất cuộc trò chuyện (.md)", tone: "success" })
+  }
+
   const citationCount = lastAssistant?.citations.length ?? 0
 
   return (
@@ -768,6 +823,12 @@ export function ChatPage() {
                   onClick={handleCreateConversation}
                 >
                   Hội thoại mới
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  icon={<Download className="h-3.5 w-3.5" />}
+                  onClick={handleExportConversationMarkdown}
+                >
+                  Xuất đoạn chat (.md)
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   icon={<Pencil className="h-3.5 w-3.5" />}
@@ -964,24 +1025,48 @@ export function ChatPage() {
                                 Trích dẫn:
                               </span>
                               {m.citations.map((c) => (
-                                <button
+                                <Tooltip
                                   key={c.refId}
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveCitation(c.refId)
-                                    setCitationOpen(true)
-                                    window.dispatchEvent(
-                                      new CustomEvent("studio-context-tab", { detail: "citations" }),
-                                    )
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10.5px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+                                  side="top"
+                                  content={
+                                    <div className="max-w-xs space-y-1 text-left">
+                                      <div className="font-semibold text-white flex items-center justify-between gap-2">
+                                        <span className="truncate">[{c.refId}] {c.documentName}</span>
+                                        {c.pageLabel || c.pageNumber != null ? (
+                                          <span className="text-emerald-300 shrink-0 text-[10px]">
+                                            {c.pageLabel || `Tr.${c.pageNumber}`}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      {c.snippet ? (
+                                        <p className="line-clamp-3 text-slate-200 text-[11px] leading-relaxed italic">
+                                          &ldquo;{c.snippet}&rdquo;
+                                        </p>
+                                      ) : null}
+                                      <p className="text-[10px] text-emerald-300 font-medium pt-0.5">
+                                        Nhấp để xem tài liệu gốc →
+                                      </p>
+                                    </div>
+                                  }
                                 >
-                                  <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
-                                  <span className="max-w-[140px] truncate">{c.documentName}</span>
-                                  {c.pageLabel || c.pageNumber != null ? (
-                                    <span className="text-[10px] text-[#647C79]">· {c.pageLabel || `Tr.${c.pageNumber}`}</span>
-                                  ) : null}
-                                </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveCitation(c.refId)
+                                      setCitationOpen(true)
+                                      window.dispatchEvent(
+                                        new CustomEvent("studio-context-tab", { detail: "citations" }),
+                                      )
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10.5px] font-medium text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+                                  >
+                                    <span className="font-mono font-bold text-[#087F73]">[{c.refId}]</span>
+                                    <span className="max-w-[140px] truncate">{c.documentName}</span>
+                                    {c.pageLabel || c.pageNumber != null ? (
+                                      <span className="text-[10px] text-[#647C79]">· {c.pageLabel || `Tr.${c.pageNumber}`}</span>
+                                    ) : null}
+                                  </button>
+                                </Tooltip>
                               ))}
                             </div>
                           ) : null}

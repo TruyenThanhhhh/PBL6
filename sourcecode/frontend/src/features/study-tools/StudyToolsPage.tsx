@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Download,
   FilePlus2,
   FileText,
   GitFork,
@@ -19,6 +20,7 @@ import {
   PenSquare,
   Plus,
   RotateCcw,
+  Shuffle,
   Sparkles,
   Trash2,
   XCircle,
@@ -274,6 +276,77 @@ export function StudyToolsPage() {
   const [editingTaskTitle, setEditingTaskTitle] = useState("")
 
   // Handlers
+  // Phím tắt điều hướng nhanh cho Flashcards
+  useEffect(() => {
+    if (tab !== "flashcards" || wsCards.length === 0) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+        return
+      }
+
+      if (e.code === "Space" || e.key === "Enter") {
+        e.preventDefault()
+        setFlipped((v) => !v)
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault()
+        setFlipped(false)
+        setCardIndex((i) => (i + 1) % wsCards.length)
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault()
+        setFlipped(false)
+        setCardIndex((i) => (i - 1 + wsCards.length) % wsCards.length)
+      } else if (e.key === "1" && currentCard) {
+        e.preventDefault()
+        setFlashStatus(currentCard.id, "review")
+        setFlipped(false)
+        setCardIndex((i) => (i + 1) % wsCards.length)
+      } else if (e.key === "2" && currentCard) {
+        e.preventDefault()
+        setFlashStatus(currentCard.id, "remembered")
+        setFlipped(false)
+        setCardIndex((i) => (i + 1) % wsCards.length)
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [tab, wsCards, currentCard, setFlashStatus])
+
+  const handleShuffleCards = () => {
+    if (wsCards.length <= 1) return
+    const randomIdx = Math.floor(Math.random() * wsCards.length)
+    setCardIndex(randomIdx)
+    setFlipped(false)
+    toast({ title: "Đã xáo trộn vị trí thẻ ghi nhớ", tone: "info" })
+  }
+
+  const handleExportQuizMarkdown = () => {
+    if (!quiz) return
+    const letters = ["A", "B", "C", "D", "E"]
+    const lines = [
+      `# 📝 ${quiz.title || "Bài trắc nghiệm kiểm tra kiến thức"}`,
+      `**Độ khó:** ${quiz.difficulty.toUpperCase()} | **Số lượng:** ${quiz.questions.length} câu`,
+      `\n---\n`,
+    ]
+
+    quiz.questions.forEach((q, idx) => {
+      lines.push(`### Câu ${idx + 1}: ${q.prompt}`)
+      q.options.forEach((opt, oIdx) => {
+        lines.push(`- **${letters[oIdx]}.** ${opt}`)
+      })
+      lines.push(`\n> **Đáp án đúng:** **${letters[q.answerIndex]}**`)
+      if (q.explanation) {
+        lines.push(`> **Giải thích:** ${q.explanation}`)
+      }
+      lines.push(`\n---\n`)
+    })
+
+    downloadMarkdownFile(quiz.title || "De_trac_nghiem", lines.join("\n"))
+    toast({ title: "Đã tải bộ câu hỏi trắc nghiệm (.md)", tone: "success" })
+  }
+
   const handleSaveSummaryAsNote = () => {
     if (!summaryMarkdown) {
       toast({ title: "Chưa có bản tóm tắt để lưu", tone: "info" })
@@ -1148,6 +1221,14 @@ export function StudyToolsPage() {
                     >
                       Nộp bài
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      leftIcon={<Download className="h-3.5 w-3.5" />}
+                      onClick={handleExportQuizMarkdown}
+                    >
+                      Xuất đề (.md)
+                    </Button>
                     {quiz.submitted ? (
                       <Button
                         variant="outline"
@@ -1246,15 +1327,35 @@ export function StudyToolsPage() {
               />
             ) : (
               <div className="mx-auto max-w-xl space-y-4">
-                {/* Chỉ số tiến độ */}
-                <div className="flex items-center justify-between text-xs text-[#647C79]">
-                  <span>
-                    Thẻ{" "}
-                    <strong className="text-[#172B29]">
-                      {safeCardIndex + 1} / {wsCards.length}
-                    </strong>
-                  </span>
-                  <span className="text-[11px]">Nhấp chuột vào thẻ để lật</span>
+                {/* Chỉ số tiến độ & thanh tiến độ ghi nhớ */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-[#647C79]">
+                    <span>
+                      Thẻ{" "}
+                      <strong className="text-[#172B29]">
+                        {safeCardIndex + 1} / {wsCards.length}
+                      </strong>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-emerald-700 font-medium">
+                        Đã nhớ: {rememberedCount} ({Math.round((rememberedCount / (wsCards.length || 1)) * 100)}%)
+                      </span>
+                      <span>·</span>
+                      <span className="text-[11px]">Nhấp chuột hoặc nhấn Space để lật</span>
+                    </div>
+                  </div>
+                  <div className="w-full bg-[#E6EFE9] h-2 rounded-full overflow-hidden flex">
+                    <div
+                      className="bg-[#087F73] h-full transition-all duration-300"
+                      style={{ width: `${(rememberedCount / (wsCards.length || 1)) * 100}%` }}
+                      title={`Đã nhớ: ${rememberedCount}`}
+                    />
+                    <div
+                      className="bg-amber-400 h-full transition-all duration-300"
+                      style={{ width: `${(reviewCount / (wsCards.length || 1)) * 100}%` }}
+                      title={`Cần ôn: ${reviewCount}`}
+                    />
+                  </div>
                 </div>
 
                 {/* Khung thẻ Flashcard lật */}
@@ -1313,6 +1414,15 @@ export function StudyToolsPage() {
                       Tiếp
                       <ChevronRight className="ml-1 h-3.5 w-3.5" />
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      leftIcon={<Shuffle className="h-3.5 w-3.5" />}
+                      onClick={handleShuffleCards}
+                      title="Xáo trộn vị trí thẻ"
+                    >
+                      Xáo trộn
+                    </Button>
                   </div>
 
                   <div className="flex items-center gap-1.5">
@@ -1353,6 +1463,17 @@ export function StudyToolsPage() {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
+                </div>
+
+                {/* Hướng dẫn phím tắt */}
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-[11px] text-[#647C79]">
+                  <span className="rounded bg-[#F1F6F5] px-1.5 py-0.5 font-mono border border-[#DCE7E4]">Space / Enter</span> Lật thẻ
+                  <span className="text-[#A5B7B4]">·</span>
+                  <span className="rounded bg-[#F1F6F5] px-1.5 py-0.5 font-mono border border-[#DCE7E4]">← / →</span> Chuyển thẻ
+                  <span className="text-[#A5B7B4]">·</span>
+                  <span className="rounded bg-[#F1F6F5] px-1.5 py-0.5 font-mono border border-[#DCE7E4]">1</span> Cần ôn
+                  <span className="text-[#A5B7B4]">·</span>
+                  <span className="rounded bg-[#F1F6F5] px-1.5 py-0.5 font-mono border border-[#DCE7E4]">2</span> Đã nhớ
                 </div>
               </div>
             )}

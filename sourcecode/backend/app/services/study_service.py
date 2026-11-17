@@ -36,6 +36,46 @@ def _resolve_document_ids(
     return [row["document_id"] for row in rows]
 
 
+def _persist_study_artifact(
+    workspace_id: str,
+    artifact_type: str,
+    title: str,
+    data: Any,
+    document_id: Optional[str] = None,
+) -> Optional[str]:
+    """Lưu vĩnh viễn học liệu vừa sinh vào bảng study_artifacts và ghi nhật ký hoạt động."""
+    conn = get_db_connection()
+    try:
+        artifact_id = str(uuid4())
+        data_json = json.dumps(data, ensure_ascii=False)
+        conn.execute(
+            """INSERT INTO study_artifacts (id, workspace_id, document_id, artifact_type, title, data_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (artifact_id, workspace_id, document_id, artifact_type, title, data_json),
+        )
+        activity_id = str(uuid4())
+        type_names = {
+            "summary": "Tóm tắt AI",
+            "quiz": "Bộ câu hỏi Quiz",
+            "flashcards": "Thẻ Flashcards",
+            "mindmap": "Sơ đồ tư duy",
+            "notes": "Ghi chú học tập",
+            "plan": "Lộ trình học tập",
+        }
+        name_str = type_names.get(artifact_type, artifact_type.upper())
+        conn.execute(
+            "INSERT INTO user_activities (id, workspace_id, activity_type, message) VALUES (?, ?, ?, ?)",
+            (activity_id, workspace_id, "study", f"AI đã tạo {name_str}: {title[:50]}"),
+        )
+        conn.commit()
+        return artifact_id
+    except Exception as exc:
+        logger.warning("Không thể lưu tự động study artifact: %s", exc)
+        return None
+    finally:
+        conn.close()
+
+
 def _get_document_context(
     workspace_id: str,
     document_id: Optional[str] = None,
@@ -286,8 +326,17 @@ async def generate_ai_summary(
 
     try:
         markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=model)
+        res_title = "Tóm tắt AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập")
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="summary",
+            title=res_title,
+            data={"markdown": markdown_res},
+            document_id=document_id,
+        )
         return {
-            "title": "Tóm tắt AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập"),
+            "id": artifact_id,
+            "title": res_title,
             "markdown": markdown_res,
             "is_mock": False,
         }
@@ -384,8 +433,17 @@ async def generate_ai_quiz(
                         "explanation": str(q.get("explanation", "Theo nội dung bài học trong tài liệu.")),
                     })
 
+        quiz_title = f"Quiz AI ({difficulty}) · {len(valid_questions)} câu"
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="quiz",
+            title=quiz_title,
+            data={"questions": valid_questions, "difficulty": difficulty},
+            document_id=document_id,
+        )
         return {
-            "title": f"Quiz AI ({difficulty}) · {len(valid_questions)} câu",
+            "id": artifact_id,
+            "title": quiz_title,
             "questions": valid_questions,
             "difficulty": difficulty,
             "is_mock": False,
@@ -483,7 +541,16 @@ async def generate_ai_flashcards(
                 "is_mock": False,
             })
 
+        fc_title = f"Flashcards · {len(valid_cards)} thẻ"
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="flashcards",
+            title=fc_title,
+            data={"flashcards": valid_cards},
+            document_id=document_id,
+        )
         return {
+            "id": artifact_id,
             "flashcards": valid_cards,
             "is_mock": False,
         }
@@ -557,7 +624,15 @@ async def generate_ai_mindmap(
         root = _normalize_mindmap_node(data, depth=0, max_depth=depth_limit)
         if not root:
             raise ValueError("AI không trả về cấu trúc Mindmap hợp lệ")
-        return {"root": root, "is_mock": False}
+        mm_title = f"Mindmap · {root.get('label') or 'Sơ đồ tư duy'}"
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="mindmap",
+            title=mm_title,
+            data={"root": root},
+            document_id=document_id,
+        )
+        return {"id": artifact_id, "root": root, "is_mock": False}
     except Exception as exc:
         logger.exception("Lỗi khi sinh Mindmap bằng AI: %s", exc)
         return {
@@ -620,8 +695,17 @@ async def generate_ai_notes(
 
     try:
         markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=model)
+        notes_title = "Ghi chú AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập")
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="notes",
+            title=notes_title,
+            data={"markdown": markdown_res},
+            document_id=document_id,
+        )
         return {
-            "title": "Ghi chú AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập"),
+            "id": artifact_id,
+            "title": notes_title,
             "markdown": markdown_res,
             "is_mock": False,
         }
@@ -722,7 +806,15 @@ async def generate_ai_plan(
 
         if not tasks:
             raise ValueError("AI không trả về nhiệm vụ học tập hợp lệ")
-        return {"tasks": tasks, "is_mock": False}
+        plan_title = f"Lộ trình học tập {span} ngày ({len(tasks)} nhiệm vụ)"
+        artifact_id = _persist_study_artifact(
+            workspace_id=workspace_id,
+            artifact_type="plan",
+            title=plan_title,
+            data={"tasks": tasks},
+            document_id=document_id,
+        )
+        return {"id": artifact_id, "tasks": tasks, "is_mock": False}
     except Exception as exc:
         logger.exception("Lỗi khi sinh lộ trình học tập bằng AI: %s", exc)
         return {
