@@ -76,6 +76,7 @@ export function resolveCitationEvidence(
     citation,
     source,
     pageNumber: citation.pageNumber,
+    pageLabel: citation.pageLabel || (citation.pageNumber != null ? `Trang ${citation.pageNumber}` : null),
     chunkId,
     snippet: citation.snippet,
     hasExactOffset: Boolean(citation.highlight && matchedDoc?.extractedText?.includes(citation.highlight)),

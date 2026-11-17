@@ -254,6 +254,7 @@ export interface ChatResult {
     document_id?: string
     document_name?: string
     page_number?: number
+    page_label?: string
     chunk_index?: number
     snippet?: string
   }>

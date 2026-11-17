@@ -166,7 +166,11 @@ def search_section_chunks(
                 end_idx = min(start_idx + max_chunks, len(all_chunks))
             else:
                 end_idx = min(end_idx, start_idx + max_chunks)
-            return all_chunks[start_idx:end_idx]
+            res = all_chunks[start_idx:end_idx]
+            for c in res:
+                if "page_label" not in c and c.get("page_number") is not None:
+                    c["page_label"] = f"Trang {c['page_number']}"
+            return res
 
         # Nếu không tìm thấy bằng regex có số, fallback lấy theo FTS anchor
         return []
@@ -217,10 +221,13 @@ def search_spanning_chunks(
 
         total = len(all_chunks)
         if total <= max_chunks:
-            return all_chunks
-
-        step = total / max_chunks
-        selected = [all_chunks[int(i * step)] for i in range(max_chunks)]
+            selected = all_chunks
+        else:
+            step = total / max_chunks
+            selected = [all_chunks[int(i * step)] for i in range(max_chunks)]
+        for c in selected:
+            if "page_label" not in c and c.get("page_number") is not None:
+                c["page_label"] = f"Trang {c['page_number']}"
         return selected
     finally:
         conn.close()
@@ -231,6 +238,93 @@ def _cosine(left: List[float], right: List[float]) -> float:
     norm_left = math.sqrt(sum(a * a for a in left))
     norm_right = math.sqrt(sum(b * b for b in right))
     return dot / (norm_left * norm_right) if norm_left and norm_right else 0.0
+
+
+def expand_and_stitch_chunks(
+    chunks: List[Dict[str, Any]],
+    max_total_chunks: int = 8,
+) -> List[Dict[str, Any]]:
+    """
+    Mở rộng và ghép nối các chunk liền kề (adjacent chunks) của cùng một tài liệu.
+    Giải quyết triệt để vấn đề đứt đoạn các bước hướng dẫn hoặc ngắt dòng giữa các trang.
+    """
+    if not chunks:
+        return []
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        needed_keys = set()
+        for c in chunks:
+            doc_id = c.get("document_id")
+            c_idx = c.get("chunk_index")
+            if doc_id and c_idx is not None:
+                needed_keys.add((doc_id, c_idx))
+                needed_keys.add((doc_id, c_idx + 1))
+
+        doc_ids = list({k[0] for k in needed_keys})
+        if not doc_ids:
+            return chunks
+
+        placeholders = ",".join("?" for _ in doc_ids)
+        cursor.execute(
+            f"""
+            SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                   c.page_number, c.chunk_index, d.file_name AS document_name
+            FROM document_chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.document_id IN ({placeholders})
+            ORDER BY c.document_id, c.chunk_index ASC
+            """,
+            tuple(doc_ids),
+        )
+
+        all_doc_chunks = cursor.fetchall()
+        doc_chunk_map: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        for r in all_doc_chunks:
+            d = dict(r)
+            doc_chunk_map.setdefault(d["document_id"], {})[d["chunk_index"]] = d
+
+        stitched: List[Dict[str, Any]] = []
+        visited = set()
+        for c in chunks:
+            doc_id = c.get("document_id")
+            c_idx = c.get("chunk_index")
+            if not doc_id or c_idx is None:
+                stitched.append(c)
+                continue
+
+            if (doc_id, c_idx) in visited:
+                continue
+
+            merged_content = c.get("content", "")
+            start_page = c.get("page_number")
+            end_page = c.get("page_number")
+            visited.add((doc_id, c_idx))
+
+            # Ghép với chunk liền sau nếu có
+            next_c = doc_chunk_map.get(doc_id, {}).get(c_idx + 1)
+            if next_c:
+                visited.add((doc_id, c_idx + 1))
+                merged_content += "\n\n" + next_c.get("content", "")
+                if next_c.get("page_number") is not None:
+                    end_page = next_c["page_number"]
+
+            if start_page is not None:
+                page_label = f"Trang {start_page}" if start_page == end_page else f"Trang {start_page} - {end_page}"
+            else:
+                page_label = ""
+
+            item = dict(c)
+            item["content"] = merged_content
+            item["page_label"] = page_label
+            stitched.append(item)
+            if len(stitched) >= max_total_chunks:
+                break
+
+        return stitched
+    finally:
+        conn.close()
 
 
 def search_relevant_chunks(
@@ -375,7 +469,7 @@ def search_relevant_chunks(
                 )
             else:
                 remaining = []
-            return pinned + remaining
+            return expand_and_stitch_chunks(pinned + remaining, max_total_chunks=top_k)
 
         # An explicitly attached document must remain readable even when it
         # has no dense vectors and the prompt is too generic for FTS5 (for
@@ -397,13 +491,14 @@ def search_relevant_chunks(
             )
             attached_document_chunks = [dict(row) for row in cursor.fetchall()]
             if attached_document_chunks:
-                return attached_document_chunks
+                return expand_and_stitch_chunks(attached_document_chunks, max_total_chunks=top_k)
 
-        return rerank_documents(
+        reranked = rerank_documents(
             query,
             ranked,
             top_k,
             max_candidates=RERANK_MAX_CANDIDATES,
         )
+        return expand_and_stitch_chunks(reranked, max_total_chunks=top_k)
     finally:
         conn.close()
