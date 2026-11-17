@@ -1,5 +1,7 @@
 import type {
   Flashcard,
+  FlashcardDeck,
+  FlashcardStyle,
   KnowledgeDocument,
   MindmapNode,
   Notebook,
@@ -151,39 +153,127 @@ export async function generateStudyQuizAsync(
 }
 
 /**
- * Gọi AI Backend sinh bộ thẻ Flashcards thực tế từ tài liệu
+ * Gọi AI Backend sinh danh sách thẻ Flashcards thực tế từ tài liệu
  */
 export async function generateStudyFlashcardsAsync(
   ctx: StudySourceContext,
-  count = 6,
+  count = 10,
   focusPrompt?: string,
+  cardStyle: FlashcardStyle = "term_definition",
+  signal?: AbortSignal,
 ): Promise<Flashcard[]> {
+  const deck = await generateStudyFlashcardDeckAsync(ctx, count, focusPrompt, cardStyle, signal)
+  return deck.cards
+}
+
+/**
+ * Gọi AI Backend sinh trọn vẹn một Bộ thẻ (FlashcardDeck) kèm kiểu thẻ, ví dụ và trích dẫn nguồn
+ */
+export async function generateStudyFlashcardDeckAsync(
+  ctx: StudySourceContext,
+  count = 10,
+  focusPrompt?: string,
+  cardStyle: FlashcardStyle = "term_definition",
+  signal?: AbortSignal,
+): Promise<FlashcardDeck> {
+  const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Toàn bộ workspace"
+  const cleanFocus = focusPrompt?.trim() || undefined
+  const safeCount = Math.min(Math.max(Math.round(count || 10), 1), 40)
+  const deckId = uid("deck")
+
   try {
-    const res = await fetchAiFlashcardsApi({
-      workspace_id: ctx.workspaceId,
-      document_id: ctx.document?.id ?? null,
-      document_ids: !ctx.document && ctx.documentsInScope.length > 0
-        ? ctx.documentsInScope.map((d) => d.id)
-        : null,
-      count,
-      focus_prompt: focusPrompt?.trim() || undefined,
-      model: getPreferredLlmModel(),
-    })
+    const res = await fetchAiFlashcardsApi(
+      {
+        workspace_id: ctx.workspaceId,
+        document_id: ctx.document?.id ?? null,
+        document_ids: !ctx.document && ctx.documentsInScope.length > 0
+          ? ctx.documentsInScope.map((d) => d.id)
+          : null,
+        count: safeCount,
+        card_style: cardStyle,
+        focus_prompt: cleanFocus,
+        model: getPreferredLlmModel(),
+      },
+      signal,
+    )
     if (res.flashcards && res.flashcards.length > 0) {
-      return res.flashcards.map((c) => ({
-        id: c.id || uid("fc"),
+      const now = nowIso()
+      const cards: Flashcard[] = res.flashcards.map((c, idx) => ({
+        id: c.id ? `${deckId}-${c.id}` : uid(`fc-${idx}`),
         workspaceId: ctx.workspaceId,
-        documentId: ctx.document?.id ?? null,
+        documentId: c.citation?.documentId ?? ctx.document?.id ?? null,
+        deckId,
         front: c.front,
         back: c.back,
+        example: c.example,
+        cardStyle: c.cardStyle ?? res.card_style ?? cardStyle,
+        citation: c.citation
+          ? {
+              documentId: c.citation.documentId ?? ctx.document?.id ?? null,
+              documentName: c.citation.documentName || sourceLabel,
+              pageNumber: c.citation.pageNumber ?? 1,
+              chunkIndex: c.citation.chunkIndex ?? null,
+              snippet: c.citation.snippet,
+            }
+          : ctx.document
+            ? {
+                documentId: ctx.document.id,
+                documentName: ctx.document.fileName,
+                pageNumber: 1,
+                chunkIndex: 0,
+              }
+            : null,
         status: c.status || "new",
-        isMock: c.is_mock ?? false,
+        reviewCount: 0,
+        intervalDays: 0,
+        isMock: c.is_mock ?? res.is_mock ?? false,
       }))
+
+      return {
+        id: deckId,
+        workspaceId: ctx.workspaceId,
+        documentId: ctx.document?.id ?? null,
+        documentName: ctx.document?.fileName ?? null,
+        title: res.title || `Flashcards · ${cleanFocus || sourceLabel}`,
+        cardStyle: res.card_style ?? cardStyle,
+        focusPrompt: cleanFocus,
+        cards,
+        createdAt: now,
+        updatedAt: now,
+        isMock: res.is_mock ?? false,
+      }
+    }
+    if (res.error) {
+      throw new Error(res.error)
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err
+    }
+    if (err instanceof Error && err.message) {
+      throw err
+    }
     console.warn("AI flashcards fallback:", err)
   }
-  return generateStudyFlashcards(ctx)
+
+  const fallbackCards = generateStudyFlashcards(ctx, safeCount, cardStyle).map((c) => ({
+    ...c,
+    deckId,
+  }))
+  const now = nowIso()
+  return {
+    id: deckId,
+    workspaceId: ctx.workspaceId,
+    documentId: ctx.document?.id ?? null,
+    documentName: ctx.document?.fileName ?? null,
+    title: cleanFocus ? `Flashcards · ${cleanFocus}` : `Flashcards · ${sourceLabel}`,
+    cardStyle,
+    focusPrompt: cleanFocus,
+    cards: fallbackCards,
+    createdAt: now,
+    updatedAt: now,
+    isMock: true,
+  }
 }
 
 /**
@@ -479,49 +569,95 @@ export function generateStudyQuiz(
 }
 
 /**
- * Sinh bộ thẻ Flashcards mới từ tài liệu đã chọn
+ * Sinh bộ thẻ Flashcards mới từ tài liệu đã chọn (chế độ cục bộ / ngoại tuyến)
  */
-export function generateStudyFlashcards(ctx: StudySourceContext): Flashcard[] {
-  const docId = ctx.document?.id ?? null
-  const docName = ctx.document?.fileName ?? "Tài liệu"
-  const raw = ctx.document?.extractedText ?? ""
-  const sentences = raw
-    .split(/\n+/)
+export function generateStudyFlashcards(
+  ctx: StudySourceContext,
+  count = 6,
+  cardStyle: FlashcardStyle = "term_definition",
+): Flashcard[] {
+  const safeCount = Math.min(Math.max(Math.round(count || 6), 1), 40)
+  const refDoc = ctx.document ?? ctx.documentsInScope[0] ?? null
+  const docId = refDoc?.id ?? null
+  const docName = refDoc?.fileName ?? "Tài liệu"
+  const docs = ctx.document ? [ctx.document] : ctx.documentsInScope
+  const sentences = docs
+    .flatMap((d) => (d.extractedText || "").split(/\n+/))
     .map((s) => s.trim())
-    .filter((s) => s.length > 25)
+    .filter((s) => s.length >= 20)
 
-  if (sentences.length >= 2) {
-    return sentences.slice(0, 3).map((line, idx) => ({
-      id: uid("fc"),
-      workspaceId: ctx.workspaceId,
-      documentId: docId,
-      front: `Ý chính #${idx + 1} trong ${docName}`,
-      back: line,
-      status: "new" as const,
-      isMock: true,
-    }))
+  if (sentences.length > 0) {
+    return Array.from({ length: safeCount }, (_, idx) => {
+      const line = sentences[idx % sentences.length]
+      const suffix = idx >= sentences.length ? ` (#${idx + 1})` : ""
+      const front =
+        cardStyle === "qa"
+          ? `Nội dung trọng tâm #${idx + 1} trong "${docName}" là gì?`
+          : cardStyle === "cloze"
+            ? `Ghi nhớ kiến thức #${idx + 1}: [...] (nguồn ${docName})`
+            : `Kiến thức trọng tâm #${idx + 1} · ${docName}${suffix}`
+      return {
+        id: uid("fc"),
+        workspaceId: ctx.workspaceId,
+        documentId: docId,
+        front,
+        back: line,
+        example: `Trích từ "${docName}"`,
+        cardStyle,
+        citation: refDoc
+          ? {
+              documentId: refDoc.id,
+              documentName: refDoc.fileName,
+              pageNumber: 1,
+              chunkIndex: 0,
+              snippet: line.slice(0, 180),
+            }
+          : null,
+        status: "new" as const,
+        reviewCount: 0,
+        intervalDays: 0,
+        isMock: true,
+      }
+    })
   }
 
-  return [
+  const fallbackPool: Array<{ front: string; back: string; example: string }> = [
     {
-      id: uid("fc"),
-      workspaceId: ctx.workspaceId,
-      documentId: docId,
-      front: `Vai trò của RRF trong ${docName}`,
-      back: "Hợp nhất thứ hạng từ Dense Search và BM25 trước khi đưa qua Reranker.",
-      status: "new",
-      isMock: true,
+      front: `Nội dung trọng tâm trong ${docName}`,
+      back: `Rà soát lại tài liệu "${docName}" trong Trình xem nguồn để đối chiếu luận điểm chính.`,
+      example: `Tài liệu nguồn: ${docName}`,
     },
     {
-      id: uid("fc"),
-      workspaceId: ctx.workspaceId,
-      documentId: docId,
-      front: "Điều kiện kiểm chứng Citation",
-      back: "Citation phải gắn với ID tài liệu ổn định, số trang và đoạn trích (snippet).",
-      status: "new",
-      isMock: true,
+      front: `Mục tiêu ôn tập với ${docName}`,
+      back: "Tổng hợp từ khóa, định nghĩa và câu hỏi tự kiểm tra để củng cố trí nhớ dài hạn.",
+      example: "Ôn tập định kỳ theo Spaced Repetition",
     },
   ]
+
+  return Array.from({ length: safeCount }, (_, idx) => {
+    const item = fallbackPool[idx % fallbackPool.length]
+    return {
+      id: uid("fc"),
+      workspaceId: ctx.workspaceId,
+      documentId: docId,
+      front: idx >= fallbackPool.length ? `${item.front} (#${idx + 1})` : item.front,
+      back: item.back,
+      example: item.example,
+      cardStyle,
+      citation: refDoc
+        ? {
+            documentId: refDoc.id,
+            documentName: refDoc.fileName,
+            pageNumber: 1,
+            chunkIndex: 0,
+          }
+        : null,
+      status: "new" as const,
+      reviewCount: 0,
+      intervalDays: 0,
+      isMock: true,
+    }
+  })
 }
 
 /**

@@ -572,20 +572,28 @@ export async function fetchAiQuizApi(
   })
 }
 
+export type FlashcardStyleApi = "term_definition" | "qa" | "vocabulary" | "cloze"
+
 export interface StudyFlashcardsPayload {
   workspace_id: string
   document_id?: string | null
   document_ids?: string[] | null
   count?: number
+  card_style?: FlashcardStyleApi
   focus_prompt?: string | null
   model?: string
 }
 
 export interface StudyFlashcardsResponse {
+  title?: string
+  card_style?: FlashcardStyleApi
   flashcards: Array<{
     id: string
     front: string
     back: string
+    example?: string
+    cardStyle?: FlashcardStyleApi
+    citation?: StudyQuizCitationPayload | null
     status: "new" | "remembered" | "review"
     is_mock: boolean
   }>
@@ -593,11 +601,15 @@ export interface StudyFlashcardsResponse {
   error?: string
 }
 
-export async function fetchAiFlashcardsApi(payload: StudyFlashcardsPayload): Promise<StudyFlashcardsResponse> {
+export async function fetchAiFlashcardsApi(
+  payload: StudyFlashcardsPayload,
+  signal?: AbortSignal,
+): Promise<StudyFlashcardsResponse> {
   return request<StudyFlashcardsResponse>("/api/v1/study/flashcards", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   })
 }
 
