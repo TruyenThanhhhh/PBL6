@@ -1,4 +1,12 @@
-import type { AIMode, ChatMessage, Conversation, KnowledgeDocument, SystemStatus, Workspace } from "@/types"
+import type {
+  AIMode,
+  ChatMessage,
+  Conversation,
+  KnowledgeDocument,
+  SearchHit,
+  SystemStatus,
+  Workspace,
+} from "@/types"
 import { MOCK_ANSWER } from "@/store/app-store"
 import { authHeaders, clearSession } from "@/services/auth-service"
 import { fileKindFromName, nowIso, uid } from "@/utils/format"
@@ -32,48 +40,116 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
   }
 }
 
-export async function fetchWorkspaces(): Promise<Workspace[]> {
-  const data = await request<{ workspaces: Array<Record<string, string>> }>("/api/v1/workspaces")
-  return (data.workspaces ?? []).map((w) => ({
-    id: w.id,
-    name: w.name,
-    description: w.description ?? "",
-    createdAt: w.created_at ?? nowIso(),
-    updatedAt: w.created_at ?? nowIso(),
-  }))
+export function mapBackendWorkspace(w: Record<string, unknown>): Workspace {
+  const createdAt = String(w.created_at ?? nowIso())
+  const updatedAt = String(w.updated_at ?? createdAt)
+  return {
+    id: String(w.id),
+    name: String(w.name ?? "Workspace mới"),
+    description: String(w.description ?? ""),
+    category: w.category ? String(w.category) : "Chung",
+    icon: w.icon ? String(w.icon) : "folder",
+    docCount: w.doc_count != null ? Number(w.doc_count) : undefined,
+    conversationCount: w.conversation_count != null ? Number(w.conversation_count) : undefined,
+    createdAt,
+    updatedAt,
+  }
 }
 
-export async function createWorkspaceApi(name: string, description = ""): Promise<Workspace> {
-  const data = await request<{ workspace: { id: string; name: string; description?: string } }>(
+export async function fetchWorkspaces(): Promise<Workspace[]> {
+  const data = await request<{ workspaces: Array<Record<string, unknown>> }>("/api/v1/workspaces")
+  return (data.workspaces ?? []).map(mapBackendWorkspace)
+}
+
+export async function createWorkspaceApi(
+  name = "",
+  description = "",
+  category = "Chung",
+): Promise<Workspace> {
+  const data = await request<{ workspace: Record<string, unknown> }>(
     "/api/v1/workspaces",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, category }),
     },
   )
-  return {
-    id: data.workspace.id,
-    name: data.workspace.name,
-    description: data.workspace.description ?? "",
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  }
+  return mapBackendWorkspace(data.workspace)
 }
 
-export async function updateWorkspaceApi(workspaceId: string, name: string, description = "") {
-  return request<{ workspace: { id: string; name: string; description?: string } }>(
+export async function updateWorkspaceApi(
+  workspaceId: string,
+  name: string,
+  description = "",
+  category?: string,
+) {
+  const body: Record<string, string> = { name, description }
+  if (category !== undefined) body.category = category
+  const data = await request<{ workspace: Record<string, unknown> }>(
     `/api/v1/workspaces/${workspaceId}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify(body),
     },
   )
+  return { workspace: mapBackendWorkspace(data.workspace) }
 }
 
 export async function deleteWorkspaceApi(workspaceId: string) {
   return request<{ message: string }>(`/api/v1/workspaces/${workspaceId}`, { method: "DELETE" })
+}
+
+export async function generateWorkspaceMetadataApi(workspaceId: string): Promise<{
+  updated: boolean
+  source: string
+  workspace: Workspace | null
+}> {
+  const data = await request<{
+    updated: boolean
+    source: string
+    workspace?: Record<string, unknown> | null
+  }>(`/api/v1/workspaces/${workspaceId}/generate-metadata`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  })
+  return {
+    updated: Boolean(data.updated),
+    source: String(data.source ?? "ai"),
+    workspace: data.workspace ? mapBackendWorkspace(data.workspace) : null,
+  }
+}
+
+export async function searchWorkspacesSemanticApi(
+  query: string,
+  signal?: AbortSignal,
+): Promise<{ workspaces: Workspace[]; searchMode: string }> {
+  const params = new URLSearchParams({ q: query })
+  const data = await request<{ workspaces: Array<Record<string, unknown>>; search_mode?: string }>(
+    `/api/v1/workspaces/search?${params.toString()}`,
+    { signal },
+  )
+  return {
+    workspaces: (data.workspaces ?? []).map(mapBackendWorkspace),
+    searchMode: String(data.search_mode ?? "semantic"),
+  }
+}
+
+export async function searchGlobalSemanticApi(
+  query: string,
+  kind = "all",
+  signal?: AbortSignal,
+): Promise<{ hits: SearchHit[]; searchMode: string }> {
+  const params = new URLSearchParams({ q: query, kind })
+  const data = await request<{ hits: SearchHit[]; search_mode?: string }>(
+    `/api/v1/search?${params.toString()}`,
+    { signal },
+  )
+  return {
+    hits: data.hits ?? [],
+    searchMode: String(data.search_mode ?? "semantic"),
+  }
 }
 
 export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocument[]> {
@@ -121,10 +197,16 @@ export function uploadDocumentWithProgress(
   file: File,
   options?: {
     notebookId?: string | null
+    deferMetadata?: boolean
     onProgress?: (percent: number) => void
     signal?: AbortSignal
   },
-): Promise<{ message: string; document?: Record<string, unknown> }> {
+): Promise<{
+  message: string
+  document?: Record<string, unknown>
+  workspace?: Record<string, unknown> | null
+  metadata_source?: string
+}> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${API_BASE}/api/v1/workspaces/${workspaceId}/documents/upload`)
@@ -166,6 +248,9 @@ export function uploadDocumentWithProgress(
     form.append("file", file)
     if (options?.notebookId) {
       form.append("notebook_id", options.notebookId)
+    }
+    if (options?.deferMetadata) {
+      form.append("defer_metadata", "true")
     }
     xhr.send(form)
   })

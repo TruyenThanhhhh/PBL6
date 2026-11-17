@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Check, ChevronDown, FolderOpen, FolderPlus, Layers } from "lucide-react"
 import {
@@ -7,7 +6,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui"
-import { NameDialog } from "@/components/common/NameDialog"
+import { createQuickWorkspaceFlow } from "@/features/workspaces/workspace-utils"
+import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
 import { cn } from "@/utils/cn"
 
@@ -26,16 +26,14 @@ export function WorkspaceSwitcher({
 }: WorkspaceSwitcherProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { authenticated } = useAuthSession()
 
   const workspaces = useAppStore((s) => s.workspaces)
   const currentId = useAppStore((s) => s.currentWorkspaceId)
   const setCurrent = useAppStore((s) => s.setCurrentWorkspace)
-  const createWorkspace = useAppStore((s) => s.createWorkspace)
   const documents = useAppStore((s) => s.documents)
   const conversations = useAppStore((s) => s.conversations)
   const toast = useAppStore((s) => s.toast)
-
-  const [createOpen, setCreateOpen] = useState(false)
 
   const currentWs = workspaces.find((w) => w.id === currentId) ?? workspaces[0]
   const currentDocCount = documents.filter((d) => d.workspaceId === currentWs?.id).length
@@ -233,9 +231,22 @@ export function WorkspaceSwitcher({
 
         <DropdownMenuItem
           icon={<FolderPlus className="h-3.5 w-3.5 text-brand" />}
-          onClick={() => setCreateOpen(true)}
+          onClick={() => {
+            void createQuickWorkspaceFlow(authenticated)
+              .then((ws) => {
+                onSwitch?.(ws.id)
+                navigate("/chat")
+              })
+              .catch((err) => {
+                toast({
+                  title: "Không thể tạo Workspace",
+                  description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                  tone: "error",
+                })
+              })
+          }}
         >
-          Tạo không gian mới...
+          Tạo không gian mới
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -245,24 +256,6 @@ export function WorkspaceSwitcher({
           Quản lý tất cả không gian
         </DropdownMenuItem>
       </DropdownMenu>
-
-      <NameDialog
-        open={createOpen}
-        title="Tạo không gian làm việc mới"
-        confirmLabel="Tạo không gian"
-        showDescription
-        onClose={() => setCreateOpen(false)}
-        onSubmit={(name, description) => {
-          const ws = createWorkspace(name, description)
-          setCurrent(ws.id)
-          toast({
-            title: "Đã tạo không gian mới",
-            description: `Đang làm việc trên: ${ws.name}`,
-            tone: "success",
-          })
-          onSwitch?.(ws.id)
-        }}
-      />
     </>
   )
 }

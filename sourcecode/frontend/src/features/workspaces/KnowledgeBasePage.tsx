@@ -14,10 +14,12 @@ import {
   Select,
   Tooltip,
 } from "@/components/ui"
+import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
 import { isWithinDays, relativeTime } from "@/utils/format"
 import type { Workspace } from "@/types"
 import {
+  createQuickWorkspaceFlow,
   describeWorkspaceDeletion,
   getWorkspaceCounts,
   hasDuplicateName,
@@ -27,6 +29,7 @@ type DocFilter = "all" | "ready" | "processing" | "failed"
 
 export function KnowledgeBasePage() {
   const navigate = useNavigate()
+  const { authenticated } = useAuthSession()
   const workspaces = useAppStore((s) => s.workspaces)
   const notebooks = useAppStore((s) => s.notebooks)
   const documents = useAppStore((s) => s.documents)
@@ -34,7 +37,6 @@ export function KnowledgeBasePage() {
   const conversations = useAppStore((s) => s.conversations)
   const currentWorkspaceId = useAppStore((s) => s.currentWorkspaceId)
   const setCurrent = useAppStore((s) => s.setCurrentWorkspace)
-  const createWorkspace = useAppStore((s) => s.createWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
   const createConversation = useAppStore((s) => s.createConversation)
@@ -45,9 +47,21 @@ export function KnowledgeBasePage() {
   const [sort, setSort] = useState<"updated" | "name" | "documents">("updated")
   const [range, setRange] = useState<"all" | "7" | "30">("all")
   const [docState, setDocState] = useState<DocFilter>("all")
-  const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Workspace | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null)
+
+  const handleQuickCreate = async () => {
+    try {
+      const ws = await createQuickWorkspaceFlow(authenticated)
+      navigate(`/knowledge/${ws.id}`)
+    } catch (err) {
+      toast({
+        title: "Không thể tạo workspace",
+        description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+        tone: "error",
+      })
+    }
+  }
 
   const data = { notebooks, documents, notes, conversations }
   const filtersActive = q !== "" || range !== "all" || docState !== "all"
@@ -146,7 +160,7 @@ export function KnowledgeBasePage() {
         title="Kho tri thức"
         description="Tổ chức workspace và notebook. Dữ liệu lưu cục bộ trong trình duyệt, chưa đồng bộ máy chủ."
         actions={
-          <Button leftIcon={<Plus className="h-4 w-4" />} onClick={() => setCreateOpen(true)}>
+          <Button leftIcon={<Plus className="h-4 w-4" />} onClick={() => void handleQuickCreate()}>
             Tạo workspace
           </Button>
         }
@@ -231,7 +245,7 @@ export function KnowledgeBasePage() {
           icon={<FolderOpen className="h-4 w-4" />}
           title="Chưa có workspace"
           description="Tạo workspace đầu tiên để bắt đầu tổ chức tài liệu, notebook và ghi chú."
-          action={<Button onClick={() => setCreateOpen(true)}>Tạo workspace</Button>}
+          action={<Button onClick={() => void handleQuickCreate()}>Tạo workspace</Button>}
         />
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -287,19 +301,6 @@ export function KnowledgeBasePage() {
         </div>
       )}
 
-      <NameDialog
-        open={createOpen}
-        title="Tạo workspace"
-        confirmLabel="Tạo"
-        showDescription
-        validate={validateName()}
-        onClose={() => setCreateOpen(false)}
-        onSubmit={(name, description) => {
-          const ws = createWorkspace(name, description)
-          toast({ title: "Đã tạo workspace", description: ws.name, tone: "success" })
-          navigate(`/knowledge/${ws.id}`)
-        }}
-      />
       <NameDialog
         open={Boolean(editTarget)}
         title="Đổi tên và mô tả workspace"

@@ -325,14 +325,27 @@ export const useAppStore = create<AppState>()(
           documents: get().documents.map((d) => (d.id === id ? { ...d, ...patch } : d)),
         }),
       deleteDocument: (id) => {
-        set({ documents: get().documents.filter((d) => d.id !== id) })
+        const target = get().documents.find((d) => d.id === id)
+        set({
+          documents: get().documents.filter((d) => d.id !== id),
+          workspaces: target
+            ? get().workspaces.map((w) =>
+                w.id === target.workspaceId && w.docCount != null
+                  ? { ...w, docCount: Math.max(0, w.docCount - 1) }
+                  : w,
+              )
+            : get().workspaces,
+        })
         get().log("Đã xóa một tài liệu", "document")
       },
       replaceDocumentsFromBackend: (docs) => set({ documents: docs }),
       mergeWorkspacesFromBackend: (rows) => {
         const local = get().workspaces
-        const extra = rows.filter((r) => !local.some((l) => l.id === r.id || l.name === r.name))
-        if (extra.length) set({ workspaces: [...local, ...extra] })
+        const incomingById = new Map(rows.map((r) => [r.id, r]))
+        const updated = local.map((l) => (incomingById.has(l.id) ? { ...l, ...incomingById.get(l.id)! } : l))
+        const existingIds = new Set(local.map((l) => l.id))
+        const added = rows.filter((r) => !existingIds.has(r.id))
+        set({ workspaces: [...added, ...updated] })
       },
       replaceWorkspacesFromBackend: (rows) => {
         if (!rows.length) return

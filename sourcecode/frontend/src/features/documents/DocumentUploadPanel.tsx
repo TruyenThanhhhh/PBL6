@@ -2,7 +2,13 @@ import { useRef, useState } from "react"
 import { AlertCircle, CheckCircle2, FileUp, Loader2, Trash2, Upload, X } from "lucide-react"
 import { Alert, Badge, Button } from "@/components/ui"
 import { buildUploadedDocument, useAppStore } from "@/store/app-store"
-import { fetchDocuments, uploadDocumentWithProgress } from "@/services/api"
+import {
+  fetchDocuments,
+  generateWorkspaceMetadataApi,
+  mapBackendWorkspace,
+  uploadDocumentWithProgress,
+} from "@/services/api"
+import type { Workspace } from "@/types"
 import { ACCEPTED_EXTENSIONS, formatBytes, uid } from "@/utils/format"
 import { cn } from "@/utils/cn"
 import {
@@ -24,12 +30,14 @@ export function DocumentUploadPanel({
   const documents = useAppStore((s) => s.documents)
   const addDocument = useAppStore((s) => s.addDocument)
   const replaceDocs = useAppStore((s) => s.replaceDocumentsFromBackend)
+  const mergeWorkspaces = useAppStore((s) => s.mergeWorkspacesFromBackend)
   const status = useAppStore((s) => s.status)
   const toast = useAppStore((s) => s.toast)
 
   const [drag, setDrag] = useState(false)
   const [queue, setQueue] = useState<StagedUploadItem[]>([])
   const [uploading, setUploading] = useState(false)
+  const [updatingMetadata, setUpdatingMetadata] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -72,6 +80,8 @@ export function DocumentUploadPanel({
     abortRef.current = controller
 
     let successCount = 0
+    const isBatchUpload = validItems.length > 1
+    let updatedWorkspace: Workspace | null = null
 
     for (const item of validItems) {
       if (controller.signal.aborted) break
@@ -96,6 +106,7 @@ export function DocumentUploadPanel({
         if (status.backendOnline) {
           const uploadPromise = uploadDocumentWithProgress(targetWorkspaceId, item.file, {
             notebookId: targetNotebookId || null,
+            deferMetadata: isBatchUpload,
             signal: controller.signal,
             onProgress: (pct) => {
               // Mạng upload chiếm 5% - 25%
@@ -158,6 +169,9 @@ export function DocumentUploadPanel({
           })
 
           const res = await uploadPromise
+          if (!isBatchUpload && res?.workspace) {
+            updatedWorkspace = mapBackendWorkspace(res.workspace)
+          }
 
           if (stageTimer) {
             clearInterval(stageTimer)
@@ -245,9 +259,30 @@ export function DocumentUploadPanel({
       } catch {
         // Giữ nguyên danh sách nếu gọi lại lỗi
       }
+
+      if (isBatchUpload || !updatedWorkspace) {
+        setUpdatingMetadata(true)
+        try {
+          const metaRes = await generateWorkspaceMetadataApi(targetWorkspaceId)
+          if (metaRes.workspace) {
+            updatedWorkspace = metaRes.workspace
+          }
+        } catch {
+          // Không làm gián đoạn trạng thái upload thành công nếu sinh metadata lỗi
+        } finally {
+          setUpdatingMetadata(false)
+        }
+      }
+
+      if (updatedWorkspace) {
+        mergeWorkspaces([updatedWorkspace])
+      }
+
       toast({
         title: `Đã xử lý & lập chỉ mục ${successCount} tài liệu thành công`,
-        description: "Các đoạn văn bản và vector BGE-M3 đã sẵn sàng phục vụ hỏi đáp AI.",
+        description: updatedWorkspace
+          ? `Đã cập nhật workspace "${updatedWorkspace.name}".`
+          : "Các đoạn văn bản và vector BGE-M3 đã sẵn sàng phục vụ hỏi đáp AI.",
         tone: "success",
       })
     } else if (!status.backendOnline && successCount > 0) {
@@ -268,6 +303,12 @@ export function DocumentUploadPanel({
 
   return (
     <section aria-label="Tải lên tài liệu" className="motivo-card mb-6 p-4">
+      {updatingMetadata ? (
+        <div className="mb-3 flex items-center gap-2 rounded-lg border border-brand/25 bg-brand-soft/60 px-3 py-2 text-xs font-medium text-ink">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
+          <span>Đã tải xong lô tài liệu · AI đang tạo tiêu đề và mô tả cho Workspace...</span>
+        </div>
+      ) : null}
       {/* Dropzone */}
       <div
         onDragOver={(e) => {

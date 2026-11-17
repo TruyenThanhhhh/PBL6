@@ -70,6 +70,7 @@ def init_db() -> None:
         description TEXT DEFAULT '',
         category TEXT DEFAULT 'Chung',
         icon TEXT DEFAULT 'folder',
+        auto_metadata INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -79,8 +80,21 @@ def init_db() -> None:
         "owner_user_id": "TEXT REFERENCES users(id) ON DELETE CASCADE",
         "category": "TEXT DEFAULT 'Chung'",
         "icon": "TEXT DEFAULT 'folder'",
+        "auto_metadata": "INTEGER DEFAULT 1",
         "updated_at": "TIMESTAMP",
     })
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS workspace_embeddings (
+        workspace_id TEXT PRIMARY KEY,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        source_text TEXT NOT NULL,
+        vector BLOB NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    );
+    """)
 
     # Tạo workspace mặc định nếu chưa có
     cursor.execute("SELECT id FROM workspaces WHERE id = 'default'")
