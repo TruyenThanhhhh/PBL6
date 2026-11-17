@@ -75,6 +75,18 @@ export interface Note {
   updatedAt: string
 }
 
+export interface SavedSummary {
+  id: string
+  workspaceId: string
+  documentId: string | null
+  documentName?: string | null
+  title: string
+  markdown: string
+  focusPrompt?: string
+  isMock: boolean
+  createdAt: string
+}
+
 export interface Citation {
   refId: number
   /** ID nguồn ổn định (documentId cho nguồn local hoặc URL/slug cho nguồn web) */

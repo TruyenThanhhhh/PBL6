@@ -681,8 +681,14 @@ export interface StudyArtifactRecord {
   created_at?: string
 }
 
-export async function fetchStudyArtifactsApi(workspaceId: string): Promise<{ artifacts: StudyArtifactRecord[] }> {
-  return request<{ artifacts: StudyArtifactRecord[] }>(`/api/v1/workspaces/${workspaceId}/study-artifacts`)
+export async function fetchStudyArtifactsApi(
+  workspaceId: string,
+  artifactType?: string,
+): Promise<{ artifacts: StudyArtifactRecord[] }> {
+  const qs = artifactType ? `?artifact_type=${encodeURIComponent(artifactType)}` : ""
+  return request<{ artifacts: StudyArtifactRecord[] }>(
+    `/api/v1/workspaces/${workspaceId}/study-artifacts${qs}`,
+  )
 }
 
 export async function saveStudyArtifactApi(

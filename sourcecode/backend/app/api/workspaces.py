@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -561,16 +562,43 @@ async def delete_note(note_id: str, user: Dict[str, Any] = Depends(get_current_u
     return {"message": "Đã xóa ghi chú"}
 
 
+def _normalize_utc_timestamp(value: Optional[str]) -> str:
+    """Chuẩn hóa timestamp SQLite ('YYYY-MM-DD HH:MM:SS') sang ISO-8601 UTC."""
+    raw = (value or "").strip()
+    if not raw:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if "T" not in raw and " " in raw:
+        raw = raw.replace(" ", "T", 1)
+    if not raw.endswith("Z") and "+" not in raw[10:] and "-" not in raw[10:]:
+        raw = f"{raw}Z"
+    return raw
+
+
 @router.get("/workspaces/{workspace_id}/study-artifacts")
-def list_study_artifacts(workspace_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+def list_study_artifacts(
+    workspace_id: str,
+    artifact_type: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
     rows = []
-    for row in conn.execute(
-        "SELECT * FROM study_artifacts WHERE workspace_id = ? ORDER BY created_at DESC",
-        (workspace_id,),
-    ).fetchall():
+    clean_type = (artifact_type or "").strip()
+    if clean_type:
+        cursor = conn.execute(
+            """SELECT * FROM study_artifacts
+               WHERE workspace_id = ? AND artifact_type = ?
+               ORDER BY created_at DESC""",
+            (workspace_id, clean_type),
+        )
+    else:
+        cursor = conn.execute(
+            "SELECT * FROM study_artifacts WHERE workspace_id = ? ORDER BY created_at DESC",
+            (workspace_id,),
+        )
+    for row in cursor.fetchall():
         item = dict(row)
+        item["created_at"] = _normalize_utc_timestamp(item.get("created_at"))
         try:
             item["data"] = json.loads(item.pop("data_json", "{}"))
         except Exception:
@@ -586,14 +614,30 @@ def create_study_artifact(
     req: StudyArtifactCreateRequest,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
+    clean_title = req.title.strip()
+    clean_type = req.artifact_type.strip()
+    if not clean_title or not clean_type:
+        raise HTTPException(status_code=400, detail="Tiêu đề và loại học liệu không được để trống")
+
     conn = get_db_connection()
     _assert_workspace_owner(conn, workspace_id, user["id"])
+
+    doc_id = req.document_id
+    if doc_id:
+        doc_exists = conn.execute(
+            "SELECT 1 FROM documents WHERE id = ? AND workspace_id = ?",
+            (doc_id, workspace_id),
+        ).fetchone()
+        if not doc_exists:
+            doc_id = None
+
     artifact_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data_json = json.dumps(req.data, ensure_ascii=False)
     conn.execute(
-        """INSERT INTO study_artifacts (id, workspace_id, document_id, artifact_type, title, data_json)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (artifact_id, workspace_id, req.document_id, req.artifact_type.strip(), req.title.strip(), data_json),
+        """INSERT INTO study_artifacts (id, workspace_id, document_id, artifact_type, title, data_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (artifact_id, workspace_id, doc_id, clean_type, clean_title, data_json, created_at),
     )
     conn.commit()
     conn.close()
@@ -601,10 +645,11 @@ def create_study_artifact(
         "artifact": {
             "id": artifact_id,
             "workspace_id": workspace_id,
-            "document_id": req.document_id,
-            "artifact_type": req.artifact_type.strip(),
-            "title": req.title.strip(),
+            "document_id": doc_id,
+            "artifact_type": clean_type,
+            "title": clean_title,
             "data": req.data,
+            "created_at": created_at,
         }
     }
 

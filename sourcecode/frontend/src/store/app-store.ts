@@ -12,6 +12,7 @@ import type {
   Notebook,
   Quiz,
   ResearchProject,
+  SavedSummary,
   StudyTask,
   SystemStatus,
   Toast,
@@ -82,6 +83,7 @@ interface AppState {
   notebooks: Notebook[]
   documents: KnowledgeDocument[]
   notes: Note[]
+  savedSummaries: SavedSummary[]
   conversations: Conversation[]
   researchProjects: ResearchProject[]
   quizzes: Quiz[]
@@ -144,6 +146,9 @@ interface AppState {
   saveNote: (note: Note) => void
   deleteNote: (id: string) => void
 
+  saveSavedSummary: (summary: SavedSummary) => void
+  deleteSavedSummary: (id: string) => void
+
   createConversation: (workspaceId: string, title?: string) => Conversation
   renameConversation: (id: string, title: string) => void
   deleteConversation: (id: string) => void
@@ -204,6 +209,7 @@ export const useAppStore = create<AppState>()(
       notebooks: seedNotebooks,
       documents: seedDocuments,
       notes: seedNotes,
+      savedSummaries: [],
       conversations: seedConversations,
       researchProjects: seedResearch,
       quizzes: seedQuizzes,
@@ -366,6 +372,20 @@ export const useAppStore = create<AppState>()(
       },
       deleteNote: (id) => set({ notes: get().notes.filter((n) => n.id !== id) }),
 
+      saveSavedSummary: (summary) => {
+        const currentList = get().savedSummaries ?? []
+        const exists = currentList.some((s) => s.id === summary.id)
+        set({
+          savedSummaries: exists
+            ? currentList.map((s) => (s.id === summary.id ? summary : s))
+            : [summary, ...currentList],
+        })
+      },
+      deleteSavedSummary: (id) =>
+        set({
+          savedSummaries: (get().savedSummaries ?? []).filter((s) => s.id !== id),
+        }),
+
       createConversation: (workspaceId, title = "Cuộc trò chuyện mới") => {
         const conv: Conversation = {
           id: uid("conv"),
@@ -471,6 +491,7 @@ export const useAppStore = create<AppState>()(
           notebooks: seedNotebooks,
           documents: seedDocuments,
           notes: seedNotes,
+          savedSummaries: [],
           conversations: seedConversations,
           researchProjects: seedResearch,
           quizzes: seedQuizzes,
@@ -515,6 +536,7 @@ export const useAppStore = create<AppState>()(
         notebooks: s.notebooks,
         documents: s.documents,
         notes: s.notes,
+        savedSummaries: s.savedSummaries,
         conversations: s.conversations,
         researchProjects: s.researchProjects,
         quizzes: s.quizzes,
