@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, Body, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -13,7 +13,14 @@ from app.services.document_service import (
     process_and_index_document,
     reindex_document_embeddings,
 )
-from app.config import UPLOAD_MAX_BYTES
+from app.services.workspace_ai_service import (
+    generate_and_apply_workspace_metadata,
+    generate_unique_default_workspace_name,
+    semantic_global_search,
+    semantic_search_workspaces,
+    upsert_workspace_embedding,
+)
+from app.config import DEFAULT_LLM_MODEL, UPLOAD_MAX_BYTES
 from app.api.auth import get_current_user, get_current_user_optional
 
 router = APIRouter(prefix="/api/v1", tags=["Workspaces & Documents"])
@@ -21,10 +28,21 @@ logger = logging.getLogger(__name__)
 
 
 class WorkspaceCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=1000)
     category: str = Field(default="Chung", max_length=60)
     icon: str = Field(default="folder", max_length=40)
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    category: Optional[str] = Field(default=None, max_length=60)
+    icon: Optional[str] = Field(default=None, max_length=40)
+
+
+class WorkspaceGenerateMetadataRequest(BaseModel):
+    model: Optional[str] = None
 
 
 class NotebookCreateRequest(BaseModel):
@@ -56,53 +74,125 @@ def _assert_workspace_owner(conn, workspace_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="Không tìm thấy workspace")
 
 
+def _fetch_workspace_with_counts(conn, workspace_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT w.*,
+               (SELECT COUNT(*) FROM documents d WHERE d.workspace_id = w.id) AS doc_count,
+               (SELECT COUNT(*) FROM chat_sessions s WHERE s.workspace_id = w.id) AS conversation_count
+        FROM workspaces w
+        WHERE w.id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 @router.post("/workspaces", status_code=201)
-def create_workspace(req: WorkspaceCreateRequest, user: Dict[str, Any] = Depends(get_current_user)):
+async def create_workspace(req: WorkspaceCreateRequest, user: Dict[str, Any] = Depends(get_current_user)):
     workspace_id = str(uuid.uuid4())
     conn = get_db_connection()
-    conn.execute(
-        "INSERT INTO workspaces (id, name, description, category, icon, owner_user_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (workspace_id, req.name.strip(), req.description.strip(), req.category.strip(), req.icon.strip(), user["id"]),
-    )
-    conn.execute(
-        "INSERT INTO user_activities (id, workspace_id, activity_type, message) VALUES (?, ?, ?, ?)",
-        (str(uuid.uuid4()), workspace_id, "workspace", f"Tạo không gian làm việc '{req.name.strip()}'"),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
-    conn.close()
-    return {"workspace": dict(row)}
+    try:
+        ws_name = req.name.strip() or generate_unique_default_workspace_name(conn, user["id"])
+        conn.execute(
+            "INSERT INTO workspaces (id, name, description, category, icon, owner_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (workspace_id, ws_name, req.description.strip(), req.category.strip() or "Chung", req.icon.strip() or "folder", user["id"]),
+        )
+        conn.execute(
+            "INSERT INTO user_activities (id, workspace_id, activity_type, message) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), workspace_id, "workspace", f"Tạo không gian làm việc '{ws_name}'"),
+        )
+        conn.commit()
+        ws = _fetch_workspace_with_counts(conn, workspace_id)
+    finally:
+        conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    return {"workspace": ws}
 
 
 @router.patch("/workspaces/{workspace_id}")
-def update_workspace(
+async def update_workspace(
     workspace_id: str,
-    req: WorkspaceCreateRequest,
+    req: WorkspaceUpdateRequest,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     conn = get_db_connection()
-    _assert_workspace_owner(conn, workspace_id, user["id"])
-    conn.execute(
-        "UPDATE workspaces SET name = ?, description = ?, category = ?, icon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (req.name.strip(), req.description.strip(), req.category.strip(), req.icon.strip(), workspace_id),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
-    conn.close()
-    return {"workspace": dict(row)}
+    try:
+        _assert_workspace_owner(conn, workspace_id, user["id"])
+        existing = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        new_name = req.name.strip() if req.name is not None else existing["name"]
+        new_desc = req.description.strip() if req.description is not None else (existing["description"] or "")
+        new_cat = req.category.strip() if req.category is not None else (existing["category"] or "Chung")
+        new_icon = req.icon.strip() if req.icon is not None else (existing["icon"] or "folder")
+        conn.execute(
+            "UPDATE workspaces SET name = ?, description = ?, category = ?, icon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_name, new_desc, new_cat, new_icon, workspace_id),
+        )
+        conn.commit()
+        ws = _fetch_workspace_with_counts(conn, workspace_id)
+    finally:
+        conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    return {"workspace": ws}
 
 
 @router.get("/workspaces")
 def list_workspaces(user: Dict[str, Any] = Depends(get_current_user)):
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM workspaces WHERE owner_user_id = ? ORDER BY created_at ASC",
-        (user["id"],),
-    )
-    rows = [dict(row) for row in cursor.fetchall()]
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT w.*,
+                       (SELECT COUNT(*) FROM documents d WHERE d.workspace_id = w.id) AS doc_count,
+                       (SELECT COUNT(*) FROM chat_sessions s WHERE s.workspace_id = w.id) AS conversation_count
+                FROM workspaces w
+                WHERE w.owner_user_id = ?
+                ORDER BY COALESCE(w.updated_at, w.created_at) DESC
+                """,
+                (user["id"],),
+            ).fetchall()
+        ]
+        return {"workspaces": rows}
+    finally:
+        conn.close()
+
+
+@router.get("/workspaces/search")
+async def search_workspaces(
+    q: str = "",
+    limit: int = 30,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    bounded_limit = min(max(limit, 1), 100)
+    return await run_in_threadpool(semantic_search_workspaces, user["id"], q, bounded_limit)
+
+
+@router.get("/search")
+async def search_all_knowledge(
+    q: str = "",
+    kind: str = "all",
+    limit: int = 24,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    allowed_kinds = {"all", "workspace", "notebook", "document", "note", "conversation"}
+    safe_kind = kind if kind in allowed_kinds else "all"
+    bounded_limit = min(max(limit, 1), 60)
+    return await run_in_threadpool(semantic_global_search, user["id"], q, safe_kind, bounded_limit)
+
+
+@router.post("/workspaces/{workspace_id}/generate-metadata")
+async def generate_workspace_metadata_endpoint(
+    workspace_id: str,
+    req: Optional[WorkspaceGenerateMetadataRequest] = Body(default=None),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    conn = get_db_connection()
+    _assert_workspace_owner(conn, workspace_id, user["id"])
     conn.close()
-    return {"workspaces": rows}
+    model = (req.model if req and req.model else DEFAULT_LLM_MODEL)
+    return await generate_and_apply_workspace_metadata(workspace_id, model=model)
 
 
 @router.delete("/workspaces/{workspace_id}")
@@ -146,7 +236,7 @@ def list_notebooks(workspace_id: str, user: Dict[str, Any] = Depends(get_current
 
 
 @router.post("/workspaces/{workspace_id}/notebooks", status_code=201)
-def create_notebook(
+async def create_notebook(
     workspace_id: str,
     req: NotebookCreateRequest,
     user: Dict[str, Any] = Depends(get_current_user),
@@ -161,23 +251,26 @@ def create_notebook(
     conn.commit()
     row = conn.execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
     conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
     return {"notebook": dict(row)}
 
 
 @router.delete("/notebooks/{notebook_id}")
-def delete_notebook(notebook_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+async def delete_notebook(notebook_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     conn = get_db_connection()
     owned = conn.execute(
-        """SELECT 1 FROM notebooks n JOIN workspaces w ON w.id = n.workspace_id
+        """SELECT n.workspace_id FROM notebooks n JOIN workspaces w ON w.id = n.workspace_id
            WHERE n.id = ? AND w.owner_user_id = ?""",
         (notebook_id, user["id"]),
     ).fetchone()
     if not owned:
         conn.close()
         raise HTTPException(status_code=404, detail="Không tìm thấy notebook")
+    ws_id = owned["workspace_id"]
     conn.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
     conn.commit()
     conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, ws_id)
     return {"message": "Đã xóa notebook"}
 
 
@@ -199,6 +292,7 @@ async def upload_document(
     workspace_id: str,
     file: UploadFile = File(...),
     notebook_id: Optional[str] = Form(default=None),
+    defer_metadata: bool = Form(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     conn = get_db_connection()
@@ -221,11 +315,31 @@ async def upload_document(
     except Exception as exc:
         logger.exception("Lỗi khi xử lý và lập chỉ mục tài liệu: %s", exc)
         raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý tài liệu: {str(exc)}") from exc
-    return {"message": "Tài liệu đã được tải lên và lập chỉ mục thành công", "document": result}
+
+    updated_workspace: Optional[Dict[str, Any]] = None
+    metadata_source = "deferred"
+    if defer_metadata:
+        await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    else:
+        try:
+            meta_res = await generate_and_apply_workspace_metadata(workspace_id)
+            updated_workspace = meta_res.get("workspace")
+            metadata_source = str(meta_res.get("source") or "ai")
+        except Exception:
+            logger.exception("Tự động tạo metadata workspace thất bại cho %s", workspace_id)
+            metadata_source = "error"
+            await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+
+    return {
+        "message": "Tài liệu đã được tải lên và lập chỉ mục thành công",
+        "document": result,
+        "workspace": updated_workspace,
+        "metadata_source": metadata_source,
+    }
 
 
 @router.delete("/documents/{document_id}")
-def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+async def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -239,6 +353,7 @@ def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_current
         conn.close()
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     file_path = row["file_path"]
+    ws_id = row["workspace_id"]
 
     cursor.execute("DELETE FROM chunks_fts WHERE document_id = ?", (document_id,))
     cursor.execute(
@@ -252,6 +367,7 @@ def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_current
     conn.commit()
     conn.close()
     Path(file_path).unlink(missing_ok=True)
+    await run_in_threadpool(upsert_workspace_embedding, ws_id)
     return {"message": "Đã xóa tài liệu thành công"}
 
 
@@ -407,7 +523,7 @@ def list_notes(workspace_id: str, user: Dict[str, Any] = Depends(get_current_use
 
 
 @router.post("/workspaces/{workspace_id}/notes", status_code=201)
-def create_note(
+async def create_note(
     workspace_id: str,
     req: NoteCreateRequest,
     user: Dict[str, Any] = Depends(get_current_user),
@@ -422,23 +538,26 @@ def create_note(
     conn.commit()
     row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
     return {"note": dict(row)}
 
 
 @router.delete("/notes/{note_id}")
-def delete_note(note_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+async def delete_note(note_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     conn = get_db_connection()
     owned = conn.execute(
-        """SELECT 1 FROM notes n JOIN workspaces w ON w.id = n.workspace_id
+        """SELECT n.workspace_id FROM notes n JOIN workspaces w ON w.id = n.workspace_id
            WHERE n.id = ? AND w.owner_user_id = ?""",
         (note_id, user["id"]),
     ).fetchone()
     if not owned:
         conn.close()
         raise HTTPException(status_code=404, detail="Không tìm thấy ghi chú")
+    ws_id = owned["workspace_id"]
     conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     conn.commit()
     conn.close()
+    await run_in_threadpool(upsert_workspace_embedding, ws_id)
     return {"message": "Đã xóa ghi chú"}
 
 

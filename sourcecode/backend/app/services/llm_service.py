@@ -539,3 +539,92 @@ async def stream_rag_answer(
         collector["engine"] = "fallback_pipeline"
     yield f"data: {json.dumps({'answer': fallback_answer, 'done': True}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def resolve_available_chat_model(
+    requested_model: str,
+    available_models: List[str],
+) -> Optional[str]:
+    """Chọn model chat khả dụng trong Ollama (ưu tiên model được yêu cầu)."""
+    if not available_models:
+        return None
+    if requested_model and requested_model in available_models:
+        return requested_model
+
+    tagged = [m for m in available_models if ":" in m and "embed" not in m.lower()]
+    text_only = [m for m in tagged if "-vl" not in m.lower() and "vl:" not in m.lower()]
+    if text_only:
+        return text_only[0]
+    if tagged:
+        return tagged[0]
+    non_embed = [m for m in available_models if "embed" not in m.lower()]
+    return non_embed[0] if non_embed else None
+
+
+def parse_json_response(raw: str) -> Any:
+    """Bóc tách JSON từ phản hồi LLM, kể cả khi bị bọc bởi markdown code fence."""
+    text = (raw or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    if not text:
+        raise ValueError("Phản hồi AI rỗng")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        starts = [idx for idx in (text.find("{"), text.find("[")) if idx != -1]
+        if not starts:
+            raise
+        start = min(starts)
+        end = max(text.rfind("}"), text.rfind("]"))
+        if end <= start:
+            raise
+        return json.loads(text[start : end + 1])
+
+
+async def call_ollama_json(
+    system_prompt: str,
+    user_prompt: str,
+    model: str = DEFAULT_LLM_MODEL,
+    num_predict: int = 256,
+    temperature: float = 0.35,
+    timeout_sec: float = 45.0,
+) -> Dict[str, Any]:
+    """Gọi Ollama /api/chat ở chế độ JSON và trả về dict kết quả có kiểm soát lỗi."""
+    ollama_status = await check_ollama_status()
+    if not ollama_status["running"]:
+        return {"ok": False, "error": "ollama_offline", "data": None, "model_used": None}
+
+    chosen_model = resolve_available_chat_model(model, ollama_status["available_models"])
+    if not chosen_model:
+        return {"ok": False, "error": "model_unavailable", "data": None, "model_used": None}
+
+    payload: Dict[str, Any] = {
+        "model": chosen_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "format": "json",
+        "keep_alive": "30m",
+        "options": {
+            "temperature": temperature,
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+            "num_predict": num_predict,
+            "num_ctx": 4096,
+        },
+    }
+
+    try:
+        timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
+            resp.raise_for_status()
+            raw_content = resp.json().get("message", {}).get("content", "").strip()
+            parsed = parse_json_response(raw_content)
+            return {"ok": True, "data": parsed, "model_used": chosen_model, "error": None}
+    except Exception as exc:
+        logger.warning("Ollama JSON call failed (%s): %s", chosen_model, exc)
+        return {"ok": False, "error": str(exc), "data": None, "model_used": chosen_model}
