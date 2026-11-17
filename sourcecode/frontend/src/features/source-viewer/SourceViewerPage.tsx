@@ -34,7 +34,7 @@ import { downloadExtractedText } from "@/features/documents/document-utils"
 import { deleteDocumentApi, fetchDocumentChunks } from "@/services/api"
 import { parseDocumentChunks, type ParsedDocumentChunk } from "@/services/source-service"
 import { useAppStore } from "@/store/app-store"
-import { formatBytes, formatDate } from "@/utils/format"
+import { fileKindFromName, formatBytes, formatDate } from "@/utils/format"
 import type { KnowledgeDocument } from "@/types"
 
 export function SourceViewerPage() {
@@ -80,11 +80,7 @@ export function SourceViewerPage() {
       .then((res) => {
         if (!active) return
         const d = res.document
-        const ext = d.file_name.split(".").pop()?.toLowerCase() || "other"
-        const fileType =
-          ext === "pdf" || ext === "docx" || ext === "pptx" || ext === "txt" || ext === "md"
-            ? ext
-            : "other"
+        const fileType = fileKindFromName(d.file_name)
 
         setServerDoc({
           id: d.id,

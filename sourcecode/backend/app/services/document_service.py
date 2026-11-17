@@ -11,7 +11,7 @@ from app.database import get_db_connection
 from app.services.embedding_service import embed_texts, pack_vector
 
 logger = logging.getLogger(__name__)
-SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv", "xlsx"}
+SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv", "xlsx", "xls"}
 
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
@@ -58,12 +58,44 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
             logger.exception("PPTX extraction failed")
             raise ValueError("Không thể trích xuất nội dung PPTX") from e
 
+    elif file_type in ["xlsx", "xls"]:
+        try:
+            if file_type == "xlsx":
+                import openpyxl
+                wb = openpyxl.load_workbook(str(file_path), data_only=True)
+                for sheet_idx, sheet_name in enumerate(wb.sheetnames):
+                    ws = wb[sheet_name]
+                    lines = []
+                    for row in ws.iter_rows(values_only=True):
+                        cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
+                        if cells:
+                            lines.append(" | ".join(cells))
+                    if lines:
+                        sheet_text = f"Sheet: {sheet_name}\n" + "\n".join(lines)
+                        results.append({"page": sheet_idx + 1, "text": sheet_text})
+            else:
+                import pandas as pd
+                excel_file = pd.ExcelFile(str(file_path))
+                for sheet_idx, sheet_name in enumerate(excel_file.sheet_names):
+                    df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                    df_clean = df.dropna(how="all")
+                    if not df_clean.empty:
+                        text = df_clean.to_string(index=False)
+                        results.append({"page": sheet_idx + 1, "text": f"Sheet: {sheet_name}\n{text}"})
+        except Exception as e:
+            logger.exception("Excel extraction failed")
+            raise ValueError(f"Không thể trích xuất nội dung tệp Excel: {e}") from e
+
     elif file_type in ["txt", "md", "py", "json", "csv"]:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-                if content.strip():
-                    results.append({"page": 1, "text": content})
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            if content.strip():
+                results.append({"page": 1, "text": content})
         except Exception as e:
             logger.exception("Text extraction failed")
             raise ValueError("Không thể đọc tệp văn bản") from e
@@ -115,6 +147,10 @@ def process_and_index_document(
     file_bytes: bytes,
     notebook_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, sinh vector BGE-M3
+    và lưu đồng bộ vào SQLite (documents, document_chunks, chunks_fts, chunk_embeddings).
+    """
     # Chuẩn hóa notebook_id để tránh vi phạm FOREIGN KEY constraint
     notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
     if notebook_id:
@@ -123,10 +159,6 @@ def process_and_index_document(
         conn_chk.close()
         if not nb_exists:
             notebook_id = None
-    """
-    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, sinh vector BGE-M3
-    và lưu đồng bộ vào SQLite (documents, document_chunks, chunks_fts, chunk_embeddings).
-    """
     doc_id = str(uuid.uuid4())
     safe_name = Path(file_name or "upload.txt").name
     ext = Path(safe_name).suffix.lower().lstrip(".") or "txt"

@@ -1,7 +1,7 @@
 import type { AIMode, ChatMessage, Conversation, KnowledgeDocument, SystemStatus, Workspace } from "@/types"
 import { MOCK_ANSWER } from "@/store/app-store"
 import { authHeaders, clearSession } from "@/services/auth-service"
-import { nowIso, uid } from "@/utils/format"
+import { fileKindFromName, nowIso, uid } from "@/utils/format"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
 
@@ -82,11 +82,7 @@ export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocu
   )
   return (data.documents ?? []).map((d) => {
     const name = String(d.file_name ?? "document")
-    const ext = name.split(".").pop()?.toLowerCase()
-    const fileType =
-      ext === "pdf" || ext === "docx" || ext === "pptx" || ext === "xlsx" || ext === "txt" || ext === "md"
-        ? ext
-        : "other"
+    const fileType = fileKindFromName(name)
     const statusRaw = String(d.status ?? "ready")
     const status =
       statusRaw === "ready" || statusRaw === "indexed" || statusRaw === "completed"

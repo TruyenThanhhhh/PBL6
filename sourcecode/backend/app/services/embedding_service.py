@@ -1,8 +1,16 @@
 """BGE-M3 dense embeddings, stored as packed float32 in SQLite."""
+import os
 import logging
 import struct
+from pathlib import Path
 from functools import lru_cache
 from typing import List, Optional
+
+# Nếu đã có cache model BAAI/bge-m3 trong máy, bật offline mode để tải tức thì, tránh timeout và request mạng thừa
+hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--BAAI--bge-m3"
+if hf_cache.exists():
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from app.config import (
     EMBEDDING_BACKEND,

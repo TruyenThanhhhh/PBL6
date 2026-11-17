@@ -25,7 +25,7 @@ VISION_MODEL_FALLBACK = os.getenv("VISION_MODEL_FALLBACK", "qwen2.5vl:3b")
 # Cấu hình RAG & Chunking
 CHUNK_SIZE = 1100      # ký tự mỗi chunk (tăng để giữ ngữ cảnh liên kết tốt hơn)
 CHUNK_OVERLAP = 200    # độ gối đầu giữa các chunk
-TOP_K_RETRIEVAL = 8    # số chunk lấy ra đưa vào LLM (tăng để AI có đủ nội dung tổng hợp)
+TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "4"))    # số chunk tối ưu đưa vào LLM trên CPU
 
 # Hybrid retrieval: lấy rộng rồi fuse bằng RRF, sau đó rerank.
 RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "4"))
@@ -33,7 +33,7 @@ RRF_K = int(os.getenv("RRF_K", "60"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
 RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "12"))
-RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "12"))
+RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "8"))
 
 # Search, embedding and network fallback
 ENABLE_DENSE_RETRIEVAL = os.getenv("ENABLE_DENSE_RETRIEVAL", "true").lower() == "true"

@@ -72,6 +72,8 @@ export function getStageStates(status: DocumentStatus): Array<
   })
 }
 
+export type UploadPhase = "upload" | "extract" | "chunk" | "embed" | "index" | "ready"
+
 export interface StagedUploadItem {
   id: string
   file: File
@@ -81,6 +83,9 @@ export interface StagedUploadItem {
   error: string | null
   progress: number
   uploadState: "staged" | "uploading" | "done" | "error"
+  stageLabel?: string
+  currentPhase?: UploadPhase
+  totalChunks?: number
 }
 
 export function validateCandidateFile(
@@ -119,12 +124,14 @@ export function buildStagedItem(
     error: validateCandidateFile(file, existingDocsInWorkspace),
     progress: 0,
     uploadState: "staged",
+    stageLabel: "Chờ tải lên",
+    currentPhase: "upload",
   }
 }
 
 export async function readPlainTextIfPossible(file: File): Promise<string | null> {
   const kind = fileKindFromName(file.name)
-  if (kind !== "txt" && kind !== "md") return null
+  if (kind !== "txt" && kind !== "md" && kind !== "csv") return null
   try {
     const text = await file.text()
     return text.trim() || null

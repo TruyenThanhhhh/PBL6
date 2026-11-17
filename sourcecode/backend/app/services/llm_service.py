@@ -225,7 +225,7 @@ async def generate_rag_answer(
         )
         if ollama_status["running"] and model_available:
             try:
-                timeout = httpx.Timeout(OLLAMA_TIMEOUT, connect=10.0)
+                timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json={
                         "model": model_name,
@@ -389,7 +389,7 @@ async def stream_rag_answer(
             yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
             full_text = ""
             try:
-                timeout = httpx.Timeout(OLLAMA_TIMEOUT, connect=10.0)
+                timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream(
                         "POST",
@@ -476,7 +476,7 @@ async def stream_rag_answer(
     full_answer = ""
     if ollama_status["running"] and model_available:
         try:
-            timeout = httpx.Timeout(180.0 if image_base64 else OLLAMA_TIMEOUT, connect=10.0)
+            timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 user_message: Dict[str, Any] = {"role": "user", "content": user_prompt}
                 if image_base64:
@@ -491,7 +491,7 @@ async def stream_rag_answer(
                     "stream": True,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 384 if image_base64 else 2048,
+                        "num_predict": 384 if image_base64 else 1024,
                         "temperature": 0.60,
                         "top_p": 0.9,
                         "repeat_penalty": 1.1,
