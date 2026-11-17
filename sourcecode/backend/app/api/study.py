@@ -48,7 +48,11 @@ class StudyFlashcardsRequest(BaseModel):
     workspace_id: str
     document_id: Optional[str] = None
     document_ids: Optional[List[str]] = None
-    count: int = Field(default=6, ge=1, le=12)
+    count: int = Field(default=10, ge=1, le=40)
+    card_style: str = Field(
+        default="term_definition",
+        pattern="^(term_definition|qa|vocabulary|cloze)$",
+    )
     focus_prompt: Optional[str] = None
     model: Optional[str] = None
 
@@ -148,18 +152,23 @@ async def create_study_quiz(
 @router.post("/flashcards")
 async def create_study_flashcards(
     req: StudyFlashcardsRequest,
+    request: Request,
     user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
 ):
     """
-    Trích xuất danh sách thẻ học tập Flashcards (thuật ngữ & định nghĩa) bằng AI từ tài liệu.
+    Trích xuất danh sách thẻ học tập Flashcards (thuật ngữ & định nghĩa, hỏi đáp, từ vựng, điền khuyết) bằng AI từ tài liệu.
     """
-    return await generate_ai_flashcards(
-        workspace_id=req.workspace_id,
-        document_id=req.document_id,
-        document_ids=req.document_ids,
-        count=req.count,
-        focus_prompt=req.focus_prompt,
-        model=req.model or DEFAULT_LLM_MODEL,
+    return await _run_until_disconnect(
+        request,
+        generate_ai_flashcards(
+            workspace_id=req.workspace_id,
+            document_id=req.document_id,
+            document_ids=req.document_ids,
+            count=req.count,
+            focus_prompt=req.focus_prompt,
+            model=req.model or DEFAULT_LLM_MODEL,
+            card_style=req.card_style,
+        ),
     )
 
 

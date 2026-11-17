@@ -214,13 +214,38 @@ export interface Quiz {
   isMock?: boolean
 }
 
+export type FlashcardStyle = "term_definition" | "qa" | "vocabulary" | "cloze"
+
 export interface Flashcard {
   id: string
   workspaceId: string
   documentId: string | null
+  deckId?: string | null
   front: string
   back: string
+  example?: string
+  cardStyle?: FlashcardStyle
+  citation?: QuizCitation | null
   status: "new" | "remembered" | "review"
+  reviewCount?: number
+  intervalDays?: number
+  nextReviewAt?: string | null
+  lastReviewedAt?: string | null
+  isMock?: boolean
+}
+
+export interface FlashcardDeck {
+  id: string
+  workspaceId: string
+  documentId: string | null
+  documentName?: string | null
+  title: string
+  cardStyle: FlashcardStyle
+  focusPrompt?: string
+  cards: Flashcard[]
+  createdAt: string
+  updatedAt: string
+  lastStudiedAt?: string | null
   isMock?: boolean
 }
 

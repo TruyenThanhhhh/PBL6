@@ -6,9 +6,7 @@ import {
   BookmarkCheck,
   BookmarkPlus,
   CalendarCheck,
-  Check,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
@@ -19,13 +17,13 @@ import {
   History,
   Layers,
   PenSquare,
-  Plus,
   Save,
   Search,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react"
+import { FlashcardsSection } from "./FlashcardsSection"
 import { QuizSection } from "./QuizSection"
 import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { PageHeader } from "@/components/common/PageHeader"
@@ -48,7 +46,6 @@ import {
   type StudyArtifactRecord,
 } from "@/services/api"
 import {
-  generateStudyFlashcardsAsync,
   generateStudyMindmapAsync,
   generateStudyNotesAsync,
   generateStudyPlanAsync,
@@ -175,7 +172,7 @@ export function StudyToolsPage() {
   const documents = useAppStore((s) => s.documents)
   const notes = useAppStore((s) => s.notes)
   const quizzes = useAppStore((s) => s.quizzes)
-  const flashcards = useAppStore((s) => s.flashcards)
+  const flashcardDecks = useAppStore((s) => s.flashcardDecks)
   const studyTasks = useAppStore((s) => s.studyTasks)
   const current = useAppStore((s) => s.currentWorkspaceId)
   const status = useAppStore((s) => s.status)
@@ -185,9 +182,6 @@ export function StudyToolsPage() {
   const localSavedSummaries = useAppStore((s) => s.savedSummaries)
   const saveSavedSummaryLocal = useAppStore((s) => s.saveSavedSummary)
   const deleteSavedSummaryLocal = useAppStore((s) => s.deleteSavedSummary)
-  const setFlashStatus = useAppStore((s) => s.setFlashStatus)
-  const addFlashcards = useAppStore((s) => s.addFlashcards)
-  const deleteFlashcard = useAppStore((s) => s.deleteFlashcard)
   const addStudyTask = useAppStore((s) => s.addStudyTask)
   const updateStudyTask = useAppStore((s) => s.updateStudyTask)
   const toggleStudyTask = useAppStore((s) => s.toggleStudyTask)
@@ -313,22 +307,10 @@ export function StudyToolsPage() {
   )
 
   // 4. Flashcards State
-  const wsCards = useMemo(
-    () => flashcards.filter((f) => f.workspaceId === wsId),
-    [flashcards, wsId],
+  const wsFlashcardDecks = useMemo(
+    () => (flashcardDecks ?? []).filter((d) => d.workspaceId === wsId),
+    [flashcardDecks, wsId],
   )
-  const [flashcardFocusPrompt, setFlashcardFocusPrompt] = useState("")
-  const [cardIndex, setCardIndex] = useState(0)
-  const [flipped, setFlipped] = useState(false)
-  const [newCardOpen, setNewCardOpen] = useState(false)
-  const [newCardFront, setNewCardFront] = useState("")
-  const [newCardBack, setNewCardBack] = useState("")
-  const [isGeneratingFlashcards, setIsGeneratingFlashcards] = useState(false)
-
-  const safeCardIndex = wsCards.length > 0 ? cardIndex % wsCards.length : 0
-  const currentCard = wsCards[safeCardIndex] ?? null
-  const rememberedCount = wsCards.filter((f) => f.status === "remembered").length
-  const reviewCount = wsCards.filter((f) => f.status === "review").length
 
   // 5. Mindmap State
   const [mindmapRoot, setMindmapRoot] = useState<MindmapNode | null>(null)
@@ -553,48 +535,6 @@ export function StudyToolsPage() {
     }
   }
 
-  const handleGenerateFlashcards = async () => {
-    setIsGeneratingFlashcards(true)
-    try {
-      const created = await generateStudyFlashcardsAsync(sourceContext, 6, flashcardFocusPrompt)
-      addFlashcards(created)
-      setCardIndex(0)
-      setFlipped(false)
-      const hasRealAi = created.some((c) => !c.isMock)
-      toast({
-        title: hasRealAi
-          ? `Đã tạo ${created.length} thẻ Flashcards bằng AI thành công`
-          : `Đã tạo ${created.length} thẻ Flashcards (Mô phỏng)`,
-        tone: hasRealAi ? "success" : "info",
-      })
-    } catch {
-      toast({ title: "Không thể tạo Flashcards", tone: "error" })
-    } finally {
-      setIsGeneratingFlashcards(false)
-    }
-  }
-
-  const handleAddCustomFlashcard = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newCardFront.trim() || !newCardBack.trim()) return
-    addFlashcards([
-      {
-        id: uid("fc"),
-        workspaceId: wsId,
-        documentId: activeDoc?.id ?? null,
-        front: newCardFront.trim(),
-        back: newCardBack.trim(),
-        status: "new",
-        isMock: false,
-      },
-    ])
-    setNewCardFront("")
-    setNewCardBack("")
-    setNewCardOpen(false)
-    setCardIndex(0)
-    toast({ title: "Đã thêm thẻ ghi nhớ mới", tone: "success" })
-  }
-
   const insertBranchIntoTree = (
     node: MindmapNode,
     parentId: string,
@@ -715,7 +655,7 @@ export function StudyToolsPage() {
       label: "Flashcards",
       sublabel: "Ghi nhớ ngắt quãng",
       icon: Layers,
-      badgeText: wsCards.length > 0 ? `${wsCards.length}` : null,
+      badgeText: wsFlashcardDecks.length > 0 ? `${wsFlashcardDecks.length}` : null,
     },
     {
       id: "mindmap",
@@ -1315,191 +1255,15 @@ export function StudyToolsPage() {
 
         {/* 4. FLASHCARDS */}
         {tab === "flashcards" && (
-          <div className="space-y-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-[#DCE7E4] pb-4">
-              <div>
-                <h2 className="text-lg font-bold text-[#172B29]">Bộ thẻ ghi nhớ Flashcards</h2>
-                <div className="mt-1 flex items-center gap-2 text-xs text-[#647C79]">
-                  <span>
-                    Tổng: <strong className="text-[#172B29]">{wsCards.length}</strong>
-                  </span>
-                  <span>·</span>
-                  <span className="text-emerald-700 font-medium">
-                    Đã nhớ: {rememberedCount}
-                  </span>
-                  <span>·</span>
-                  <span className="text-amber-700 font-medium">
-                    Cần ôn: {reviewCount}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  placeholder="Trọng tâm thuật ngữ (vd: Khái niệm cốt lõi...)"
-                  value={flashcardFocusPrompt}
-                  onChange={(e) => setFlashcardFocusPrompt(e.target.value)}
-                  className="h-8 w-56 text-xs"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-                  loading={isGeneratingFlashcards}
-                  onClick={handleGenerateFlashcards}
-                >
-                  Tạo thẻ AI từ nguồn
-                </Button>
-                <Button
-                  size="sm"
-                  leftIcon={<Plus className="h-3.5 w-3.5" />}
-                  onClick={() => setNewCardOpen(true)}
-                  className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                >
-                  + Thêm thẻ
-                </Button>
-              </div>
-            </div>
-
-            {!currentCard ? (
-              <EmptyState
-                compact
-                icon={<Layers className="h-5 w-5 text-[#087F73]" />}
-                title="Chưa có thẻ Flashcard nào"
-                description="Tạo bộ thẻ ghi nhớ tự động từ tài liệu bằng AI hoặc tự tạo thẻ theo ý bạn."
-                action={
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      loading={isGeneratingFlashcards}
-                      onClick={handleGenerateFlashcards}
-                      className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                    >
-                      Tạo Flashcard AI
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setNewCardOpen(true)}
-                    >
-                      Thêm thẻ mới
-                    </Button>
-                  </div>
-                }
-              />
-            ) : (
-              <div className="mx-auto max-w-xl space-y-4">
-                {/* Chỉ số tiến độ */}
-                <div className="flex items-center justify-between text-xs text-[#647C79]">
-                  <span>
-                    Thẻ{" "}
-                    <strong className="text-[#172B29]">
-                      {safeCardIndex + 1} / {wsCards.length}
-                    </strong>
-                  </span>
-                  <span className="text-[11px]">Nhấp chuột vào thẻ để lật</span>
-                </div>
-
-                {/* Khung thẻ Flashcard lật */}
-                <button
-                  type="button"
-                  onClick={() => setFlipped((v) => !v)}
-                  className={cn(
-                    "flex min-h-[220px] sm:min-h-[250px] w-full flex-col items-center justify-between rounded-2xl border-2 p-6 sm:p-8 text-center transition-all duration-200 select-none shadow-xs",
-                    flipped
-                      ? "border-[#087F73] bg-[#F4FAF9]"
-                      : "border-[#DCE7E4] bg-white hover:border-[#087F73]/50",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wider",
-                      flipped
-                        ? "bg-[#087F73] text-white"
-                        : "bg-[#F1F6F5] text-[#647C79]",
-                    )}
-                  >
-                    {flipped ? "Mặt sau (Đáp án & Luận giải)" : "Mặt trước (Câu hỏi / Thuật ngữ)"}
-                  </span>
-
-                  <p className="my-auto text-base sm:text-lg font-semibold leading-relaxed text-[#172B29]">
-                    {flipped ? currentCard.back : currentCard.front}
-                  </p>
-
-                  <span className="text-[11px] text-[#647C79]">
-                    {flipped ? "Nhấp để xem câu hỏi" : "Nhấp để xem đáp án"}
-                  </span>
-                </button>
-
-                {/* Điều hướng & đánh giá thẻ */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      leftIcon={<ChevronLeft className="h-3.5 w-3.5" />}
-                      onClick={() => {
-                        setFlipped(false)
-                        setCardIndex((i) => (i - 1 + wsCards.length) % wsCards.length)
-                      }}
-                    >
-                      Trước
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setFlipped(false)
-                        setCardIndex((i) => (i + 1) % wsCards.length)
-                      }}
-                    >
-                      Tiếp
-                      <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setFlashStatus(currentCard.id, "review")
-                        setFlipped(false)
-                        setCardIndex((i) => (i + 1) % wsCards.length)
-                      }}
-                      className="border-amber-300 text-amber-800 hover:bg-amber-50"
-                    >
-                      Cần ôn tập
-                    </Button>
-                    <Button
-                      size="sm"
-                      leftIcon={<Check className="h-3.5 w-3.5" />}
-                      onClick={() => {
-                        setFlashStatus(currentCard.id, "remembered")
-                        setFlipped(false)
-                        setCardIndex((i) => (i + 1) % wsCards.length)
-                      }}
-                      className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                    >
-                      Đã nhớ
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-[#647C79] hover:text-red-600"
-                      onClick={() => {
-                        deleteFlashcard(currentCard.id)
-                        setCardIndex(0)
-                      }}
-                      aria-label="Xóa thẻ này"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <FlashcardsSection
+            key={wsId}
+            workspaceId={wsId}
+            documents={wsDocs}
+            selectedDocId={selectedDocId}
+            onSelectDocId={(nextDocId) => setSelectedDocId(nextDocId)}
+            decks={wsFlashcardDecks}
+            useBackendHistory={useBackendHistory}
+          />
         )}
 
         {/* 5. MINDMAP */}
@@ -1794,48 +1558,6 @@ export function StudyToolsPage() {
             </div>
           </form>
         ) : null}
-      </Dialog>
-
-      {/* Dialog thêm thẻ Flashcard */}
-      <Dialog
-        open={newCardOpen}
-        title="Thêm thẻ Flashcard"
-        onClose={() => setNewCardOpen(false)}
-      >
-        <form onSubmit={handleAddCustomFlashcard} className="space-y-3">
-          <FormField label="Mặt trước (Câu hỏi / Thuật ngữ)">
-            <Input
-              autoFocus
-              value={newCardFront}
-              onChange={(e) => setNewCardFront(e.target.value)}
-              placeholder="Ví dụ: RRF là viết tắt của thuật ngữ gì?"
-            />
-          </FormField>
-          <FormField label="Mặt sau (Đáp án / Luận giải)">
-            <Textarea
-              rows={4}
-              value={newCardBack}
-              onChange={(e) => setNewCardBack(e.target.value)}
-              placeholder="Ví dụ: Reciprocal Rank Fusion — phương pháp gộp và tái xếp hạng kết quả từ BM25 và Vector Search."
-            />
-          </FormField>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setNewCardOpen(false)}
-            >
-              Hủy
-            </Button>
-            <Button
-              type="submit"
-              disabled={!newCardFront.trim() || !newCardBack.trim()}
-              className="bg-[#087F73] hover:bg-[#076b61] text-white"
-            >
-              Thêm thẻ
-            </Button>
-          </div>
-        </form>
       </Dialog>
 
       {/* Dialog thêm nhánh Mindmap */}

@@ -41,6 +41,7 @@ import {
   deleteConversationApi,
   fetchConversationMessages,
   renameConversationApi,
+  saveStudyArtifactApi,
 } from "@/services/api"
 import { getAuthToken } from "@/services/auth-service"
 import {
@@ -48,7 +49,7 @@ import {
   sendChatMessageService,
 } from "@/services/chat-service"
 import {
-  generateStudyFlashcardsAsync,
+  generateStudyFlashcardDeckAsync,
   generateStudyMindmapAsync,
   generateStudyPlanAsync,
   generateStudyQuizAsync,
@@ -105,7 +106,7 @@ export function ChatPage() {
 
   const saveNote = useAppStore((s) => s.saveNote)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
-  const addFlashcards = useAppStore((s) => s.addFlashcards)
+  const upsertFlashcardDeck = useAppStore((s) => s.upsertFlashcardDeck)
   const addStudyTask = useAppStore((s) => s.addStudyTask)
 
   const aiMode = useAppStore((s) => s.aiMode)
@@ -624,14 +625,36 @@ export function ChatPage() {
         tone: "info",
       })
       try {
-        const cards = await generateStudyFlashcardsAsync(ctx, 6, promptTitle.slice(0, 50))
-        addFlashcards(cards)
+        const deck = await generateStudyFlashcardDeckAsync(ctx, 10, promptTitle.slice(0, 50))
+        let savedDeck = deck
+        if (getAuthToken() && status.backendOnline) {
+          try {
+            const saved = await saveStudyArtifactApi(currentWsId, {
+              document_id: deck.documentId,
+              artifact_type: "flashcard_deck",
+              title: deck.title,
+              data: {
+                documentName: deck.documentName ?? null,
+                cardStyle: deck.cardStyle,
+                focusPrompt: deck.focusPrompt ?? "",
+                cards: deck.cards,
+                updatedAt: deck.updatedAt,
+                lastStudiedAt: deck.lastStudiedAt ?? null,
+                isMock: Boolean(deck.isMock),
+              },
+            })
+            savedDeck = { ...deck, id: saved.artifact.id }
+          } catch {
+            // Lưu local nếu API artifact tạm thời lỗi
+          }
+        }
+        upsertFlashcardDeck(savedDeck)
         toast({
-          title: `Đã tạo ${cards.length} Flashcards AI thành công`,
+          title: `Đã tạo bộ ${savedDeck.cards.length} Flashcards AI thành công`,
           tone: "success",
         })
         navigate("/study?tab=flashcards")
-      } catch (e) {
+      } catch {
         toast({
           title: "Không thể tạo Flashcards lúc này",
           tone: "error",

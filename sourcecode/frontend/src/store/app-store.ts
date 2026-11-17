@@ -7,6 +7,7 @@ import type {
   Citation,
   Conversation,
   Flashcard,
+  FlashcardDeck,
   KnowledgeDocument,
   Note,
   Notebook,
@@ -88,6 +89,7 @@ interface AppState {
   researchProjects: ResearchProject[]
   quizzes: Quiz[]
   flashcards: Flashcard[]
+  flashcardDecks: FlashcardDeck[]
   studyTasks: StudyTask[]
   activities: Activity[]
   toasts: Toast[]
@@ -164,6 +166,9 @@ interface AppState {
   upsertQuiz: (quiz: Quiz) => void
   deleteQuiz: (id: string) => void
   replaceWorkspaceQuizzes: (workspaceId: string, rows: Quiz[]) => void
+  upsertFlashcardDeck: (deck: FlashcardDeck) => void
+  deleteFlashcardDeck: (id: string) => void
+  replaceWorkspaceFlashcardDecks: (workspaceId: string, rows: FlashcardDeck[]) => void
   setFlashStatus: (id: string, status: Flashcard["status"]) => void
   addFlashcards: (cards: Flashcard[]) => void
   deleteFlashcard: (id: string) => void
@@ -216,6 +221,7 @@ export const useAppStore = create<AppState>()(
       researchProjects: seedResearch,
       quizzes: seedQuizzes,
       flashcards: seedFlashcards,
+      flashcardDecks: [],
       studyTasks: seedStudyTasks,
       activities: seedActivities,
       toasts: [],
@@ -287,6 +293,7 @@ export const useAppStore = create<AppState>()(
           researchProjects: get().researchProjects.filter((p) => p.workspaceId !== id),
           quizzes: get().quizzes.filter((q) => q.workspaceId !== id),
           flashcards: get().flashcards.filter((f) => f.workspaceId !== id),
+          flashcardDecks: (get().flashcardDecks ?? []).filter((d) => d.workspaceId !== id),
           studyTasks: get().studyTasks.filter((t) => t.workspaceId !== id),
           currentWorkspaceId:
             get().currentWorkspaceId === id ? next[0]?.id ?? "" : get().currentWorkspaceId,
@@ -470,6 +477,26 @@ export const useAppStore = create<AppState>()(
         set({
           quizzes: [...rows, ...get().quizzes.filter((q) => q.workspaceId !== workspaceId)],
         }),
+      upsertFlashcardDeck: (deck) => {
+        const list = get().flashcardDecks ?? []
+        const exists = list.some((d) => d.id === deck.id)
+        set({
+          flashcardDecks: exists
+            ? list.map((d) => (d.id === deck.id ? deck : d))
+            : [deck, ...list],
+        })
+      },
+      deleteFlashcardDeck: (id) =>
+        set({
+          flashcardDecks: (get().flashcardDecks ?? []).filter((d) => d.id !== id),
+        }),
+      replaceWorkspaceFlashcardDecks: (workspaceId, rows) =>
+        set({
+          flashcardDecks: [
+            ...rows,
+            ...(get().flashcardDecks ?? []).filter((d) => d.workspaceId !== workspaceId),
+          ],
+        }),
       setFlashStatus: (id, status) =>
         set({
           flashcards: get().flashcards.map((f) => (f.id === id ? { ...f, status } : f)),
@@ -504,6 +531,7 @@ export const useAppStore = create<AppState>()(
           researchProjects: seedResearch,
           quizzes: seedQuizzes,
           flashcards: seedFlashcards,
+          flashcardDecks: [],
           studyTasks: seedStudyTasks,
           activities: seedActivities,
           seedVersion: SEED_VERSION,
@@ -549,6 +577,7 @@ export const useAppStore = create<AppState>()(
         researchProjects: s.researchProjects,
         quizzes: s.quizzes,
         flashcards: s.flashcards,
+        flashcardDecks: s.flashcardDecks,
         studyTasks: s.studyTasks,
         activities: s.activities,
         seedVersion: s.seedVersion,

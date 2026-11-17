@@ -526,8 +526,8 @@ def _extract_vocab_entries(source_refs: List[Dict[str, Any]]) -> List[Dict[str, 
     return entries
 
 
-def _salvage_json_question_dicts(raw_text: str) -> List[Dict[str, Any]]:
-    """Cứu dữ liệu các object câu hỏi hoàn chỉnh ngay cả khi chuỗi JSON bị cắt cụt ở cuối."""
+def _salvage_json_objects(raw_text: str, required_predicate: Any) -> List[Dict[str, Any]]:
+    """Cứu dữ liệu các JSON object hoàn chỉnh thỏa mãn điều kiện ngay cả khi phản hồi bị cắt cụt."""
     salvaged: List[Dict[str, Any]] = []
     text = (raw_text or "").strip()
     if not text:
@@ -561,11 +561,7 @@ def _salvage_json_question_dicts(raw_text: str) -> List[Dict[str, Any]]:
                             candidate = text[start : j + 1]
                             try:
                                 obj = json.loads(candidate)
-                                if isinstance(obj, dict) and any(
-                                    k in obj for k in ("prompt", "question", "cau_hoi", "text", "title")
-                                ) and any(
-                                    k in obj for k in ("options", "choices", "answers", "lua_chon", "A")
-                                ):
+                                if isinstance(obj, dict) and required_predicate(obj):
                                     salvaged.append(obj)
                                     i = j
                                     break
@@ -574,6 +570,15 @@ def _salvage_json_question_dicts(raw_text: str) -> List[Dict[str, Any]]:
                             break
         i += 1
     return salvaged
+
+
+def _salvage_json_question_dicts(raw_text: str) -> List[Dict[str, Any]]:
+    """Cứu dữ liệu các object câu hỏi hoàn chỉnh ngay cả khi chuỗi JSON bị cắt cụt ở cuối."""
+    return _salvage_json_objects(
+        raw_text,
+        lambda obj: any(k in obj for k in ("prompt", "question", "cau_hoi", "text", "title"))
+        and any(k in obj for k in ("options", "choices", "answers", "lua_chon", "A")),
+    )
 
 
 def _resolve_answer_index(raw_q: Dict[str, Any], options: List[str]) -> int:
@@ -880,6 +885,25 @@ def _build_vocab_grounded_questions(
     return generated
 
 
+def _extract_prose_statements(
+    source_refs: List[Dict[str, Any]],
+    min_len: int = 35,
+    max_len: int = 190,
+) -> List[tuple[str, Dict[str, Any]]]:
+    """Tách các câu/mệnh đề có nghĩa từ các đoạn văn bản nguồn để làm câu hỏi hoặc flashcard."""
+    statements: List[tuple[str, Dict[str, Any]]] = []
+    seen_stmts: set[str] = set()
+
+    for ref in source_refs:
+        raw = str(ref.get("_raw_text") or ref.get("snippet") or "")
+        for part in re.split(r"(?<=[\.\!\?\n])\s+", raw):
+            clean = re.sub(r"\s+", " ", part).strip(" -•*\t\r\n")
+            if min_len <= len(clean) <= max_len and clean.lower() not in seen_stmts:
+                seen_stmts.add(clean.lower())
+                statements.append((clean, ref))
+    return statements
+
+
 def _build_prose_grounded_questions(
     source_refs: List[Dict[str, Any]],
     needed: int,
@@ -889,17 +913,7 @@ def _build_prose_grounded_questions(
     if not source_refs or needed <= 0:
         return []
 
-    statements: List[tuple[str, Dict[str, Any]]] = []
-    seen_stmts: set[str] = set()
-
-    for ref in source_refs:
-        raw = str(ref.get("_raw_text") or ref.get("snippet") or "")
-        for part in re.split(r"(?<=[\.\!\?\n])\s+", raw):
-            clean = re.sub(r"\s+", " ", part).strip(" -•*\t\r\n")
-            if 35 <= len(clean) <= 190 and clean.lower() not in seen_stmts:
-                seen_stmts.add(clean.lower())
-                statements.append((clean, ref))
-
+    statements = _extract_prose_statements(source_refs)
     if len(statements) < 2:
         return []
 
@@ -1156,20 +1170,327 @@ async def generate_ai_quiz(
     }
 
 
+_FLASHCARD_STYLE_GUIDE = {
+    "term_definition": {
+        "label": "Thuật ngữ – Định nghĩa",
+        "front_desc": "Tên thuật ngữ, khái niệm hoặc nguyên lý cốt lõi ngắn gọn",
+        "back_desc": "Định nghĩa chính xác, nêu rõ bản chất và ý nghĩa (1-3 câu tiếng Việt)",
+        "instruction": "Mặt trước (front) nêu đúng tên thuật ngữ/khái niệm; Mặt sau (back) giải thích ngắn gọn bản chất theo tài liệu.",
+    },
+    "qa": {
+        "label": "Câu hỏi – Trả lời",
+        "front_desc": "Một câu hỏi gợi mở/kiểm tra kiến thức cụ thể về tài liệu",
+        "back_desc": "Câu trả lời rõ ràng, chính xác kèm luận giải ngắn dựa trên tài liệu",
+        "instruction": "Mặt trước (front) là câu hỏi tiếng Việt kiểm tra kiến thức trọng tâm; Mặt sau (back) trả lời trực tiếp câu hỏi đó.",
+    },
+    "vocabulary": {
+        "label": "Từ vựng – Nghĩa",
+        "front_desc": "Từ vựng trọng tâm (nếu có Kanji và Hiragana thì ghi dạng: Kanji (Hiragana))",
+        "back_desc": "Nghĩa tiếng Việt chuẩn xác và lưu ý cách dùng ngắn gọn",
+        "instruction": "Mặt trước (front) ghi từ vựng kèm cách đọc (nếu có); Mặt sau (back) ghi nghĩa tiếng Việt tương ứng.",
+    },
+    "cloze": {
+        "label": "Điền khuyết – Ghi nhớ",
+        "front_desc": "Câu/mệnh đề trích từ tài liệu có chỗ trống [...] tại từ khóa quan trọng",
+        "back_desc": "Từ/cụm từ chính xác cần điền vào [...] và giải thích ngắn gọn",
+        "instruction": "Mặt trước (front) tạo câu hoàn chỉnh nhưng ẩn từ khóa bằng '[...]'; Mặt sau (back) đưa ra đáp án điền vào chỗ trống.",
+    },
+}
+
+_FC_FRONT_KEYS = ("front", "term", "question", "word", "concept", "cau_hoi", "thuat_ngu", "tu_vung", "mat_truoc")
+_FC_BACK_KEYS = ("back", "definition", "answer", "meaning", "explanation", "giai_thich", "tra_loi", "nghia", "mat_sau")
+
+
+def _first_nonempty_str(raw: Dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        val = raw.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
+def _extract_and_normalize_llm_flashcards(
+    raw_res: str,
+    source_refs: List[Dict[str, Any]],
+    vocab_entries: List[Dict[str, Any]],
+    card_style: str,
+) -> List[Dict[str, Any]]:
+    """Phân tích, chuẩn hoá và gắn citation cho danh sách Flashcard từ phản hồi JSON của LLM."""
+    raw_items: List[Any] = []
+    try:
+        data = _parse_json_response(raw_res)
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict):
+            for key in ("flashcards", "cards", "items", "data", "results", "the"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    raw_items = val
+                    break
+            if not raw_items:
+                for val in data.values():
+                    if isinstance(val, list) and val and isinstance(val[0], dict):
+                        raw_items = val
+                        break
+            if not raw_items and _first_nonempty_str(data, _FC_FRONT_KEYS):
+                raw_items = [data]
+    except Exception:
+        raw_items = []
+
+    if not raw_items:
+        raw_items = _salvage_json_objects(
+            raw_res,
+            lambda obj: bool(_first_nonempty_str(obj, _FC_FRONT_KEYS) and _first_nonempty_str(obj, _FC_BACK_KEYS)),
+        )
+
+    is_vocab_doc = len(vocab_entries) >= 8
+    vocab_tokens: set[str] = set()
+    if is_vocab_doc:
+        for ve in vocab_entries:
+            vocab_tokens.add(ve["term"].lower())
+            vocab_tokens.add(ve["reading"].lower())
+            vocab_tokens.add(ve["meaning"].lower())
+
+    valid_cards: List[Dict[str, Any]] = []
+    seen_fronts: set[str] = set()
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        front = _first_nonempty_str(item, _FC_FRONT_KEYS)
+        back = _first_nonempty_str(item, _FC_BACK_KEYS)
+        if not front or not back or len(front) < 2 or len(back) < 2:
+            continue
+        front_key = front.lower()
+        if front_key in seen_fronts:
+            continue
+
+        if re.search(r"(?i)\b(?:hybrid rag|sparse retrieval|bm25|reciprocal rank)\b", f"{front} {back}"):
+            if not any("hybrid rag" in (r.get("_search_text") or "") for r in source_refs):
+                continue
+
+        if is_vocab_doc:
+            combined = f"{front} {back}".lower()
+            if not any(tok in combined for tok in vocab_tokens if len(tok) >= 1):
+                continue
+
+        seen_fronts.add(front_key)
+        example = _first_nonempty_str(item, ("example", "vi_du", "usage", "context", "note"))
+        citation = _resolve_question_citation(
+            {
+                "prompt": front,
+                "explanation": f"{back} {example}",
+                "sourceIndex": item.get("sourceIndex") or item.get("source_index"),
+            },
+            source_refs,
+        )
+
+        card_obj: Dict[str, Any] = {
+            "id": f"ai-fc-{len(valid_cards) + 1}",
+            "front": front,
+            "back": back,
+            "cardStyle": card_style,
+            "status": "new",
+            "is_mock": False,
+        }
+        if example:
+            card_obj["example"] = example
+        if citation:
+            card_obj["citation"] = citation
+        valid_cards.append(card_obj)
+
+    return valid_cards
+
+
+def _build_vocab_grounded_flashcards(
+    vocab_entries: List[Dict[str, Any]],
+    needed: int,
+    existing_fronts: set[str],
+    card_style: str,
+    semantic_focus: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Tạo thẻ Flashcard chuẩn xác từ bảng từ vựng trong tài liệu nguồn theo đúng kiểu thẻ."""
+    if not vocab_entries or needed <= 0:
+        return []
+
+    ordered = list(vocab_entries)
+    if semantic_focus:
+        focus_l = semantic_focus.lower()
+        prioritized = [
+            e
+            for e in ordered
+            if focus_l in e["term"].lower()
+            or focus_l in e["reading"].lower()
+            or focus_l in e["meaning"].lower()
+        ]
+        others = [e for e in ordered if e not in prioritized]
+        ordered = prioritized + others
+
+    total = len(ordered)
+    sampled: List[Dict[str, Any]] = []
+    used: set[int] = set()
+    target = min(total, max(needed * 2, 16))
+    step = total / max(1, target)
+    for i in range(target):
+        idx = min(total - 1, int(i * step))
+        if idx not in used:
+            used.add(idx)
+            sampled.append(ordered[idx])
+    for idx, entry in enumerate(ordered):
+        if idx not in used:
+            sampled.append(entry)
+
+    generated: List[Dict[str, Any]] = []
+    for entry in sampled:
+        if len(generated) >= needed:
+            break
+        term = entry["term"]
+        reading = entry["reading"]
+        meaning = entry["meaning"]
+        ref = entry["ref"]
+        doc_name = ref.get("documentName") or "Tài liệu từ vựng"
+        page_num = ref.get("pageNumber") or 1
+        display_word = f"{term} ({reading})" if term != reading else term
+
+        if card_style == "qa":
+            front = f"Từ 「{display_word}」 có nghĩa tiếng Việt là gì?"
+            back = meaning
+            example = f"Cách đọc: {reading} · Nguồn: {doc_name} (Trang {page_num})"
+        elif card_style == "cloze":
+            front = f"Điền nghĩa tiếng Việt phù hợp cho 「{display_word}」: [...]"
+            back = f"{meaning} ({display_word})"
+            example = f"Ghi nhớ: 「{term}」 đọc là 「{reading}」"
+        elif card_style == "term_definition":
+            front = display_word
+            back = f"Nghĩa: {meaning}"
+            example = f"Từ vựng trích từ {doc_name} (Trang {page_num})"
+        else:
+            front = display_word
+            back = meaning
+            example = f"Cách đọc: {reading}" if term != reading else f"Từ vựng trang {page_num}"
+
+        if front.lower() in existing_fronts:
+            continue
+        existing_fronts.add(front.lower())
+        generated.append(
+            {
+                "id": f"ai-fc-vocab-{len(generated) + 1}",
+                "front": front,
+                "back": back,
+                "example": example,
+                "cardStyle": card_style,
+                "status": "new",
+                "citation": _make_citation_from_ref(ref),
+                "is_mock": False,
+            }
+        )
+    return generated
+
+
+def _build_prose_grounded_flashcards(
+    source_refs: List[Dict[str, Any]],
+    needed: int,
+    existing_fronts: set[str],
+    card_style: str,
+) -> List[Dict[str, Any]]:
+    """Tạo thêm thẻ Flashcard bám sát các luận điểm/câu văn thực tế trong tài liệu khi LLM sinh thiếu."""
+    if not source_refs or needed <= 0:
+        return []
+
+    statements = _extract_prose_statements(source_refs, min_len=24, max_len=240)
+    if not statements:
+        for ref in source_refs:
+            snippet = str(ref.get("snippet") or "").strip()
+            if snippet:
+                statements.append((snippet, ref))
+    if not statements:
+        return []
+
+    generated: List[Dict[str, Any]] = []
+    total = len(statements)
+    for i in range(max(needed * 2, total)):
+        if len(generated) >= needed:
+            break
+        stmt, ref = statements[i % total]
+        doc_name = ref.get("documentName") or "Tài liệu"
+        page_num = ref.get("pageNumber") or 1
+        words = stmt.split()
+
+        if card_style == "cloze" and len(words) >= 6:
+            hide_idx = max(2, len(words) // 2)
+            hidden_word = words[hide_idx].strip(",.;:()[]{}\"'")
+            masked = words[:hide_idx] + ["[...]"] + words[hide_idx + 1 :]
+            front = " ".join(masked)
+            back = f"{hidden_word} — {stmt}"
+        elif card_style == "qa":
+            head = " ".join(words[:7]).rstrip(",.;:")
+            front = f"Nội dung chính liên quan đến \"{head}...\" trong {doc_name} là gì?"
+            back = stmt
+        elif card_style == "vocabulary":
+            term = " ".join(words[:4]).rstrip(",.;:")
+            front = f"{term} (#{i + 1})" if term.lower() in existing_fronts else term
+            back = stmt
+        else:
+            split_colon = stmt.split(":", 1)
+            if len(split_colon) == 2 and 4 <= len(split_colon[0].strip()) <= 70 and len(split_colon[1].strip()) >= 12:
+                front = split_colon[0].strip()
+                back = split_colon[1].strip()
+            else:
+                head = " ".join(words[:6]).rstrip(",.;:")
+                front = f"Khái niệm: {head}..."
+                back = stmt
+
+        if front.lower() in existing_fronts:
+            front = f"{front} ({doc_name} · Tr.{page_num} #{i + 1})"
+        if front.lower() in existing_fronts:
+            continue
+        existing_fronts.add(front.lower())
+        generated.append(
+            {
+                "id": f"ai-fc-doc-{len(generated) + 1}",
+                "front": front,
+                "back": back,
+                "example": f"Trích từ {doc_name} (Trang {page_num})",
+                "cardStyle": card_style,
+                "status": "new",
+                "citation": _make_citation_from_ref(ref),
+                "is_mock": False,
+            }
+        )
+    return generated
+
+
 async def generate_ai_flashcards(
     workspace_id: str,
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
-    count: int = 6,
+    count: int = 10,
     focus_prompt: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
+    card_style: str = "term_definition",
 ) -> Dict[str, Any]:
     """
-    Sinh bộ thẻ Flashcard (mặt trước: thuật ngữ/khái niệm/câu hỏi; mặt sau: giải nghĩa/bản chất).
+    Sinh bộ thẻ Flashcard (hỗ trợ nhiều kiểu thẻ, ví dụ minh họa, citation và đảm bảo đủ số lượng).
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000, focus_prompt=focus_prompt)
+    style_key = card_style if card_style in _FLASHCARD_STYLE_GUIDE else "term_definition"
+    style_meta = _FLASHCARD_STYLE_GUIDE[style_key]
+    card_count = min(max(count, 1), 40)
+
+    max_chunks = min(28, max(14, card_count + 4))
+    max_chars = 8500 if card_count > 12 else 6500
+    context, source_refs = _get_document_context_items(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+        focus_prompt=focus_prompt,
+        numbered_sources=True,
+    )
     if not context:
         return {
+            "title": "Bộ thẻ Flashcards",
+            "card_style": style_key,
             "flashcards": [],
             "error": "Chưa có nội dung tài liệu để tạo Flashcards.",
             "is_mock": False,
@@ -1178,78 +1499,128 @@ async def generate_ai_flashcards(
     chosen_model, model_error = await _ensure_ollama_chat_model(model)
     if model_error or not chosen_model:
         return {
+            "title": "Bộ thẻ Flashcards",
+            "card_style": style_key,
             "flashcards": [],
             "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
-    card_count = min(max(count, 3), 12)
+    clean_focus = (focus_prompt or "").strip()
+    semantic_focus = clean_focus if clean_focus and not _is_generic_focus_prompt(clean_focus) else None
+    vocab_entries = _extract_vocab_entries(source_refs)
+
+    if len(vocab_entries) >= 8:
+        sampled_lines: List[str] = []
+        step = max(1, len(vocab_entries) // 14)
+        for idx in range(0, len(vocab_entries), step):
+            ve = vocab_entries[idx]
+            ref_idx = ve["ref"].get("ref_index", 1)
+            sampled_lines.append(
+                f"[Nguồn {ref_idx}] Từ vựng: {ve['term']} | Cách đọc: {ve['reading']} | Nghĩa tiếng Việt: {ve['meaning']}"
+            )
+            if len(sampled_lines) >= 14:
+                break
+        llm_context = "\n".join(sampled_lines)
+        llm_ask_count = min(card_count, 5)
+        llm_timeout = min(OLLAMA_TIMEOUT, 30.0)
+        predict_tokens = 750
+    else:
+        llm_context = context[:3600]
+        llm_ask_count = min(card_count, 10)
+        llm_timeout = min(OLLAMA_TIMEOUT, 65.0)
+        predict_tokens = min(2200, max(900, llm_ask_count * 180))
+
     system_prompt = (
-        "Bạn là Trợ lý Học tập thông minh. Hãy đọc hiểu tài liệu và trích xuất các thuật ngữ, nguyên lý, "
-        "công thức hoặc khái niệm quan trọng nhất thành một bộ thẻ Flashcards học tập bằng tiếng Việt.\n\n"
+        f"Bạn là Trợ lý Học tập thông minh. Hãy đọc kỹ các đoạn nguồn [Nguồn 1], [Nguồn 2]... và trích xuất thành "
+        f"bộ thẻ Flashcards theo kiểu \"{style_meta['label']}\" bằng tiếng Việt.\n"
+        f"HƯỚNG DẪN KIỂU THẺ: {style_meta['instruction']}\n"
+        "TUYỆT ĐỐI KHÔNG bịa nội dung ngoài TÀI LIỆU NGUỒN.\n\n"
         "YÊU CẦU ĐỊNH DẠNG JSON:\n"
-        "Trả về một JSON OBJECT có key 'flashcards' là mảng các thẻ:\n"
+        "Trả về duy nhất một JSON OBJECT có key 'flashcards':\n"
         "{\n"
         '  "flashcards": [\n'
         "    {\n"
-        '      "front": "Tên thuật ngữ, khái niệm hoặc câu hỏi gợi mở ngắn gọn",\n'
-        '      "back": "Giải thích ngắn gọn, rõ ràng, nhấn mạnh bản chất vấn đề và ý nghĩa then chốt (1-3 câu)"\n'
+        f'      "front": "{style_meta["front_desc"]}",\n'
+        f'      "back": "{style_meta["back_desc"]}",\n'
+        '      "example": "Ví dụ áp dụng hoặc ngữ cảnh ngắn trích từ tài liệu (nếu có)",\n'
+        '      "sourceIndex": 1\n'
         "    }\n"
         "  ]\n"
         "}\n"
-        f"Hãy tạo đúng {card_count} thẻ Flashcards giá trị nhất."
+        f"Hãy tạo đúng {llm_ask_count} thẻ Flashcards giá trị nhất."
     )
 
-    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
-    if focus_prompt and focus_prompt.strip():
-        user_prompt += f"TRỌNG TÂM THUẬT NGỮ / KHÁI NIỆM CẦN ÔN TẬP: {focus_prompt.strip()}\n\n"
-    user_prompt += f"Hãy tạo danh sách {card_count} Flashcards dạng JSON:"
+    user_prompt = f"TÀI LIỆU NGUỒN:\n{llm_context}\n\n"
+    if semantic_focus:
+        user_prompt += f"TRỌNG TÂM NỘI DUNG CẦN TẠO THẺ: {semantic_focus}\n\n"
+    user_prompt += f"Hãy tạo đúng {llm_ask_count} thẻ Flashcards kiểu {style_meta['label']} dạng JSON:"
+
+    valid_cards: List[Dict[str, Any]] = []
+    llm_error: Optional[Exception] = None
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
-        data = _parse_json_response(raw_res)
-
-        if isinstance(data, list):
-            cards = data
-        elif isinstance(data, dict):
-            cards = []
-            for key in ("flashcards", "cards", "items", "data", "results"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    cards = value
-                    break
-            if not cards and "front" in data and "back" in data:
-                cards = [data]
-        else:
-            cards = []
-
-        valid_cards = []
-        for i, c in enumerate(cards):
-            if not isinstance(c, dict) or "front" not in c or "back" not in c:
-                continue
-            front = str(c["front"]).strip()
-            back = str(c["back"]).strip()
-            if not front or not back:
-                continue
-            valid_cards.append({
-                "id": f"ai-fc-{len(valid_cards)+1}",
-                "front": front,
-                "back": back,
-                "status": "new",
-                "is_mock": False,
-            })
-
-        return {
-            "flashcards": valid_cards,
-            "is_mock": False,
-        }
+        raw_res = await _call_ollama_chat(
+            system_prompt,
+            user_prompt,
+            model=chosen_model,
+            json_mode=True,
+            timeout_sec=llm_timeout,
+            num_predict=predict_tokens,
+        )
+        valid_cards = _extract_and_normalize_llm_flashcards(raw_res, source_refs, vocab_entries, style_key)
     except Exception as exc:
-        logger.exception("Lỗi khi sinh Flashcards bằng AI: %s", exc)
+        llm_error = exc
+        logger.warning("LLM sinh Flashcards gặp lỗi hoặc quá thời gian, kiểm tra bổ sung từ tài liệu: %s", exc)
+
+    needed = card_count - len(valid_cards)
+    if needed > 0:
+        existing_fronts = {c["front"].lower() for c in valid_cards}
+        if len(vocab_entries) >= 2:
+            valid_cards.extend(
+                _build_vocab_grounded_flashcards(
+                    vocab_entries,
+                    needed=needed,
+                    existing_fronts=existing_fronts,
+                    card_style=style_key,
+                    semantic_focus=semantic_focus,
+                )
+            )
+
+        needed = card_count - len(valid_cards)
+        total_raw_chars = sum(len(str(r.get("_raw_text") or "")) for r in source_refs)
+        if needed > 0 and (total_raw_chars >= 80 or not valid_cards):
+            valid_cards.extend(
+                _build_prose_grounded_flashcards(
+                    source_refs,
+                    needed=needed,
+                    existing_fronts=existing_fronts,
+                    card_style=style_key,
+                )
+            )
+
+    if not valid_cards and llm_error is not None:
+        logger.exception("Lỗi khi sinh Flashcards bằng AI: %s", llm_error)
         return {
+            "title": "Bộ thẻ Flashcards",
+            "card_style": style_key,
             "flashcards": [],
-            "error": f"Không thể sinh Flashcards: {str(exc)}",
+            "error": f"Không thể sinh Flashcards: {str(llm_error)}",
             "is_mock": True,
         }
+
+    final_cards = valid_cards[:card_count]
+    for idx, card in enumerate(final_cards):
+        card["id"] = f"ai-fc-{idx + 1}"
+
+    primary_doc_name = source_refs[0]["documentName"] if source_refs else "Tài liệu học tập"
+    deck_topic = clean_focus[:48] if clean_focus else primary_doc_name[:48]
+    return {
+        "title": f"Flashcards · {deck_topic}",
+        "card_style": style_key,
+        "flashcards": final_cards,
+        "is_mock": False,
+    }
 
 
 async def generate_ai_mindmap(
