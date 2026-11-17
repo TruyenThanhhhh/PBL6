@@ -455,6 +455,53 @@ class WorkspaceAITestCase(unittest.TestCase):
         ).json()["artifacts"]
         self.assertEqual(after_del, [])
 
+    def test_quiz_artifact_patch_persists_attempts_and_isolation(self):
+        ws_id = self.client.post(
+            "/api/v1/workspaces", json={"name": "WS Quiz"}, headers=self.user_a_headers
+        ).json()["workspace"]["id"]
+
+        created = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            json={
+                "artifact_type": "quiz",
+                "title": "Quiz · Ngữ pháp N3",
+                "data": {
+                    "difficulty": "medium",
+                    "questions": [{"id": "q1", "prompt": "Q?", "options": ["A", "B"], "answerIndex": 0, "explanation": "Vì A."}],
+                    "answers": {},
+                    "submitted": False,
+                    "attempts": [],
+                },
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        quiz_id = created.json()["artifact"]["id"]
+
+        patched = self.client.patch(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts/{quiz_id}",
+            json={
+                "data": {
+                    "difficulty": "medium",
+                    "questions": [{"id": "q1", "prompt": "Q?", "options": ["A", "B"], "answerIndex": 0, "explanation": "Vì A."}],
+                    "answers": {"q1": 1},
+                    "submitted": True,
+                    "attempts": [{"id": "att1", "submittedAt": "2026-11-18T03:00:00Z", "score": 0, "total": 1, "percentage": 0, "answers": {"q1": 1}, "wrongQuestionIds": ["q1"]}],
+                }
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertTrue(patched.json()["artifact"]["data"]["submitted"])
+        self.assertEqual(len(patched.json()["artifact"]["data"]["attempts"]), 1)
+
+        forbidden = self.client.patch(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts/{quiz_id}",
+            json={"title": "Hack"},
+            headers=self.user_b_headers,
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

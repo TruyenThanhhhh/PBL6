@@ -36,64 +36,174 @@ def _resolve_document_ids(
     return [row["document_id"] for row in rows]
 
 
-def _get_document_context(
+_GENERIC_FOCUS_TERMS = {
+    "test",
+    "quiz",
+    "kiểm tra",
+    "kiem tra",
+    "bài kiểm tra",
+    "bai kiem tra",
+    "bài test",
+    "bai test",
+    "ôn tập",
+    "on tap",
+    "trắc nghiệm",
+    "trac nghiem",
+    "tổng hợp",
+    "tong hop",
+    "tất cả",
+    "tat ca",
+    "all",
+    "demo",
+    "nháp",
+    "nhap",
+    "đề thi",
+    "de thi",
+}
+
+
+def _is_generic_focus_prompt(focus_prompt: Optional[str]) -> bool:
+    """Kiểm tra xem chuỗi chủ đề chỉ là nhãn đặt tên chung (vd: 'test', 'kiểm tra 1') hay chủ đề thực sự."""
+    clean = (focus_prompt or "").strip().lower()
+    if not clean:
+        return True
+    if clean in _GENERIC_FOCUS_TERMS:
+        return True
+    if re.match(
+        r"^(?:test|quiz|đề|de|bài|bai|kiểm tra|kiem tra|ôn tập|on tap|trắc nghiệm|trac nghiem)\s*#?\d*$",
+        clean,
+    ):
+        return True
+    return False
+
+
+def _is_low_value_header_chunk(text: str) -> bool:
+    """Phát hiện các chunk chỉ chứa tiêu đề cột lặp lại hoặc mục lục số lượng dòng trong bảng Excel."""
+    clean = (text or "").strip()
+    if not clean:
+        return True
+    lower = clean.lower()
+    if lower.count("stt | kanji | hiragana | meaning") >= 3:
+        non_header = re.sub(r"(?i)stt\s*\|\s*kanji\s*\|\s*hiragana\s*\|\s*meaning\s*\|?", "", clean).strip()
+        if len(non_header) < 40:
+            return True
+    return False
+
+
+def _get_document_context_items(
     workspace_id: str,
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
     max_chunks: int = 12,
     max_chars: int = 6000,
     focus_prompt: Optional[str] = None,
-) -> str:
+    numbered_sources: bool = False,
+) -> tuple[str, List[Dict[str, Any]]]:
     """
-    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database:
-    1. Nếu có focus_prompt: Sử dụng Hybrid Search (BM25 + Semantic) để truy xuất các đoạn khớp chủ đề nhất.
-    2. Nếu không có focus_prompt: Sử dụng thuật toán Spanning Sampling lấy mẫu trải đều từ đầu đến cuối
-       tài liệu (thay vì chỉ lấy vài trang đầu), giúp AI bao quát toàn bộ các chương/mục học tập.
+    Trích xuất ngữ cảnh tài liệu kèm metadata nguồn (document_id, page_number, chunk_index, snippet)
+    để phục vụ sinh nội dung học tập và đối chiếu Citation.
     """
-    # 1. Nếu có yêu cầu trọng tâm, sử dụng hệ thống truy xuất thông minh
-    if focus_prompt and focus_prompt.strip():
+    source_refs: List[Dict[str, Any]] = []
+    parts: List[str] = []
+    seen_chunks: set[tuple[Optional[str], Optional[int]]] = set()
+    total_len = 0
+
+    def _append_chunk(
+        c_text: str,
+        doc_id: Optional[str],
+        doc_name: str,
+        page_num: int,
+        chunk_idx: Optional[int],
+    ) -> bool:
+        nonlocal total_len
+        clean_text = (c_text or "").strip()
+        if not clean_text or _is_low_value_header_chunk(clean_text):
+            return True
+        key = (doc_id, chunk_idx)
+        if chunk_idx is not None and key in seen_chunks:
+            return True
+        seen_chunks.add(key)
+
+        ref_idx = len(source_refs) + 1
+        prefix = (
+            f"[Nguồn {ref_idx} · {doc_name} - Trang {page_num}]"
+            if numbered_sources
+            else f"[{doc_name} - Trang {page_num}]"
+        )
+        part = f"{prefix}:\n{clean_text}"
+        remaining = max_chars - total_len
+        if remaining <= 0:
+            return False
+        if len(part) > remaining:
+            part = part[:remaining]
+            total_len = max_chars
+        else:
+            total_len += len(part)
+
+        parts.append(part)
+        source_refs.append(
+            {
+                "ref_index": ref_idx,
+                "documentId": doc_id,
+                "documentName": doc_name,
+                "pageNumber": page_num,
+                "chunkIndex": chunk_idx,
+                "snippet": clean_text[:280].strip(),
+                "_search_text": clean_text.lower(),
+                "_raw_text": clean_text,
+            }
+        )
+        return total_len < max_chars and len(source_refs) < max_chunks
+
+    # 1. Nếu có yêu cầu trọng tâm thực sự (không phải nhãn 'test'/'quiz'), ưu tiên Hybrid Search
+    semantic_focus = (
+        focus_prompt.strip()
+        if focus_prompt and not _is_generic_focus_prompt(focus_prompt)
+        else None
+    )
+    if semantic_focus:
         try:
             from app.services.retrieval_service import search_relevant_chunks
+
             relevant = search_relevant_chunks(
                 workspace_id=workspace_id,
-                query=focus_prompt.strip(),
+                query=semantic_focus,
                 top_k=max_chunks,
-                selected_document_id=document_id,
+                document_id=document_id,
                 document_ids=document_ids,
             )
             if relevant:
-                parts: List[str] = []
-                t_len = 0
                 for r in relevant:
-                    c_text = (r.get("content") or "").strip()
-                    if not c_text:
-                        continue
-                    p_num = r.get("page_number") or 1
-                    doc_n = r.get("document_name") or "Tài liệu"
-                    part = f"[{doc_n} - Trang {p_num}]:\n{c_text}"
-                    if t_len + len(part) > max_chars:
+                    ok = _append_chunk(
+                        str(r.get("content") or ""),
+                        r.get("document_id"),
+                        str(r.get("document_name") or "Tài liệu"),
+                        int(r.get("page_number") or 1),
+                        r.get("chunk_index"),
+                    )
+                    if not ok:
                         break
-                    parts.append(part)
-                    t_len += len(part)
-                if parts:
-                    return "\n\n".join(parts)
+                if len(source_refs) >= min(6, max_chunks) or total_len >= int(max_chars * 0.7):
+                    return "\n\n".join(parts), source_refs
         except Exception as exc:
             logger.warning("Truy xuất theo trọng tâm thất bại, chuyển về spanning sampling: %s", exc)
+            source_refs.clear()
+            parts.clear()
+            seen_chunks.clear()
+            total_len = 0
 
-    # 2. Spanning Sampling: Lấy mẫu trải đều qua toàn bộ tài liệu
+    # 2. Spanning Sampling: Lấy mẫu trải đều qua toàn bộ tài liệu trong phạm vi đã chọn
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         resolved_ids = _resolve_document_ids(cursor, workspace_id, document_id, document_ids)
         if not resolved_ids:
-            return ""
+            return "\n\n".join(parts), source_refs
 
         per_doc = max(1, max_chunks // len(resolved_ids))
-        context_parts: List[str] = []
-        total_len = 0
 
         for doc_id in resolved_ids:
-            if total_len >= max_chars:
+            if total_len >= max_chars or len(source_refs) >= max_chunks:
                 break
 
             total_row = cursor.execute(
@@ -101,14 +211,14 @@ def _get_document_context(
                 (workspace_id, doc_id),
             ).fetchone()
             total_doc_chunks = total_row[0] if total_row else 0
-
             if total_doc_chunks == 0:
                 continue
 
-            if total_doc_chunks <= per_doc:
+            fetch_target = min(total_doc_chunks, per_doc + 2)
+            if total_doc_chunks <= fetch_target:
                 rows = cursor.execute(
                     """
-                    SELECT c.content, d.file_name, c.page_number
+                    SELECT c.content, c.document_id, d.file_name, c.page_number, c.chunk_index
                     FROM document_chunks c
                     JOIN documents d ON d.id = c.document_id
                     WHERE c.workspace_id = ? AND c.document_id = ?
@@ -117,12 +227,12 @@ def _get_document_context(
                     (workspace_id, doc_id),
                 ).fetchall()
             else:
-                step = (total_doc_chunks - 1) / max(1, per_doc - 1)
-                sampled_indices = sorted(list({round(i * step) for i in range(per_doc)}))
+                step = (total_doc_chunks - 1) / max(1, fetch_target - 1)
+                sampled_indices = sorted(list({round(i * step) for i in range(fetch_target)}))
                 placeholders = ",".join("?" for _ in sampled_indices)
                 rows = cursor.execute(
                     f"""
-                    SELECT c.content, d.file_name, c.page_number
+                    SELECT c.content, c.document_id, d.file_name, c.page_number, c.chunk_index
                     FROM document_chunks c
                     JOIN documents d ON d.id = c.document_id
                     WHERE c.workspace_id = ? AND c.document_id = ? AND c.chunk_index IN ({placeholders})
@@ -132,24 +242,42 @@ def _get_document_context(
                 ).fetchall()
 
             for row in rows:
-                content = (row["content"] or "").strip()
-                if not content:
-                    continue
-                page = row["page_number"] or 1
-                part = f"[{row['file_name']} - Trang {page}]:\n{content}"
-                remaining = max_chars - total_len
-                if remaining <= 0:
+                ok = _append_chunk(
+                    str(row["content"] or ""),
+                    row["document_id"],
+                    str(row["file_name"] or "Tài liệu"),
+                    int(row["page_number"] or 1),
+                    row["chunk_index"],
+                )
+                if not ok:
                     break
-                if len(part) > remaining:
-                    context_parts.append(part[:remaining])
-                    total_len = max_chars
-                    break
-                context_parts.append(part)
-                total_len += len(part)
 
-        return "\n\n".join(context_parts)
+        return "\n\n".join(parts), source_refs
     finally:
         conn.close()
+
+
+def _get_document_context(
+    workspace_id: str,
+    document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+    max_chunks: int = 12,
+    max_chars: int = 6000,
+    focus_prompt: Optional[str] = None,
+) -> str:
+    """
+    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database.
+    """
+    text, _ = _get_document_context_items(
+        workspace_id=workspace_id,
+        document_id=document_id,
+        document_ids=document_ids,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+        focus_prompt=focus_prompt,
+        numbered_sources=False,
+    )
+    return text
 
 
 def _parse_json_response(raw: str) -> Any:
@@ -226,6 +354,7 @@ async def _call_ollama_chat(
     model: str = DEFAULT_LLM_MODEL,
     json_mode: bool = False,
     timeout_sec: float = OLLAMA_TIMEOUT,
+    num_predict: int = 1200,
 ) -> str:
     payload: Dict[str, Any] = {
         "model": model,
@@ -238,7 +367,7 @@ async def _call_ollama_chat(
         "options": {
             "temperature": 0.4 if json_mode else 0.7,
             "top_p": 0.9,
-            "num_predict": 1200,
+            "num_predict": num_predict,
             "num_ctx": 4096,
         },
     }
@@ -330,6 +459,541 @@ async def generate_ai_summary(
         }
 
 
+_VOCAB_ROW_PATTERN = re.compile(
+    r"(?:^|\||\s)(\d{1,4})\s*\|\s*([^|\n]{1,35}?)\s*\|\s*([^|\n]{1,40}?)\s*\|\s*([^|\n]{2,90}?)(?=\s*(?:\|\s*\d{1,4}\s*\||\s+\d{1,4}\s*\||\r?\n|$))"
+)
+_HEADER_WORDS = {
+    "stt",
+    "kanji",
+    "hiragana",
+    "katakana",
+    "meaning",
+    "nghĩa",
+    "nghia",
+    "từ vựng",
+    "tu vung",
+    "cách đọc",
+    "cach doc",
+    "word",
+    "reading",
+}
+
+
+def _make_citation_from_ref(ref: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "documentId": ref.get("documentId"),
+        "documentName": ref.get("documentName") or "Tài liệu",
+        "pageNumber": ref.get("pageNumber") or 1,
+        "chunkIndex": ref.get("chunkIndex"),
+        "snippet": ref.get("snippet") or "",
+    }
+
+
+def _extract_vocab_entries(source_refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Trích xuất các mục từ vựng dạng bảng (STT | Từ | Cách đọc | Nghĩa) từ các đoạn nguồn."""
+    entries: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for ref in source_refs:
+        raw_text = str(ref.get("_raw_text") or ref.get("snippet") or "")
+        if not raw_text:
+            continue
+        for match in _VOCAB_ROW_PATTERN.finditer(raw_text):
+            _stt, term_raw, reading_raw, meaning_raw = match.groups()
+            term = term_raw.strip().strip("[]")
+            reading = reading_raw.strip().strip("[]")
+            meaning = meaning_raw.strip().strip("[]")
+            if not term or not reading or not meaning:
+                continue
+            if term.lower() in _HEADER_WORDS or reading.lower() in _HEADER_WORDS or meaning.lower() in _HEADER_WORDS:
+                continue
+            if re.match(r"^bài\s*\d+", term.lower()):
+                continue
+            if not re.search(r"[a-zA-ZÀ-ỹ]", meaning):
+                continue
+            key = (term, reading, meaning.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(
+                {
+                    "term": term,
+                    "reading": reading,
+                    "meaning": meaning,
+                    "ref": ref,
+                }
+            )
+    return entries
+
+
+def _salvage_json_question_dicts(raw_text: str) -> List[Dict[str, Any]]:
+    """Cứu dữ liệu các object câu hỏi hoàn chỉnh ngay cả khi chuỗi JSON bị cắt cụt ở cuối."""
+    salvaged: List[Dict[str, Any]] = []
+    text = (raw_text or "").strip()
+    if not text:
+        return salvaged
+
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] == "{":
+            depth = 0
+            in_str = False
+            esc = False
+            start = i
+            for j in range(i, n):
+                ch = text[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[start : j + 1]
+                            try:
+                                obj = json.loads(candidate)
+                                if isinstance(obj, dict) and any(
+                                    k in obj for k in ("prompt", "question", "cau_hoi", "text", "title")
+                                ) and any(
+                                    k in obj for k in ("options", "choices", "answers", "lua_chon", "A")
+                                ):
+                                    salvaged.append(obj)
+                                    i = j
+                                    break
+                            except Exception:
+                                pass
+                            break
+        i += 1
+    return salvaged
+
+
+def _resolve_answer_index(raw_q: Dict[str, Any], options: List[str]) -> int:
+    """Chuẩn hoá chỉ số đáp án đúng từ nhiều định dạng trả về khác nhau của LLM."""
+    if not options:
+        return 0
+
+    letter_map = {"A": 0, "B": 1, "C": 2, "D": 3}
+
+    for key in ("answerIndex", "answer_index", "correctIndex", "correct_index"):
+        val = raw_q.get(key)
+        if val is not None:
+            if isinstance(val, int) and 0 <= val < len(options):
+                return val
+            val_str = str(val).strip().upper()
+            if val_str in letter_map and letter_map[val_str] < len(options):
+                return letter_map[val_str]
+            try:
+                num = int(val_str)
+                if 0 <= num < len(options):
+                    return num
+            except ValueError:
+                pass
+
+    for key in ("answer", "correctAnswer", "correct_answer", "dap_an"):
+        ans_val = raw_q.get(key)
+        if ans_val is None:
+            continue
+        ans_str = str(ans_val).strip()
+        if not ans_str:
+            continue
+        upper = ans_str.upper()
+        if upper in letter_map and letter_map[upper] < len(options):
+            return letter_map[upper]
+        for idx, opt in enumerate(options):
+            opt_clean = opt.strip()
+            if opt_clean.lower() == ans_str.lower():
+                return idx
+        for idx, opt in enumerate(options):
+            if ans_str.lower() in opt.lower() or opt.lower() in ans_str.lower():
+                return idx
+
+    return 0
+
+
+def _extract_and_normalize_llm_questions(
+    raw_res: str,
+    source_refs: List[Dict[str, Any]],
+    vocab_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Phân tích và lọc danh sách câu hỏi hợp lệ, bám sát tài liệu từ phản hồi JSON của LLM."""
+    raw_items: List[Any] = []
+    try:
+        data = _parse_json_response(raw_res)
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict):
+            for k in ("questions", "quiz", "quizQuestions", "quiz_questions", "data", "items", "cau_hoi"):
+                if isinstance(data.get(k), list):
+                    raw_items = data[k]
+                    break
+            if not raw_items:
+                for v in data.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        raw_items = v
+                        break
+            if not raw_items and any(k in data for k in ("prompt", "question", "cau_hoi")):
+                raw_items = [data]
+    except Exception:
+        raw_items = []
+
+    if not raw_items:
+        raw_items = _salvage_json_question_dicts(raw_res)
+
+    is_vocab_doc = len(vocab_entries) >= 8
+    vocab_known_tokens: set[str] = set()
+    if is_vocab_doc:
+        for ve in vocab_entries:
+            vocab_known_tokens.add(ve["term"].lower())
+            vocab_known_tokens.add(ve["reading"].lower())
+            vocab_known_tokens.add(ve["meaning"].lower())
+
+    valid_questions: List[Dict[str, Any]] = []
+    seen_prompts: set[str] = set()
+
+    for q in raw_items:
+        if not isinstance(q, dict):
+            continue
+        prompt_raw = (
+            q.get("prompt")
+            or q.get("question")
+            or q.get("cau_hoi")
+            or q.get("text")
+            or q.get("title")
+        )
+        if not prompt_raw:
+            continue
+        prompt_str = str(prompt_raw).strip()
+        if len(prompt_str) < 8:
+            continue
+        prompt_key = prompt_str.lower()
+        if prompt_key in seen_prompts:
+            continue
+
+        # Loại bỏ các câu hỏi lạc đề về hệ thống RAG hoặc câu hỏi tiếng Anh hỏi số dòng bảng
+        if re.search(r"(?i)\b(?:number of entries|provided data|hybrid rag|sparse retrieval|bm25|reciprocal rank)\b", prompt_str):
+            if not any("hybrid rag" in (r.get("_search_text") or "") for r in source_refs):
+                continue
+
+        raw_opts = q.get("options") or q.get("choices") or q.get("answers") or q.get("lua_chon")
+        if not isinstance(raw_opts, list) and all(k in q for k in ("A", "B", "C", "D")):
+            raw_opts = [q["A"], q["B"], q["C"], q["D"]]
+        if not isinstance(raw_opts, list):
+            continue
+
+        cleaned_opts: List[str] = []
+        for opt in raw_opts:
+            opt_s = re.sub(r"^[A-Da-d][\.\)\:\-]\s*", "", str(opt or "").strip()).strip()
+            if opt_s and opt_s not in cleaned_opts:
+                cleaned_opts.append(opt_s)
+        options = cleaned_opts[:4]
+        if len(options) < 2:
+            continue
+
+        ans_idx = _resolve_answer_index(q, options)
+
+        if is_vocab_doc:
+            # Với tài liệu bảng từ vựng, đảm bảo câu hỏi tiếng Việt và chứa từ/nghĩa thực trong tài liệu
+            if not re.search(
+                r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]",
+                prompt_str.lower(),
+            ):
+                continue
+            combined_q = f"{prompt_str} {options[ans_idx]}".lower()
+            if not any(tok in combined_q for tok in vocab_known_tokens if len(tok) >= 1):
+                continue
+
+        seen_prompts.add(prompt_key)
+        explanation = str(
+            q.get("explanation")
+            or q.get("giai_thich")
+            or q.get("reason")
+            or "Theo nội dung kiến thức trong tài liệu nguồn."
+        ).strip()
+
+        item_q: Dict[str, Any] = {
+            "id": f"ai-q-{len(valid_questions) + 1}",
+            "prompt": prompt_str,
+            "options": options,
+            "answerIndex": ans_idx,
+            "explanation": explanation,
+        }
+        citation = _resolve_question_citation(
+            {
+                "prompt": prompt_str,
+                "explanation": explanation,
+                "sourceIndex": q.get("sourceIndex") or q.get("source_index"),
+            },
+            source_refs,
+        )
+        if citation:
+            item_q["citation"] = citation
+        valid_questions.append(item_q)
+
+    return valid_questions
+
+
+def _pick_distinct_distractors(
+    pool: List[str],
+    correct_val: str,
+    needed: int,
+    seed_offset: int,
+) -> List[str]:
+    """Chọn các phương án nhiễu khác biệt hoàn toàn với đáp án đúng từ tập dữ liệu tài liệu."""
+    distractors: List[str] = []
+    correct_norm = correct_val.strip().lower()
+    n = len(pool)
+    if n == 0:
+        return distractors
+
+    for step in range(n):
+        cand = pool[(seed_offset + step * 7) % n].strip()
+        cand_norm = cand.lower()
+        if not cand or cand_norm == correct_norm:
+            continue
+        if any(d.lower() == cand_norm for d in distractors):
+            continue
+        distractors.append(cand)
+        if len(distractors) >= needed:
+            break
+    return distractors
+
+
+def _build_vocab_grounded_questions(
+    vocab_entries: List[Dict[str, Any]],
+    needed: int,
+    existing_prompts: set[str],
+    semantic_focus: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Tạo câu hỏi trắc nghiệm từ vựng chuẩn xác 100% từ bảng từ vựng trong tài liệu nguồn."""
+    if len(vocab_entries) < 4 or needed <= 0:
+        return []
+
+    ordered_entries = list(vocab_entries)
+    if semantic_focus:
+        focus_l = semantic_focus.lower()
+        prioritized = [
+            e
+            for e in ordered_entries
+            if focus_l in e["term"].lower()
+            or focus_l in e["reading"].lower()
+            or focus_l in e["meaning"].lower()
+        ]
+        others = [e for e in ordered_entries if e not in prioritized]
+        ordered_entries = prioritized + others
+
+    # Lấy mẫu trải đều trên toàn bộ danh sách từ vựng để đề thi đa dạng
+    total_entries = len(ordered_entries)
+    sampled_entries: List[Dict[str, Any]] = []
+    used_indices: set[int] = set()
+    sample_target = min(total_entries, max(needed * 2, 12))
+    step = total_entries / max(1, sample_target)
+    for i in range(sample_target):
+        idx = min(total_entries - 1, int(i * step))
+        if idx not in used_indices:
+            used_indices.add(idx)
+            sampled_entries.append(ordered_entries[idx])
+    for idx, entry in enumerate(ordered_entries):
+        if idx not in used_indices:
+            sampled_entries.append(entry)
+
+    meanings_pool = list(dict.fromkeys([e["meaning"] for e in ordered_entries if e["meaning"]]))
+    terms_pool = list(
+        dict.fromkeys(
+            [
+                f"{e['term']} ({e['reading']})" if e["term"] != e["reading"] else e["term"]
+                for e in ordered_entries
+            ]
+        )
+    )
+    readings_pool = list(
+        dict.fromkeys([e["reading"] for e in ordered_entries if e["term"] != e["reading"] and e["reading"]])
+    )
+
+    generated: List[Dict[str, Any]] = []
+    for idx, entry in enumerate(sampled_entries):
+        if len(generated) >= needed:
+            break
+        term = entry["term"]
+        reading = entry["reading"]
+        meaning = entry["meaning"]
+        ref = entry["ref"]
+        doc_name = ref.get("documentName") or "Tài liệu từ vựng"
+        page_num = ref.get("pageNumber") or 1
+
+        has_distinct_reading = term != reading and len(readings_pool) >= 4
+        q_mode = idx % (3 if has_distinct_reading else 2)
+
+        if q_mode == 0:
+            display_word = f"「{term}」 ({reading})" if term != reading else f"「{term}」"
+            prompt = f"Trong tài liệu từ vựng, từ {display_word} có nghĩa tiếng Việt là gì?"
+            correct_opt = meaning
+            distractors = _pick_distinct_distractors(meanings_pool, correct_opt, 3, idx * 5 + 3)
+            explanation = (
+                f"Theo bảng từ vựng trong {doc_name} (Trang {page_num}), "
+                f"từ {display_word} có nghĩa là \"{meaning}\"."
+            )
+        elif q_mode == 1:
+            prompt = f"Từ vựng nào trong tài liệu mang nghĩa là \"{meaning}\"?"
+            correct_opt = f"{term} ({reading})" if term != reading else term
+            distractors = _pick_distinct_distractors(terms_pool, correct_opt, 3, idx * 5 + 5)
+            explanation = (
+                f"Theo {doc_name} (Trang {page_num}), nghĩa \"{meaning}\" "
+                f"tương ứng với từ 「{term}」 ({reading})."
+            )
+        else:
+            prompt = f"Cách đọc Hiragana đúng của từ 「{term}」 (nghĩa: \"{meaning}\") trong tài liệu là gì?"
+            correct_opt = reading
+            distractors = _pick_distinct_distractors(readings_pool, correct_opt, 3, idx * 5 + 7)
+            explanation = (
+                f"Theo bảng từ vựng trong {doc_name} (Trang {page_num}), "
+                f"từ 「{term}」 (nghĩa: \"{meaning}\") được đọc là 「{reading}」."
+            )
+
+        if prompt.lower() in existing_prompts or len(distractors) < 3:
+            continue
+
+        ans_idx = (len(existing_prompts) + len(generated) * 3 + 1) % 4
+        options = list(distractors[:3])
+        options.insert(ans_idx, correct_opt)
+
+        existing_prompts.add(prompt.lower())
+        generated.append(
+            {
+                "id": f"ai-q-vocab-{len(generated) + 1}",
+                "prompt": prompt,
+                "options": options,
+                "answerIndex": ans_idx,
+                "explanation": explanation,
+                "citation": _make_citation_from_ref(ref),
+            }
+        )
+
+    return generated
+
+
+def _build_prose_grounded_questions(
+    source_refs: List[Dict[str, Any]],
+    needed: int,
+    existing_prompts: set[str],
+) -> List[Dict[str, Any]]:
+    """Tạo câu hỏi trắc nghiệm bám sát các mệnh đề thực tế trong tài liệu văn bản khi cần bổ sung đủ số câu."""
+    if not source_refs or needed <= 0:
+        return []
+
+    statements: List[tuple[str, Dict[str, Any]]] = []
+    seen_stmts: set[str] = set()
+
+    for ref in source_refs:
+        raw = str(ref.get("_raw_text") or ref.get("snippet") or "")
+        for part in re.split(r"(?<=[\.\!\?\n])\s+", raw):
+            clean = re.sub(r"\s+", " ", part).strip(" -•*\t\r\n")
+            if 35 <= len(clean) <= 190 and clean.lower() not in seen_stmts:
+                seen_stmts.add(clean.lower())
+                statements.append((clean, ref))
+
+    if len(statements) < 2:
+        return []
+
+    stmt_texts = [s[0] for s in statements]
+    fallback_distractors = [
+        "Thông tin này không được đề cập hoặc trái ngược với nội dung tài liệu nguồn.",
+        "Nội dung chỉ áp dụng ngoài phạm vi tài liệu đang xét.",
+        "Nhận định suy diễn không có bằng chứng trong các trang tài liệu.",
+    ]
+
+    generated: List[Dict[str, Any]] = []
+    total_stmts = len(statements)
+    for i in range(needed * 2):
+        if len(generated) >= needed:
+            break
+        stmt, ref = statements[(i * max(1, total_stmts // max(1, needed))) % total_stmts]
+        doc_name = ref.get("documentName") or "Tài liệu"
+        page_num = ref.get("pageNumber") or 1
+
+        prompt = (
+            f"Theo nội dung tài liệu \"{doc_name}\" (Trang {page_num} - Đoạn #{(ref.get('chunkIndex') or 0) + 1}), "
+            f"nhận định hay thông tin nào sau đây được nêu chính xác?"
+        )
+        if prompt.lower() in existing_prompts:
+            prompt = (
+                f"Trong tài liệu \"{doc_name}\" (Trang {page_num}), "
+                f"chi tiết nào dưới đây phản ánh đúng nội dung bài học (câu #{len(generated) + 1})?"
+            )
+        if prompt.lower() in existing_prompts:
+            continue
+
+        other_pool = [
+            f"Không đề cập trong đoạn này: {t[:120]}"
+            for t in stmt_texts
+            if t.lower() != stmt.lower()
+        ] + fallback_distractors
+        distractors = _pick_distinct_distractors(other_pool, stmt, 3, i * 3 + 1)
+        if len(distractors) < 3:
+            continue
+
+        ans_idx = (len(existing_prompts) + len(generated) + 1) % 4
+        options = list(distractors[:3])
+        options.insert(ans_idx, stmt)
+
+        existing_prompts.add(prompt.lower())
+        generated.append(
+            {
+                "id": f"ai-q-doc-{len(generated) + 1}",
+                "prompt": prompt,
+                "options": options,
+                "answerIndex": ans_idx,
+                "explanation": f"Theo nội dung gốc tại {doc_name} (Trang {page_num}): \"{stmt}\".",
+                "citation": _make_citation_from_ref(ref),
+            }
+        )
+
+    return generated
+
+
+def _resolve_question_citation(
+    raw_q: Dict[str, Any],
+    source_refs: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Ánh xạ câu hỏi Quiz về đoạn nguồn tài liệu gốc để người học kiểm chứng."""
+    if not source_refs:
+        return None
+
+    chosen: Optional[Dict[str, Any]] = None
+    src_idx = raw_q.get("sourceIndex") or raw_q.get("source_index")
+    if src_idx is not None:
+        try:
+            idx_num = int(src_idx)
+            if 1 <= idx_num <= len(source_refs):
+                chosen = source_refs[idx_num - 1]
+        except (TypeError, ValueError):
+            chosen = None
+
+    if chosen is None:
+        q_text = f"{raw_q.get('prompt', '')} {raw_q.get('explanation', '')}".lower()
+        q_terms = {t for t in re.findall(r"[\w]{2,}", q_text, flags=re.UNICODE)}
+        best_score = -1
+        for ref in source_refs:
+            haystack = ref.get("_search_text") or ""
+            score = sum(1 for term in q_terms if term in haystack)
+            if score > best_score:
+                best_score = score
+                chosen = ref
+
+    if chosen is None:
+        chosen = source_refs[0]
+
+    return _make_citation_from_ref(chosen)
+
+
 async def generate_ai_quiz(
     workspace_id: str,
     document_id: Optional[str] = None,
@@ -340,9 +1004,21 @@ async def generate_ai_quiz(
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
-    Sinh danh sách câu hỏi trắc nghiệm kiểm tra kiến thức dựa trên nội dung tài liệu.
+    Sinh danh sách câu hỏi trắc nghiệm kiểm tra kiến thức dựa trên nội dung tài liệu kèm citation.
+    Đảm bảo trả về đúng số lượng câu hỏi (question_count) và bám sát 100% phạm vi tài liệu đã chọn.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000, focus_prompt=focus_prompt)
+    count = min(max(question_count, 1), 20)
+    max_chunks = min(20, max(12, count + 4))
+    max_chars = 4800
+    context, source_refs = _get_document_context_items(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+        focus_prompt=focus_prompt,
+        numbered_sources=True,
+    )
     if not context:
         return {
             "title": "Quiz trắc nghiệm",
@@ -360,74 +1036,124 @@ async def generate_ai_quiz(
             "is_mock": True,
         }
 
-    count = min(max(question_count, 1), 10)
+    clean_focus = (focus_prompt or "").strip()
+    semantic_focus = clean_focus if clean_focus and not _is_generic_focus_prompt(clean_focus) else None
+    vocab_entries = _extract_vocab_entries(source_refs)
+
+    # Nếu tài liệu là bảng từ vựng (Excel/CSV), định dạng lại ngữ cảnh gọn rõ để LLM đọc nhanh và chính xác
+    llm_context = context
+    if len(vocab_entries) >= 8:
+        sampled_vocab_lines: List[str] = []
+        step = max(1, len(vocab_entries) // 12)
+        for idx in range(0, len(vocab_entries), step):
+            ve = vocab_entries[idx]
+            ref_idx = ve["ref"].get("ref_index", 1)
+            sampled_vocab_lines.append(
+                f"[Nguồn {ref_idx}] Từ vựng: {ve['term']} | Cách đọc: {ve['reading']} | Nghĩa tiếng Việt: {ve['meaning']}"
+            )
+            if len(sampled_vocab_lines) >= 12:
+                break
+        llm_context = "\n".join(sampled_vocab_lines)
+        llm_ask_count = min(count, 3)
+        llm_timeout = min(OLLAMA_TIMEOUT, 25.0)
+        predict_tokens = 550
+    else:
+        llm_context = context[:2800]
+        llm_ask_count = min(count, 6)
+        llm_timeout = min(OLLAMA_TIMEOUT, 60.0)
+        predict_tokens = min(1400, max(650, llm_ask_count * 180))
+
     system_prompt = (
         "Bạn là Chuyên gia Khảo thí và Thiết kế đề thi giáo dục. "
-        "Nhiệm vụ của bạn là đọc kỹ tài liệu nguồn và soạn một bộ câu hỏi trắc nghiệm (Multiple Choice Questions) "
-        "bằng tiếng Việt.\n\n"
+        "Nhiệm vụ của bạn là đọc kỹ các đoạn nguồn [Nguồn 1], [Nguồn 2]... và soạn câu hỏi trắc nghiệm "
+        "(Multiple Choice Questions) bằng tiếng Việt kiểm tra trực tiếp kiến thức/từ vựng có trong tài liệu.\n"
+        "TUYỆT ĐỐI KHÔNG hỏi các câu ngoài phạm vi tài liệu nguồn, KHÔNG hỏi bằng tiếng Anh.\n\n"
         "BẠN PHẢI TRẢ VỀ DUY NHẤT MỘT JSON OBJECT CÓ DẠNG:\n"
         "{\n"
         '  "questions": [\n'
         "    {\n"
-        '      "prompt": "Nội dung câu hỏi trắc nghiệm?",\n'
+        '      "prompt": "Nội dung câu hỏi trắc nghiệm bằng tiếng Việt?",\n'
         '      "options": ["Lựa chọn A", "Lựa chọn B", "Lựa chọn C", "Lựa chọn D"],\n'
         '      "answerIndex": 0,\n'
-        '      "explanation": "Giải thích chi tiết vì sao đáp án này đúng dựa trên tài liệu"\n'
+        '      "explanation": "Giải thích chi tiết vì sao đáp án này đúng dựa trên tài liệu",\n'
+        '      "sourceIndex": 1\n'
         "    }\n"
         "  ]\n"
         "}\n"
-        f"LƯU Ý: answerIndex là số nguyên từ 0 đến 3. Hãy tạo đúng {count} câu hỏi."
+        f"LƯU Ý: Mỗi câu phải có đúng 4 lựa chọn trong mảng 'options', 'answerIndex' là số nguyên từ 0 đến 3, "
+        f"'sourceIndex' là số thứ tự của [Nguồn N]. Hãy tạo đúng {llm_ask_count} câu hỏi."
     )
 
-    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
-    if focus_prompt and focus_prompt.strip():
-        user_prompt += f"TRỌNG TÂM KIẾN THỨC CẦN HỎI: {focus_prompt.strip()}\n\n"
-    user_prompt += f"Hãy tạo đúng {count} câu hỏi trắc nghiệm độ khó {difficulty} dưới dạng JSON object có key 'questions':"
+    user_prompt = f"TÀI LIỆU NGUỒN:\n{llm_context}\n\n"
+    if semantic_focus:
+        user_prompt += f"TRỌNG TÂM KIẾN THỨC CẦN HỎI: {semantic_focus}\n\n"
+    user_prompt += (
+        f"Hãy tạo đúng {llm_ask_count} câu hỏi trắc nghiệm tiếng Việt (độ khó {difficulty}) "
+        'bám sát nội dung TÀI LIỆU NGUỒN ở trên. Trả về JSON object có key "questions" chứa các phần tử '
+        'gồm {"prompt", "options" (4 phương án), "answerIndex" (0-3), "explanation", "sourceIndex"}:'
+    )
+
+    valid_questions: List[Dict[str, Any]] = []
+    llm_error: Optional[Exception] = None
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
-        data = _parse_json_response(raw_res)
-
-        questions = []
-        if isinstance(data, list):
-            questions = data
-        elif isinstance(data, dict):
-            for k in ("questions", "quiz", "data", "items"):
-                if isinstance(data.get(k), list):
-                    questions = data[k]
-                    break
-            if not questions and "prompt" in data:
-                questions = [data]
-        valid_questions = []
-        for i, q in enumerate(questions):
-            if isinstance(q, dict) and "prompt" in q and "options" in q:
-                options = [str(opt) for opt in q["options"]][:4]
-                if len(options) >= 2:
-                    ans_idx = int(q.get("answerIndex", 0))
-                    if ans_idx < 0 or ans_idx >= len(options):
-                        ans_idx = 0
-                    valid_questions.append({
-                        "id": f"ai-q-{i+1}",
-                        "prompt": str(q["prompt"]),
-                        "options": options,
-                        "answerIndex": ans_idx,
-                        "explanation": str(q.get("explanation", "Theo nội dung bài học trong tài liệu.")),
-                    })
-
-        return {
-            "title": f"Quiz AI ({difficulty}) · {len(valid_questions)} câu",
-            "questions": valid_questions,
-            "difficulty": difficulty,
-            "is_mock": False,
-        }
+        raw_res = await _call_ollama_chat(
+            system_prompt,
+            user_prompt,
+            model=chosen_model,
+            json_mode=True,
+            timeout_sec=llm_timeout,
+            num_predict=predict_tokens,
+        )
+        valid_questions = _extract_and_normalize_llm_questions(raw_res, source_refs, vocab_entries)
     except Exception as exc:
-        logger.exception("Lỗi khi sinh Quiz bằng AI: %s", exc)
+        llm_error = exc
+        logger.warning("LLM sinh Quiz gặp lỗi hoặc quá thời gian, kiểm tra bổ sung từ tài liệu: %s", exc)
+
+    # Bổ sung câu hỏi trực tiếp từ tài liệu nguồn nếu LLM trả về thiếu số lượng (vd: chọn 10 câu nhưng LLM chỉ sinh 5 câu)
+    needed = count - len(valid_questions)
+    if needed > 0:
+        existing_prompts = {q["prompt"].lower() for q in valid_questions}
+        if len(vocab_entries) >= 4:
+            vocab_topup = _build_vocab_grounded_questions(
+                vocab_entries,
+                needed=needed,
+                existing_prompts=existing_prompts,
+                semantic_focus=semantic_focus,
+            )
+            valid_questions.extend(vocab_topup)
+
+        needed = count - len(valid_questions)
+        total_raw_chars = sum(len(str(r.get("_raw_text") or "")) for r in source_refs)
+        if needed > 0 and (total_raw_chars >= 160 or not valid_questions):
+            prose_topup = _build_prose_grounded_questions(
+                source_refs,
+                needed=needed,
+                existing_prompts=existing_prompts,
+            )
+            valid_questions.extend(prose_topup)
+
+    if not valid_questions and llm_error is not None:
+        logger.exception("Lỗi khi sinh Quiz bằng AI: %s", llm_error)
         return {
             "title": "Quiz trắc nghiệm",
             "questions": [],
-            "error": f"Không thể sinh câu hỏi: {str(exc)}",
+            "error": f"Không thể sinh câu hỏi: {str(llm_error)}",
             "is_mock": True,
         }
+
+    final_questions = valid_questions[:count]
+    for idx, q in enumerate(final_questions):
+        q["id"] = f"ai-q-{idx + 1}"
+
+    primary_doc_name = source_refs[0]["documentName"] if source_refs else "Tài liệu học tập"
+    title_topic = clean_focus[:48] if clean_focus else primary_doc_name[:48]
+    return {
+        "title": f"Quiz · {title_topic}",
+        "questions": final_questions,
+        "difficulty": difficulty,
+        "is_mock": False,
+    }
 
 
 async def generate_ai_flashcards(

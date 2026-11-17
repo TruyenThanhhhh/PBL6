@@ -65,6 +65,11 @@ class StudyArtifactCreateRequest(BaseModel):
     data: Any
 
 
+class StudyArtifactUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    data: Optional[Any] = None
+
+
 def _assert_workspace_owner(conn, workspace_id: str, user_id: str) -> None:
     owned = conn.execute(
         "SELECT 1 FROM workspaces WHERE id = ? AND owner_user_id = ?",
@@ -650,6 +655,57 @@ def create_study_artifact(
             "title": clean_title,
             "data": req.data,
             "created_at": created_at,
+        }
+    }
+
+
+@router.patch("/workspaces/{workspace_id}/study-artifacts/{artifact_id}")
+def update_study_artifact(
+    workspace_id: str,
+    artifact_id: str,
+    req: StudyArtifactUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    conn = get_db_connection()
+    _assert_workspace_owner(conn, workspace_id, user["id"])
+    row = conn.execute(
+        "SELECT * FROM study_artifacts WHERE id = ? AND workspace_id = ?",
+        (artifact_id, workspace_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Học liệu không tồn tại")
+
+    next_title = req.title.strip() if req.title is not None else row["title"]
+    if not next_title:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Tiêu đề học liệu không được để trống")
+
+    if req.data is not None:
+        next_data = req.data
+        next_data_json = json.dumps(req.data, ensure_ascii=False)
+    else:
+        next_data_json = row["data_json"]
+        try:
+            next_data = json.loads(next_data_json or "{}")
+        except Exception:
+            next_data = {}
+
+    conn.execute(
+        "UPDATE study_artifacts SET title = ?, data_json = ? WHERE id = ? AND workspace_id = ?",
+        (next_title, next_data_json, artifact_id, workspace_id),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "artifact": {
+            "id": artifact_id,
+            "workspace_id": workspace_id,
+            "document_id": row["document_id"],
+            "artifact_type": row["artifact_type"],
+            "title": next_title,
+            "data": next_data,
+            "created_at": _normalize_utc_timestamp(row["created_at"]),
         }
     }
 

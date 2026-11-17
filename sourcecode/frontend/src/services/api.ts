@@ -537,6 +537,14 @@ export interface StudyQuizPayload {
   model?: string
 }
 
+export interface StudyQuizCitationPayload {
+  documentId?: string | null
+  documentName: string
+  pageNumber?: number | null
+  chunkIndex?: number | null
+  snippet?: string
+}
+
 export interface StudyQuizResponse {
   title: string
   difficulty: "easy" | "medium" | "hard"
@@ -546,16 +554,21 @@ export interface StudyQuizResponse {
     options: string[]
     answerIndex: number
     explanation: string
+    citation?: StudyQuizCitationPayload | null
   }>
   is_mock: boolean
   error?: string
 }
 
-export async function fetchAiQuizApi(payload: StudyQuizPayload): Promise<StudyQuizResponse> {
+export async function fetchAiQuizApi(
+  payload: StudyQuizPayload,
+  signal?: AbortSignal,
+): Promise<StudyQuizResponse> {
   return request<StudyQuizResponse>("/api/v1/study/quiz", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   })
 }
 
@@ -700,6 +713,21 @@ export async function saveStudyArtifactApi(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
+}
+
+export async function updateStudyArtifactApi(
+  workspaceId: string,
+  artifactId: string,
+  payload: { title?: string; data?: any }
+): Promise<{ artifact: StudyArtifactRecord }> {
+  return request<{ artifact: StudyArtifactRecord }>(
+    `/api/v1/workspaces/${workspaceId}/study-artifacts/${artifactId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export async function deleteStudyArtifactApi(

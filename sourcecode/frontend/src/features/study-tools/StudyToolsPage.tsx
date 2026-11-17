@@ -7,7 +7,6 @@ import {
   BookmarkPlus,
   CalendarCheck,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -21,14 +20,13 @@ import {
   Layers,
   PenSquare,
   Plus,
-  RotateCcw,
   Save,
   Search,
   Sparkles,
   Trash2,
   X,
-  XCircle,
 } from "lucide-react"
+import { QuizSection } from "./QuizSection"
 import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { PageHeader } from "@/components/common/PageHeader"
 import { ConfirmDialog } from "@/components/common/NameDialog"
@@ -54,7 +52,6 @@ import {
   generateStudyMindmapAsync,
   generateStudyNotesAsync,
   generateStudyPlanAsync,
-  generateStudyQuizAsync,
   generateStudySummaryAsync,
   type StudySourceContext,
   type StudyToolId,
@@ -188,7 +185,6 @@ export function StudyToolsPage() {
   const localSavedSummaries = useAppStore((s) => s.savedSummaries)
   const saveSavedSummaryLocal = useAppStore((s) => s.saveSavedSummary)
   const deleteSavedSummaryLocal = useAppStore((s) => s.deleteSavedSummary)
-  const upsertQuiz = useAppStore((s) => s.upsertQuiz)
   const setFlashStatus = useAppStore((s) => s.setFlashStatus)
   const addFlashcards = useAppStore((s) => s.addFlashcards)
   const deleteFlashcard = useAppStore((s) => s.deleteFlashcard)
@@ -309,24 +305,12 @@ export function StudyToolsPage() {
   const [noteToDelete, setNoteToDelete] = useState<Note | null>(null)
 
   // 3. Quiz State
-  const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium")
-  const [questionCount, setQuestionCount] = useState<number>(3)
-  const [quizFocusPrompt, setQuizFocusPrompt] = useState("")
   const [activeQuizId, setActiveQuizId] = useState<string | null>(null)
-  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false)
 
   const wsQuizzes = useMemo(
     () => quizzes.filter((q) => q.workspaceId === wsId),
     [quizzes, wsId],
   )
-  const quiz =
-    wsQuizzes.find((q) => q.id === activeQuizId) ??
-    wsQuizzes[0] ??
-    null
-
-  const quizScore = quiz
-    ? quiz.questions.filter((q) => quiz.answers[q.id] === q.answerIndex).length
-    : 0
 
   // 4. Flashcards State
   const wsCards = useMemo(
@@ -569,24 +553,6 @@ export function StudyToolsPage() {
     }
   }
 
-  const handleGenerateQuiz = async () => {
-    setIsGeneratingQuiz(true)
-    try {
-      const nextQuiz = await generateStudyQuizAsync(sourceContext, difficulty, questionCount, quizFocusPrompt)
-      upsertQuiz(nextQuiz)
-      setActiveQuizId(nextQuiz.id)
-      toast({
-        title: nextQuiz.isMock ? "Đã tạo bài Quiz (Mô phỏng)" : "Đã tạo bài Quiz bằng AI thành công",
-        description: `${nextQuiz.questions.length} câu hỏi từ nguồn tài liệu đã chọn.`,
-        tone: nextQuiz.isMock ? "info" : "success",
-      })
-    } catch {
-      toast({ title: "Không thể tạo Quiz", tone: "error" })
-    } finally {
-      setIsGeneratingQuiz(false)
-    }
-  }
-
   const handleGenerateFlashcards = async () => {
     setIsGeneratingFlashcards(true)
     try {
@@ -742,11 +708,7 @@ export function StudyToolsPage() {
       label: "Trắc nghiệm",
       sublabel: "Kiểm tra phản xạ",
       icon: HelpCircle,
-      badgeText: quiz
-        ? quiz.submitted
-          ? `${quizScore}/${quiz.questions.length}đ`
-          : `${quiz.questions.length} câu`
-        : null,
+      badgeText: wsQuizzes.length > 0 ? `${wsQuizzes.length}` : null,
     },
     {
       id: "flashcards",
@@ -1338,239 +1300,17 @@ export function StudyToolsPage() {
 
         {/* 3. TRẮC NGHIỆM / QUIZ */}
         {tab === "quiz" && (
-          <div className="space-y-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-[#DCE7E4] pb-4">
-              <div>
-                <h2 className="text-lg font-bold text-[#172B29]">
-                  Bộ câu hỏi trắc nghiệm tự kiểm tra
-                </h2>
-                <p className="mt-0.5 text-xs text-[#647C79]">
-                  Tự động kiểm tra mức độ hiểu sâu kiến thức với câu hỏi đối chiếu từ tài liệu.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  placeholder="Trọng tâm chủ đề (vd: Chương 2, Lab 1...)"
-                  value={quizFocusPrompt}
-                  onChange={(e) => setQuizFocusPrompt(e.target.value)}
-                  className="h-8 w-52 text-xs"
-                />
-
-                <Select
-                  aria-label="Độ khó Quiz"
-                  value={difficulty}
-                  onChange={(e) => setDifficulty(e.target.value as typeof difficulty)}
-                  className="h-8 w-28 text-xs"
-                >
-                  <option value="easy">Độ khó: Dễ</option>
-                  <option value="medium">Độ khó: Vừa</option>
-                  <option value="hard">Độ khó: Khó</option>
-                </Select>
-
-                <Select
-                  aria-label="Số lượng câu hỏi"
-                  value={String(questionCount)}
-                  onChange={(e) => setQuestionCount(Number(e.target.value))}
-                  className="h-8 w-24 text-xs"
-                >
-                  <option value="3">3 câu</option>
-                  <option value="5">5 câu</option>
-                  <option value="10">10 câu</option>
-                </Select>
-
-                <Button
-                  size="sm"
-                  leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-                  loading={isGeneratingQuiz}
-                  onClick={handleGenerateQuiz}
-                  className="bg-[#087F73] hover:bg-[#076b61] text-white shrink-0"
-                >
-                  Tạo Quiz AI
-                </Button>
-              </div>
-            </div>
-
-            {!quiz ? (
-              <EmptyState
-                compact
-                icon={<HelpCircle className="h-5 w-5 text-[#087F73]" />}
-                title="Chưa có bài trắc nghiệm"
-                description="Bấm nút Tạo Quiz AI để hệ thống phân tích tài liệu và dựng bộ câu hỏi ôn tập kèm đáp án đối chiếu."
-                action={
-                  <Button
-                    size="sm"
-                    loading={isGeneratingQuiz}
-                    onClick={handleGenerateQuiz}
-                    className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                  >
-                    Tạo bài Quiz AI
-                  </Button>
-                }
-              />
-            ) : (
-              <div className="space-y-5">
-                {/* Banner kết quả nếu đã nộp */}
-                {quiz.submitted && (
-                  <div className="flex items-center justify-between rounded-xl border border-[#DCE7E4] bg-[#F0FDFA] p-4 text-[#172B29]">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#087F73] text-white">
-                        <Check className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-bold text-[#087F73]">
-                          Điểm số của bạn: {quizScore} / {quiz.questions.length} câu đúng (
-                          {Math.round((quizScore / quiz.questions.length) * 100)}%)
-                        </p>
-                        <p className="text-xs text-[#647C79]">
-                          {quizScore === quiz.questions.length
-                            ? "Xuất sắc! Bạn đã nắm rất vững kiến thức tài liệu."
-                            : "Hãy xem lại phần giải thích chi tiết dưới mỗi câu để củng cố kiến thức."}
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      leftIcon={<RotateCcw className="h-3.5 w-3.5" />}
-                      onClick={() => upsertQuiz({ ...quiz, answers: {}, submitted: false })}
-                    >
-                      Làm lại
-                    </Button>
-                  </div>
-                )}
-
-                {/* Danh sách câu hỏi */}
-                <div className="space-y-4">
-                  {quiz.questions.map((q, idx) => {
-                    const selectedOpt = quiz.answers[q.id]
-                    const isCorrect = selectedOpt === q.answerIndex
-                    const letters = ["A", "B", "C", "D", "E"]
-
-                    return (
-                      <div
-                        key={q.id}
-                        className="rounded-xl border border-[#DCE7E4] bg-white p-5 space-y-3"
-                      >
-                        <div className="flex items-start gap-2.5">
-                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#F1F6F5] text-xs font-bold text-[#087F73]">
-                            {idx + 1}
-                          </span>
-                          <p className="text-sm font-bold text-[#172B29] leading-snug">
-                            {q.prompt}
-                          </p>
-                        </div>
-
-                        <div className="space-y-2 pt-1">
-                          {q.options.map((opt, optIdx) => {
-                            const isChosen = selectedOpt === optIdx
-                            const isRightAnswer = q.answerIndex === optIdx
-
-                            let optionStyle =
-                              "border-[#DCE7E4] bg-white text-[#172B29] hover:bg-[#F9FCFB]"
-
-                            if (quiz.submitted) {
-                              if (isRightAnswer) {
-                                optionStyle = "border-emerald-500 bg-emerald-50/70 text-emerald-950 font-semibold"
-                              } else if (isChosen && !isRightAnswer) {
-                                optionStyle = "border-rose-400 bg-rose-50/70 text-rose-950 line-through"
-                              } else {
-                                optionStyle = "border-[#DCE7E4] opacity-60"
-                              }
-                            } else if (isChosen) {
-                              optionStyle =
-                                "border-[#087F73] bg-[#F0FDFA] font-semibold text-[#087F73]"
-                            }
-
-                            return (
-                              <button
-                                key={opt}
-                                type="button"
-                                disabled={quiz.submitted}
-                                onClick={() =>
-                                  upsertQuiz({
-                                    ...quiz,
-                                    answers: { ...quiz.answers, [q.id]: optIdx },
-                                  })
-                                }
-                                className={cn(
-                                  "flex w-full items-center gap-3 rounded-xl border p-3 text-left text-xs sm:text-[13px] transition-all",
-                                  optionStyle,
-                                )}
-                              >
-                                <span
-                                  className={cn(
-                                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs font-bold",
-                                    isChosen
-                                      ? "bg-[#087F73] text-white"
-                                      : "bg-[#F1F6F5] text-[#647C79]",
-                                  )}
-                                >
-                                  {letters[optIdx] ?? optIdx + 1}
-                                </span>
-                                <span className="flex-1">{opt}</span>
-                                {quiz.submitted && isRightAnswer && (
-                                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                                )}
-                                {quiz.submitted && isChosen && !isRightAnswer && (
-                                  <XCircle className="h-4 w-4 text-rose-500 shrink-0" />
-                                )}
-                              </button>
-                            )
-                          })}
-                        </div>
-
-                        {quiz.submitted && (
-                          <div
-                            className={cn(
-                              "mt-3 rounded-xl p-3 text-xs leading-relaxed",
-                              isCorrect
-                                ? "bg-emerald-50 text-emerald-900 border border-emerald-200"
-                                : "bg-rose-50 text-rose-900 border border-rose-200",
-                            )}
-                          >
-                            <strong>{isCorrect ? "✓ Chính xác:" : "✕ Chưa chính xác:"}</strong>{" "}
-                            {q.explanation}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-
-                {/* Thanh hành động nộp bài */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#DCE7E4] pt-4">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      disabled={quiz.submitted}
-                      onClick={() => {
-                        upsertQuiz({ ...quiz, submitted: true })
-                        toast({ title: "Đã nộp bài Quiz", tone: "success" })
-                      }}
-                      className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                    >
-                      Nộp bài
-                    </Button>
-                    {quiz.submitted ? (
-                      <Button
-                        variant="outline"
-                        leftIcon={<RotateCcw className="h-3.5 w-3.5" />}
-                        onClick={() =>
-                          upsertQuiz({ ...quiz, answers: {}, submitted: false })
-                        }
-                      >
-                        Làm lại
-                      </Button>
-                    ) : null}
-                  </div>
-
-                  <span className="text-xs text-[#647C79]">
-                    Đã trả lời {Object.keys(quiz.answers).length} / {quiz.questions.length} câu
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
+          <QuizSection
+            key={wsId}
+            workspaceId={wsId}
+            documents={wsDocs}
+            selectedDocId={selectedDocId}
+            onSelectDocId={(nextDocId) => setSelectedDocId(nextDocId)}
+            quizzes={wsQuizzes}
+            activeQuizId={activeQuizId}
+            onSelectQuizId={setActiveQuizId}
+            useBackendHistory={useBackendHistory}
+          />
         )}
 
         {/* 4. FLASHCARDS */}
