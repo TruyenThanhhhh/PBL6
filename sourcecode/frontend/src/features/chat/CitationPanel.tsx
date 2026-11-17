@@ -51,6 +51,18 @@ export function CitationPanel({
     return () => window.removeEventListener("studio-context-tab", onSwitchTab)
   }, [])
 
+  useEffect(() => {
+    if (active != null) {
+      setManualTab("citations")
+      setTimeout(() => {
+        const el = document.getElementById(`citation-card-${active}`)
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "nearest" })
+        }
+      }, 50)
+    }
+  }, [active])
+
   const readyDocs = workspaceDocuments.filter((d) => d.status === "ready")
   const totalChunks = workspaceDocuments.reduce((acc, d) => acc + (d.totalChunks || 0), 0)
 
@@ -223,6 +235,7 @@ export function CitationPanel({
 
               return (
                 <article
+                  id={`citation-card-${c.refId}`}
                   key={`${c.sourceId ?? c.documentId ?? "web"}-${c.refId}`}
                   onClick={() => setActive(c.refId)}
                   className={cn(

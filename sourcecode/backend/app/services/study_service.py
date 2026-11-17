@@ -42,11 +42,45 @@ def _get_document_context(
     document_ids: Optional[List[str]] = None,
     max_chunks: int = 12,
     max_chars: int = 6000,
+    focus_prompt: Optional[str] = None,
 ) -> str:
     """
-    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database.
-    Với nhiều tài liệu, số chunk được chia đều để không tài liệu nào chiếm hết ngữ cảnh.
+    Trích xuất nội dung văn bản thực từ các chunk của tài liệu trong database:
+    1. Nếu có focus_prompt: Sử dụng Hybrid Search (BM25 + Semantic) để truy xuất các đoạn khớp chủ đề nhất.
+    2. Nếu không có focus_prompt: Sử dụng thuật toán Spanning Sampling lấy mẫu trải đều từ đầu đến cuối
+       tài liệu (thay vì chỉ lấy vài trang đầu), giúp AI bao quát toàn bộ các chương/mục học tập.
     """
+    # 1. Nếu có yêu cầu trọng tâm, sử dụng hệ thống truy xuất thông minh
+    if focus_prompt and focus_prompt.strip():
+        try:
+            from app.services.retrieval_service import search_relevant_chunks
+            relevant = search_relevant_chunks(
+                workspace_id=workspace_id,
+                query=focus_prompt.strip(),
+                top_k=max_chunks,
+                selected_document_id=document_id,
+                document_ids=document_ids,
+            )
+            if relevant:
+                parts: List[str] = []
+                t_len = 0
+                for r in relevant:
+                    c_text = (r.get("content") or "").strip()
+                    if not c_text:
+                        continue
+                    p_num = r.get("page_number") or 1
+                    doc_n = r.get("document_name") or "Tài liệu"
+                    part = f"[{doc_n} - Trang {p_num}]:\n{c_text}"
+                    if t_len + len(part) > max_chars:
+                        break
+                    parts.append(part)
+                    t_len += len(part)
+                if parts:
+                    return "\n\n".join(parts)
+        except Exception as exc:
+            logger.warning("Truy xuất theo trọng tâm thất bại, chuyển về spanning sampling: %s", exc)
+
+    # 2. Spanning Sampling: Lấy mẫu trải đều qua toàn bộ tài liệu
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -61,17 +95,42 @@ def _get_document_context(
         for doc_id in resolved_ids:
             if total_len >= max_chars:
                 break
-            rows = cursor.execute(
-                """
-                SELECT c.content, d.file_name, c.page_number
-                FROM document_chunks c
-                JOIN documents d ON d.id = c.document_id
-                WHERE c.workspace_id = ? AND c.document_id = ?
-                ORDER BY c.chunk_index ASC
-                LIMIT ?
-                """,
-                (workspace_id, doc_id, per_doc),
-            ).fetchall()
+
+            total_row = cursor.execute(
+                "SELECT COUNT(*) FROM document_chunks WHERE workspace_id = ? AND document_id = ?",
+                (workspace_id, doc_id),
+            ).fetchone()
+            total_doc_chunks = total_row[0] if total_row else 0
+
+            if total_doc_chunks == 0:
+                continue
+
+            if total_doc_chunks <= per_doc:
+                rows = cursor.execute(
+                    """
+                    SELECT c.content, d.file_name, c.page_number
+                    FROM document_chunks c
+                    JOIN documents d ON d.id = c.document_id
+                    WHERE c.workspace_id = ? AND c.document_id = ?
+                    ORDER BY c.chunk_index ASC
+                    """,
+                    (workspace_id, doc_id),
+                ).fetchall()
+            else:
+                step = (total_doc_chunks - 1) / max(1, per_doc - 1)
+                sampled_indices = sorted(list({round(i * step) for i in range(per_doc)}))
+                placeholders = ",".join("?" for _ in sampled_indices)
+                rows = cursor.execute(
+                    f"""
+                    SELECT c.content, d.file_name, c.page_number
+                    FROM document_chunks c
+                    JOIN documents d ON d.id = c.document_id
+                    WHERE c.workspace_id = ? AND c.document_id = ? AND c.chunk_index IN ({placeholders})
+                    ORDER BY c.chunk_index ASC
+                    """,
+                    (workspace_id, doc_id, *sampled_indices),
+                ).fetchall()
+
             for row in rows:
                 content = (row["content"] or "").strip()
                 if not content:
@@ -186,7 +245,14 @@ async def generate_ai_summary(
     """
     Sinh bản tóm tắt học tập có cấu trúc Markdown từ tài liệu thực.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=16, max_chars=8000)
+    context = _get_document_context(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=16,
+        max_chars=8000,
+        focus_prompt=focus_prompt,
+    )
     if not context:
         return {
             "title": "Tóm tắt tài liệu",
@@ -240,12 +306,13 @@ async def generate_ai_quiz(
     document_ids: Optional[List[str]] = None,
     difficulty: str = "medium",
     question_count: int = 5,
+    focus_prompt: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
     Sinh danh sách câu hỏi trắc nghiệm kiểm tra kiến thức dựa trên nội dung tài liệu.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000)
+    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000, focus_prompt=focus_prompt)
     if not context:
         return {
             "title": "Quiz trắc nghiệm",
@@ -282,10 +349,10 @@ async def generate_ai_quiz(
         f"LƯU Ý: answerIndex là số nguyên từ 0 đến 3. Hãy tạo đúng {count} câu hỏi."
     )
 
-    user_prompt = (
-        f"TÀI LIỆU NGUỒN:\n{context}\n\n"
-        f"Hãy tạo đúng {count} câu hỏi trắc nghiệm độ khó {difficulty} dưới dạng JSON object có key 'questions':"
-    )
+    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
+    if focus_prompt and focus_prompt.strip():
+        user_prompt += f"TRỌNG TÂM KIẾN THỨC CẦN HỎI: {focus_prompt.strip()}\n\n"
+    user_prompt += f"Hãy tạo đúng {count} câu hỏi trắc nghiệm độ khó {difficulty} dưới dạng JSON object có key 'questions':"
 
     try:
         raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
@@ -338,12 +405,13 @@ async def generate_ai_flashcards(
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
     count: int = 6,
+    focus_prompt: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
     Sinh bộ thẻ Flashcard (mặt trước: thuật ngữ/khái niệm/câu hỏi; mặt sau: giải nghĩa/bản chất).
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000)
+    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000, focus_prompt=focus_prompt)
     if not context:
         return {
             "flashcards": [],
@@ -376,7 +444,10 @@ async def generate_ai_flashcards(
         f"Hãy tạo đúng {card_count} thẻ Flashcards giá trị nhất."
     )
 
-    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\nHãy tạo danh sách {card_count} Flashcards dạng JSON:"
+    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
+    if focus_prompt and focus_prompt.strip():
+        user_prompt += f"TRỌNG TÂM THUẬT NGỮ / KHÁI NIỆM CẦN ÔN TẬP: {focus_prompt.strip()}\n\n"
+    user_prompt += f"Hãy tạo danh sách {card_count} Flashcards dạng JSON:"
 
     try:
         raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
@@ -436,7 +507,14 @@ async def generate_ai_mindmap(
     """
     Sinh sơ đồ tư duy (Mindmap) phân cấp bằng AI từ nội dung tài liệu.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=16, max_chars=8000)
+    context = _get_document_context(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=16,
+        max_chars=8000,
+        focus_prompt=focus_prompt,
+    )
     if not context:
         return {
             "root": None,
@@ -499,7 +577,14 @@ async def generate_ai_notes(
     """
     Sinh ghi chú học tập có cấu trúc Markdown bằng AI từ tài liệu.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=16, max_chars=8000)
+    context = _get_document_context(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=16,
+        max_chars=8000,
+        focus_prompt=focus_prompt,
+    )
     if not context:
         return {
             "title": "Ghi chú học tập",
@@ -556,12 +641,20 @@ async def generate_ai_plan(
     document_ids: Optional[List[str]] = None,
     start_date: Optional[str] = None,
     day_span: int = 7,
+    focus_prompt: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
     Sinh lộ trình học tập (danh sách nhiệm vụ kèm hạn hoàn thành) bằng AI từ tài liệu.
     """
-    context = _get_document_context(workspace_id, document_id, document_ids, max_chunks=14, max_chars=7000)
+    context = _get_document_context(
+        workspace_id,
+        document_id,
+        document_ids,
+        max_chunks=14,
+        max_chars=7000,
+        focus_prompt=focus_prompt,
+    )
     if not context:
         return {
             "tasks": [],
@@ -596,10 +689,10 @@ async def generate_ai_plan(
         f"LƯU Ý: due_offset_days là số nguyên từ 0 đến {span} (số ngày kể từ ngày bắt đầu). "
         "Không thêm markdown hay giải thích ngoài JSON."
     )
-    user_prompt = (
-        f"TÀI LIỆU NGUỒN:\n{context}\n\n"
-        f"Hãy tạo lộ trình học tập trong {span} ngày kể từ {base_date.isoformat()}, trả về JSON object có key 'tasks':"
-    )
+    user_prompt = f"TÀI LIỆU NGUỒN:\n{context}\n\n"
+    if focus_prompt and focus_prompt.strip():
+        user_prompt += f"TRỌNG TÂM LỘ TRÌNH: {focus_prompt.strip()}\n\n"
+    user_prompt += f"Hãy tạo lộ trình học tập trong {span} ngày kể từ {base_date.isoformat()}, trả về JSON object có key 'tasks':"
 
     try:
         raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)

@@ -334,6 +334,9 @@ export interface ChatResult {
     ref_id?: number
     document_id?: string
     document_name?: string
+    title?: string
+    url?: string
+    source_type?: string
     page_number?: number
     page_label?: string
     chunk_index?: number
@@ -409,16 +412,33 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
     role: "assistant" as const,
     content: result.answer,
     createdAt: nowIso(),
-    citations: (result.citations ?? []).map((c, i) => ({
-      refId: c.ref_id ?? i + 1,
-      documentId: c.document_id ?? null,
-      documentName: c.document_name ?? "Nguồn",
-      pageNumber: c.page_number ?? null,
-      chunkIndex: c.chunk_index ?? null,
-      snippet: c.snippet ?? "",
-      sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
-      url: c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined,
-    })),
+    citations: (result.citations ?? []).map((c, i) => {
+      const rawName = c.document_name ?? c.title
+      let docName = rawName
+      const url = c.url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined)
+      if (!docName || docName.toLowerCase() === "nguồn web" || docName.toLowerCase() === "web") {
+        if (url) {
+          try {
+            docName = new URL(url).hostname.replace(/^www\./, "")
+          } catch {
+            docName = "Nguồn Web"
+          }
+        } else {
+          docName = c.document_id ? "Tài liệu" : "Nguồn Web"
+        }
+      }
+
+      return {
+        refId: c.ref_id ?? i + 1,
+        documentId: c.document_id ?? null,
+        documentName: docName,
+        pageNumber: c.page_number ?? null,
+        chunkIndex: c.chunk_index ?? null,
+        snippet: c.snippet ?? "",
+        sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
+        url,
+      }
+    }),
     modeRequested: mode,
     modeUsed: mode === "auto" ? "local" : mode,
     engine: result.engine,
@@ -503,6 +523,7 @@ export interface StudyQuizPayload {
   document_ids?: string[] | null
   difficulty?: "easy" | "medium" | "hard"
   question_count?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -533,6 +554,7 @@ export interface StudyFlashcardsPayload {
   document_id?: string | null
   document_ids?: string[] | null
   count?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -615,6 +637,7 @@ export interface StudyPlanPayload {
   document_ids?: string[] | null
   start_date?: string
   day_span?: number
+  focus_prompt?: string | null
   model?: string
 }
 
@@ -635,5 +658,39 @@ export async function fetchAiPlanApi(payload: StudyPlanPayload): Promise<StudyPl
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  })
+}
+
+export interface StudyArtifactRecord {
+  id: string
+  workspace_id: string
+  document_id?: string | null
+  artifact_type: string
+  title: string
+  data: any
+  created_at?: string
+}
+
+export async function fetchStudyArtifactsApi(workspaceId: string): Promise<{ artifacts: StudyArtifactRecord[] }> {
+  return request<{ artifacts: StudyArtifactRecord[] }>(`/api/v1/workspaces/${workspaceId}/study-artifacts`)
+}
+
+export async function saveStudyArtifactApi(
+  workspaceId: string,
+  payload: { document_id?: string | null; artifact_type: string; title: string; data: any }
+): Promise<{ artifact: StudyArtifactRecord }> {
+  return request<{ artifact: StudyArtifactRecord }>(`/api/v1/workspaces/${workspaceId}/study-artifacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteStudyArtifactApi(
+  workspaceId: string,
+  artifactId: string
+): Promise<{ message: string; id: string }> {
+  return request<{ message: string; id: string }>(`/api/v1/workspaces/${workspaceId}/study-artifacts/${artifactId}`, {
+    method: "DELETE",
   })
 }

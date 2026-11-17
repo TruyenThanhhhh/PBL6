@@ -609,6 +609,27 @@ def create_study_artifact(
     }
 
 
+@router.delete("/workspaces/{workspace_id}/study-artifacts/{artifact_id}")
+def delete_study_artifact(
+    workspace_id: str,
+    artifact_id: str,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    conn = get_db_connection()
+    _assert_workspace_owner(conn, workspace_id, user["id"])
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM study_artifacts WHERE id = ? AND workspace_id = ?",
+        (artifact_id, workspace_id),
+    )
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Học liệu không tồn tại")
+    conn.commit()
+    conn.close()
+    return {"message": "Đã xóa học liệu thành công", "id": artifact_id}
+
+
 @router.get("/workspaces/{workspace_id}/activities")
 def list_activities(workspace_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     conn = get_db_connection()

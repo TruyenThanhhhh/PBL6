@@ -105,38 +105,157 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
 
 def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     """
-    Chia nhỏ văn bản thông minh bám theo dấu câu và ngắt dòng logic
+    Phân đoạn ngữ cảnh tự nhiên (Semantic & Markdown-aware Chunking):
+    1. Bảo toàn nguyên vẹn Bảng biểu (| ... |) và Khối Code (``` ... ```), không xẻ đôi giữa chừng.
+    2. Cắt theo ranh giới đoạn văn tự nhiên và tiêu đề phân cấp (#, ##, Bài, Chương).
+    3. Đính kèm siêu dữ liệu cấu trúc (Structural Breadcrumb) [Chương/Bài] vào đầu các chunk tiếp nối
+       để tăng cường độ chính xác tìm kiếm của BM25 và Vector BGE-M3.
     """
     text = re.sub(r'\r\n', '\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-
+    if not text.strip():
+        return []
     if len(text) <= chunk_size:
-        return [text.strip()] if text.strip() else []
+        return [text.strip()]
 
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        if end >= len(text):
-            chunk = text[start:].strip()
-            if chunk:
-                chunks.append(chunk)
-            break
+    lines = text.split('\n')
+    blocks: List[Tuple[str, str]] = []
+    current_block: List[str] = []
+    current_type: Optional[str] = None
 
-        cut = -1
-        for delim in ["\n\n", "\n", ". ", "; ", ", ", " "]:
-            pos = text.rfind(delim, start + chunk_size // 2, end)
-            if pos != -1:
-                cut = pos + len(delim)
-                break
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
 
-        if cut == -1:
-            cut = end
+        # 1. Khối mã lệnh Fenced Code Block
+        if stripped.startswith('```'):
+            if current_block:
+                blocks.append((current_type or 'paragraph', '\n'.join(current_block)))
+                current_block = []
+                current_type = None
+            code_lines = [line]
+            i += 1
+            while i < len(lines):
+                code_lines.append(lines[i])
+                if lines[i].strip().startswith('```'):
+                    break
+                i += 1
+            blocks.append(('code', '\n'.join(code_lines)))
+            i += 1
+            continue
 
-        chunk = text[start:cut].strip()
-        if chunk:
-            chunks.append(chunk)
-        start = cut - overlap if cut - overlap > start else cut
+        # 2. Khối bảng biểu Markdown Table
+        if stripped.startswith('|') and stripped.endswith('|'):
+            if current_type != 'table' and current_block:
+                blocks.append((current_type or 'paragraph', '\n'.join(current_block)))
+                current_block = []
+            current_type = 'table'
+            current_block.append(line)
+            i += 1
+            continue
+        elif current_type == 'table':
+            blocks.append(('table', '\n'.join(current_block)))
+            current_block = []
+            current_type = None
+
+        # 3. Tiêu đề phân cấp (Header & Section titles)
+        is_heading = bool(
+            re.match(r'^#{1,6}\s+', stripped) or
+            re.match(r'^(?:chương|bài|phần|mục|lab|chapter|section)\s+\d+[:.]?', stripped, re.IGNORECASE)
+        )
+        if is_heading:
+            if current_block:
+                blocks.append((current_type or 'paragraph', '\n'.join(current_block)))
+                current_block = []
+            blocks.append(('heading', stripped))
+            current_type = None
+            i += 1
+            continue
+
+        # 4. Ngắt dòng đoạn văn (\n\n)
+        if not stripped:
+            if current_block:
+                blocks.append((current_type or 'paragraph', '\n'.join(current_block)))
+                current_block = []
+                current_type = None
+            i += 1
+            continue
+
+        current_type = current_type or 'paragraph'
+        current_block.append(line)
+        i += 1
+
+    if current_block:
+        blocks.append((current_type or 'paragraph', '\n'.join(current_block)))
+
+    chunks: List[str] = []
+    current_chunk: List[str] = []
+    current_len = 0
+    active_heading = ''
+
+    for b_type, b_text in blocks:
+        if b_type == 'heading':
+            active_heading = re.sub(r'^#{1,6}\s*', '', b_text).strip()
+
+        b_len = len(b_text)
+
+        # Xử lý khối đơn lẻ có độ dài vượt quá chunk_size (ví dụ đoạn văn quá dài hoặc bảng khổng lồ)
+        if b_len > chunk_size:
+            if current_chunk:
+                c_content = '\n\n'.join(current_chunk).strip()
+                if active_heading and not c_content.startswith(f'[{active_heading}]') and not c_content.startswith(f'# {active_heading}'):
+                    c_content = f'[{active_heading}]\n{c_content}'
+                if c_content:
+                    chunks.append(c_content)
+                current_chunk = []
+                current_len = 0
+
+            sub_start = 0
+            while sub_start < b_len:
+                sub_end = sub_start + chunk_size
+                if sub_end >= b_len:
+                    piece = b_text[sub_start:].strip()
+                    if piece:
+                        chunks.append(piece)
+                    break
+                cut = b_text.rfind('\n', sub_start + chunk_size // 2, sub_end)
+                if cut == -1:
+                    cut = b_text.rfind('. ', sub_start + chunk_size // 2, sub_end)
+                if cut == -1:
+                    cut = sub_end
+                else:
+                    cut += 1
+                piece = b_text[sub_start:cut].strip()
+                if piece:
+                    chunks.append(piece)
+                sub_start = cut - overlap if cut - overlap > sub_start else cut
+            continue
+
+        if current_len + b_len + 2 > chunk_size and current_chunk:
+            c_content = '\n\n'.join(current_chunk).strip()
+            if active_heading and not c_content.startswith(f'[{active_heading}]') and not c_content.startswith(f'# {active_heading}'):
+                c_content = f'[{active_heading}]\n{c_content}'
+            if c_content:
+                chunks.append(c_content)
+
+            # Giữ block cuối cho độ gối đầu overlap nếu hợp lý
+            last_block = current_chunk[-1]
+            if overlap > 0 and len(last_block) <= overlap:
+                current_chunk = [last_block, b_text]
+                current_len = len(last_block) + b_len + 2
+            else:
+                current_chunk = [b_text]
+                current_len = b_len
+        else:
+            current_chunk.append(b_text)
+            current_len += b_len + 2
+
+    if current_chunk:
+        c_content = '\n\n'.join(current_chunk).strip()
+        if active_heading and not c_content.startswith(f'[{active_heading}]') and not c_content.startswith(f'# {active_heading}'):
+            c_content = f'[{active_heading}]\n{c_content}'
+        if c_content:
+            chunks.append(c_content)
 
     return chunks
 

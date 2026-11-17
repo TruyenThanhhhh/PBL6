@@ -37,6 +37,7 @@ class StudyQuizRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     difficulty: str = Field(default="medium", pattern="^(easy|medium|hard)$")
     question_count: int = Field(default=5, ge=1, le=10)
+    focus_prompt: Optional[str] = None
     model: Optional[str] = None
 
 class StudyFlashcardsRequest(BaseModel):
@@ -44,6 +45,7 @@ class StudyFlashcardsRequest(BaseModel):
     document_id: Optional[str] = None
     document_ids: Optional[List[str]] = None
     count: int = Field(default=6, ge=1, le=12)
+    focus_prompt: Optional[str] = None
     model: Optional[str] = None
 
 class StudyMindmapRequest(BaseModel):
@@ -67,6 +69,7 @@ class StudyPlanRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     start_date: Optional[str] = None
     day_span: int = Field(default=7, ge=1, le=30)
+    focus_prompt: Optional[str] = None
     model: Optional[str] = None
 
 
@@ -101,6 +104,7 @@ async def create_study_quiz(
         document_ids=req.document_ids,
         difficulty=req.difficulty,
         question_count=req.question_count,
+        focus_prompt=req.focus_prompt,
         model=req.model or DEFAULT_LLM_MODEL,
     )
 
@@ -118,6 +122,7 @@ async def create_study_flashcards(
         document_id=req.document_id,
         document_ids=req.document_ids,
         count=req.count,
+        focus_prompt=req.focus_prompt,
         model=req.model or DEFAULT_LLM_MODEL,
     )
 
@@ -171,5 +176,6 @@ async def create_study_plan(
         document_ids=req.document_ids,
         start_date=req.start_date,
         day_span=req.day_span,
+        focus_prompt=req.focus_prompt,
         model=req.model or DEFAULT_LLM_MODEL,
     )
