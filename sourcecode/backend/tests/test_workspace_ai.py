@@ -18,19 +18,26 @@ from app.main import app  # noqa: E402
 
 
 def _fake_topic_embed(texts):
-    """Tạo vector 4 chiều trực giao theo chủ đề để kiểm thử tìm kiếm ngữ nghĩa nhanh & xác định."""
+    """Tạo vector 5 chiều trực giao theo chủ đề để kiểm thử tìm kiếm ngữ nghĩa nhanh & xác định."""
     vectors = []
     for raw in texts:
         t = (raw or "").lower()
-        v = [0.05, 0.05, 0.05, 0.05]
-        if any(k in t for k in ("mạng", "tcp", "router", "giao thức", "định tuyến", "ip", "bắt tay")):
+        v = [0.02, 0.02, 0.02, 0.02, 0.02]
+        matched = False
+        if any(k in t for k in ("mạng", "tcp", "router", "giao thức", "định tuyến", "ip", "bắt tay", "thiết bị")):
             v[0] += 1.0
-        if any(k in t for k in ("nhật", "jlpt", "n3", "kanji", "từ vựng", "ngữ pháp")):
+            matched = True
+        if any(k in t for k in ("nhật", "jlpt", "n3", "kanji", "từ vựng", "ngữ pháp", "đề thi")):
             v[1] += 1.0
+            matched = True
         if any(k in t for k in ("nấu ăn", "ẩm thực", "bánh", "món ăn", "gia vị")):
             v[2] += 1.0
+            matched = True
         if any(k in t for k in ("rag", "vector", "embedding", "llm", "trí tuệ")):
             v[3] += 1.0
+            matched = True
+        if not matched:
+            v[4] += 1.0
         norm = sum(x * x for x in v) ** 0.5
         vectors.append([x / norm for x in v])
     return vectors
@@ -293,6 +300,89 @@ class WorkspaceAITestCase(unittest.TestCase):
         )
         self.assertEqual(res_docs.status_code, 200)
         self.assertEqual(res_docs.json()["hits"], [])
+
+    @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)
+    @patch("app.services.document_service.embed_texts", side_effect=_fake_topic_embed)
+    @patch("app.services.workspace_ai_service.call_ollama_json", new_callable=AsyncMock)
+    def test_accented_phrase_de_thi_no_false_substring_or_diacritic_leak(
+        self, mock_ollama, _mock_doc_emb, _mock_ws_emb
+    ):
+        mock_ollama.return_value = {"ok": False, "error": "offline", "data": None}
+        # Workspace chứa 'ThietBi' (chuỗi con 'thi') và từ 'để', 'thì' (khác dấu với 'đề thi')
+        ws_noise = self.client.post(
+            "/api/v1/workspaces",
+            json={"name": "PBL6", "description": "hiii"},
+            headers=self.user_a_headers,
+        ).json()["workspace"]["id"]
+        self.client.post(
+            f"/api/v1/workspaces/{ws_noise}/documents/upload",
+            files={
+                "file": (
+                    "DanhSach_ThietBi_Mang.txt",
+                    "Tổng quan hệ thống. Tài liệu này để tìm hiểu thiết bị, thì giờ và định tuyến mạng.".encode("utf-8"),
+                    "text/plain",
+                )
+            },
+            data={"defer_metadata": "true"},
+            headers=self.user_a_headers,
+        )
+        ws_empty = self.client.post(
+            "/api/v1/workspaces",
+            json={"name": "Workspace Trống", "description": ""},
+            headers=self.user_a_headers,
+        ).json()["workspace"]["id"]
+
+        ws_exam = self.client.post(
+            "/api/v1/workspaces",
+            json={"name": "JLPT N3", "description": "Luyện đề thi tiếng Nhật N3"},
+            headers=self.user_a_headers,
+        ).json()["workspace"]["id"]
+
+        res = self.client.get(
+            "/api/v1/workspaces/search",
+            params={"q": "đề thi"},
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        returned_ids = [w["id"] for w in res.json()["workspaces"]]
+        self.assertIn(ws_exam, returned_ids)
+        self.assertNotIn(ws_noise, returned_ids)
+        self.assertNotIn(ws_empty, returned_ids)
+
+    @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)
+    @patch("app.services.document_service.embed_texts", side_effect=_fake_topic_embed)
+    @patch("app.services.workspace_ai_service.call_ollama_json", new_callable=AsyncMock)
+    def test_fallback_preserves_existing_good_description_on_multi_upload(
+        self, mock_ollama, _mock_doc_emb, _mock_ws_emb
+    ):
+        ws_id = self.client.post("/api/v1/workspaces", json={}, headers=self.user_a_headers).json()["workspace"]["id"]
+
+        mock_ollama.return_value = {
+            "ok": True,
+            "model_used": "qwen2.5:3b",
+            "data": {
+                "title": "Từ Vựng Mĩmikara N3",
+                "description": "Tài liệu học từ vựng và mẫu câu tiếng Nhật trình độ JLPT N3.",
+                "category": "Ngoại ngữ",
+            },
+        }
+        self.client.post(
+            f"/api/v1/workspaces/{ws_id}/documents/upload",
+            files={"file": ("mimikara_n3.txt", b"Tu vung Mimikara N3 bai 1.", "text/plain")},
+            headers=self.user_a_headers,
+        )
+
+        # Giả lập lần up file tiếp theo Ollama tạm lỗi -> không được ghi đè bằng 'Tổng hợp 2 tài liệu: ...'
+        mock_ollama.return_value = {"ok": False, "error": "timeout", "data": None}
+        up2 = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/documents/upload",
+            files={"file": ("n3_2017.txt", b"De thi JLPT N3 nam 2017.", "text/plain")},
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(up2.status_code, 200, up2.text)
+        desc = up2.json()["workspace"]["description"]
+        self.assertNotIn("Tổng hợp 2 tài liệu:", desc)
+        self.assertEqual(desc, "Tài liệu học từ vựng và mẫu câu tiếng Nhật trình độ JLPT N3.")
 
 
 if __name__ == "__main__":

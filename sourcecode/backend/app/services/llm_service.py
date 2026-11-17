@@ -587,6 +587,7 @@ async def call_ollama_json(
     user_prompt: str,
     model: str = DEFAULT_LLM_MODEL,
     num_predict: int = 256,
+    num_ctx: int = 4096,
     temperature: float = 0.35,
     timeout_sec: float = 45.0,
 ) -> Dict[str, Any]:
@@ -613,7 +614,7 @@ async def call_ollama_json(
             "top_p": 0.9,
             "repeat_penalty": 1.1,
             "num_predict": num_predict,
-            "num_ctx": 4096,
+            "num_ctx": num_ctx,
         },
     }
 

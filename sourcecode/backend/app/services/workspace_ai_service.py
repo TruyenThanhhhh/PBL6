@@ -29,20 +29,33 @@ ALLOWED_WORKSPACE_CATEGORIES = (
 DEFAULT_WORKSPACE_BASE_NAME = "Workspace mới"
 _DEFAULT_NAME_PATTERN = re.compile(r"^workspace\s+mới(?:\s+\d+|\s*\(\d+\))?$", re.IGNORECASE)
 
-_VI_SEARCH_STOPWORDS = {
+_VI_ACCENTED_STOPWORDS = {
+    "và", "của", "cho", "với", "về", "trong", "là", "các", "những", "này", "đó",
+    "khi", "nào", "sao", "để", "trên", "dưới", "từ", "hay", "hoặc", "một", "hai",
+    "ba", "không", "gì", "ở", "đâu", "như", "thế", "có", "được", "tài", "liệu",
+    "bài", "phần", "mục", "file", "tệp", "nội", "dung", "thông", "tin",
+    "and", "for", "with", "of", "in", "on", "to", "the", "a", "an",
+}
+
+_VI_UNACCENTED_STOPWORDS = {
     "va", "cua", "cho", "voi", "ve", "trong", "la", "cac", "nhung", "nay", "do",
-    "khi", "nao", "sao", "tai", "lieu", "bai", "phan", "muc", "file", "tep",
-    "de", "tren", "duoi", "tu", "hay", "hoac", "mot", "hai", "ba", "khong",
-    "gi", "o", "dau", "nhu", "the", "co", "duoc", "noi", "dung", "thong", "tin",
+    "khi", "nao", "sao", "tren", "duoi", "tu", "hay", "hoac", "mot", "hai", "ba",
+    "khong", "gi", "o", "dau", "nhu", "the", "co", "duoc", "tai", "lieu", "bai",
+    "phan", "muc", "file", "tep", "noi", "dung", "thong", "tin",
     "and", "for", "with", "of", "in", "on", "to", "the", "a", "an",
 }
 
 
+def _has_accent(text: str) -> bool:
+    return any(ord(ch) > 127 for ch in text)
+
+
 def _normalize_vi(text: str) -> str:
-    """Chuẩn hóa chữ thường và bỏ dấu tiếng Việt để so khớp từ khóa chính xác."""
+    """Chuẩn hóa tách CamelCase, chữ thường và bỏ dấu tiếng Việt để so khớp từ khóa chính xác."""
     if not text:
         return ""
-    s = text.replace("đ", "d").replace("Đ", "D").lower()
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    s = spaced.replace("đ", "d").replace("Đ", "D").lower()
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
@@ -50,17 +63,31 @@ def _normalize_vi(text: str) -> str:
 
 
 def _extract_query_tokens(query: str) -> Tuple[str, List[str], List[str]]:
-    """Tách token chuẩn hóa (bỏ stopword) và token thô cho FTS5."""
+    """Tách token chuẩn hóa (bỏ stopword theo ngữ cảnh dấu tiếng Việt) và token thô cho FTS5."""
     q_norm = _normalize_vi(query)
-    all_norm_tokens = [t for t in q_norm.split() if len(t) >= 2 or t.isdigit()]
-    q_tokens = [t for t in all_norm_tokens if t not in _VI_SEARCH_STOPWORDS] or all_norm_tokens
-
     raw_all = [
         t
         for t in re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE).split()
         if len(t) >= 2 or t.isdigit()
     ]
-    raw_tokens = [t for t in raw_all if _normalize_vi(t) not in _VI_SEARCH_STOPWORDS] or raw_all
+    query_accented = _has_accent(query)
+
+    filtered_raw: List[str] = []
+    for t in raw_all:
+        t_low = t.lower()
+        t_norm = _normalize_vi(t_low)
+        is_stop = (
+            t_low in _VI_ACCENTED_STOPWORDS
+            if query_accented
+            else (t_norm in _VI_UNACCENTED_STOPWORDS)
+        )
+        if not is_stop:
+            filtered_raw.append(t)
+
+    raw_tokens = filtered_raw or raw_all
+    q_tokens = [_normalize_vi(t) for t in raw_tokens if _normalize_vi(t)]
+    if not q_tokens:
+        q_tokens = [t for t in q_norm.split() if len(t) >= 2 or t.isdigit()]
     return q_norm, q_tokens, raw_tokens
 
 
@@ -128,20 +155,30 @@ def _humanize_filename_stem(file_name: str) -> str:
     return stem or "Tài liệu"
 
 
+_FALLBACK_LISTING_RE = re.compile(r"^tổng hợp \d+ tài liệu\s*:", re.IGNORECASE)
+
+
+def _looks_like_file_list_desc(desc: str) -> bool:
+    d = (desc or "").strip()
+    if not d:
+        return True
+    return bool(_FALLBACK_LISTING_RE.match(d))
+
+
 def _build_fallback_metadata(
     doc_names: List[str],
     note_titles: List[str],
 ) -> Tuple[str, str, str]:
     if doc_names:
-        primary_stem = _humanize_filename_stem(doc_names[0])[:65]
+        stems = [_humanize_filename_stem(n) for n in doc_names]
+        primary_stem = stems[0][:65]
         if len(doc_names) == 1:
             title = primary_stem
-            description = f"Không gian lưu trữ và hỏi đáp AI cho tài liệu {doc_names[0]}."
+            description = f"Không gian lưu trữ tài liệu và hỏi đáp AI về chủ đề {primary_stem}."
         else:
             title = f"{primary_stem[:50]} (+{len(doc_names) - 1} tệp)"
-            listed = ", ".join(doc_names[:4])
-            extra = f" và {len(doc_names) - 4} tệp khác" if len(doc_names) > 4 else ""
-            description = f"Tổng hợp {len(doc_names)} tài liệu: {listed}{extra}."
+            topics = ", ".join(s[:40] for s in stems[:3])
+            description = f"Không gian học tập và tra cứu kiến thức liên quan đến {topics}."
         return title[:120], description[:500], "Chung"
 
     if note_titles:
@@ -155,8 +192,8 @@ def _build_fallback_metadata(
 def _collect_workspace_context(
     conn: Any,
     workspace_id: str,
-    max_docs: int = 8,
-    max_chars: int = 3600,
+    max_docs: int = 6,
+    max_chars: int = 1050,
 ) -> Dict[str, Any]:
     docs = conn.execute(
         """
@@ -186,7 +223,7 @@ def _collect_workspace_context(
 
     if docs:
         target_docs = docs[:max_docs]
-        per_doc_budget = max(350, max_chars // len(target_docs))
+        per_doc_budget = max(140, max_chars // len(target_docs))
         for doc in target_docs:
             if total_chars >= max_chars:
                 break
@@ -196,19 +233,17 @@ def _collect_workspace_context(
                 FROM document_chunks
                 WHERE workspace_id = ? AND document_id = ?
                 ORDER BY chunk_index ASC
-                LIMIT 2
+                LIMIT 1
                 """,
                 (workspace_id, doc["id"]),
             ).fetchall()
             if not chunk_rows:
                 continue
-            combined = "\n".join(
-                (r["content"] or "").strip() for r in chunk_rows if (r["content"] or "").strip()
-            )
+            combined = re.sub(r"\s+", " ", (chunk_rows[0]["content"] or "").strip())
             if not combined:
                 continue
             excerpt = combined[:per_doc_budget]
-            part = f"[Tài liệu: {doc['file_name']}]\n{excerpt}"
+            part = f"[{doc['file_name']}]: {excerpt}"
             remaining = max_chars - total_chars
             if len(part) > remaining:
                 part = part[:remaining]
@@ -219,14 +254,14 @@ def _collect_workspace_context(
         for n in notes:
             if total_chars >= max_chars:
                 break
-            text = f"[Ghi chú: {n['title']}]\n{(n['content'] or '')[:350]}"
+            text = f"[Ghi chú: {n['title']}] {(n['content'] or '')[:200]}"
             snippets.append(text[: max_chars - total_chars])
             total_chars += len(text)
 
     return {
         "doc_names": doc_names,
         "note_titles": note_titles,
-        "context_text": "\n\n".join(snippets),
+        "context_text": "\n".join(snippets),
     }
 
 
@@ -366,33 +401,36 @@ async def generate_and_apply_workspace_metadata(
         conn.close()
 
     system_prompt = (
-        "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Dựa trên danh sách tên tệp và nội dung trích đoạn "
-        "của TẤT CẢ tài liệu trong workspace, hãy đặt một tiêu đề tổng quát, một mô tả súc tích và phân loại phù hợp.\n\n"
+        "Bạn là chuyên gia tổ chức kho tri thức cá nhân. Dựa trên trích đoạn nội dung của TẤT CẢ tài liệu trong workspace, "
+        "hãy đặt tiêu đề tổng quát và viết mô tả TỔNG HỢP CHỦ ĐỀ CHUNG bằng TIẾNG VIỆT.\n\n"
         "BẮT BUỘC TRẢ VỀ DUY NHẤT MỘT JSON OBJECT:\n"
         "{\n"
-        '  "title": "Tên workspace ngắn gọn (3-8 từ, tối đa 70 ký tự, bao quát các tài liệu)",\n'
-        '  "description": "Mô tả 1-2 câu súc tích (tối đa 220 ký tự) về chủ đề và nội dung chính",\n'
+        '  "title": "Tên workspace ngắn gọn bằng tiếng Việt (3-8 từ, tối đa 70 ký tự, bao quát các tài liệu)",\n'
+        '  "description": "Tóm tắt 1-2 câu bằng tiếng Việt (tối đa 220 ký tự) về nội dung kiến thức và mục đích học tập chung của workspace",\n'
         '  "category": "Chọn ĐÚNG 1 giá trị trong: Kỹ thuật | Nghiên cứu | Ngoại ngữ | Đại học | Dự án | Chung"\n'
         "}\n"
-        "LƯU Ý: Không thêm giải thích ngoài JSON. Dùng tiếng Việt tự nhiên (trừ thuật ngữ chuyên ngành hoặc tên riêng)."
+        "QUY TẮC BẮT BUỘC:\n"
+        "- Viết cả title và description bằng tiếng Việt (chỉ giữ tên riêng/thuật ngữ như JLPT N3, Kanji, TCP/IP).\n"
+        "- TUYỆT ĐỐI KHÔNG liệt kê tên tệp, KHÔNG chép đuôi tệp (.pdf, .xlsx, .docx) và KHÔNG viết kiểu 'Tổng hợp 3 tài liệu: ...' vào description."
     )
 
-    files_summary = "\n".join(f"- {name}" for name in doc_names[:20])
-    avoid_names = ", ".join(other_names[:15]) if other_names else "(không có)"
+    files_summary = ", ".join(doc_names[:12])
+    avoid_names = ", ".join(other_names[:12]) if other_names else "(không có)"
     user_prompt = (
-        f"DANH SÁCH TÀI LIỆU HIỆN CÓ TRONG WORKSPACE ({len(doc_names)} tệp):\n{files_summary}\n\n"
-        f"TRÁNH ĐẶT TRÙNG TÊN VỚI CÁC WORKSPACE KHÁC: {avoid_names}\n\n"
-        f"NỘI DUNG TRÍCH ĐOẠN TỪ CÁC TÀI LIỆU:\n{context_text or '(chỉ có tên tệp)'}\n\n"
-        "Hãy trả về JSON gồm title, description, category:"
+        f"Các tệp hiện có ({len(doc_names)} tệp): {files_summary}\n"
+        f"Tránh đặt trùng tên: {avoid_names}\n\n"
+        f"Trích đoạn nội dung từ các tài liệu:\n{context_text or '(chỉ có tên tệp)'}\n\n"
+        "Trả về JSON object gồm title, description, category bằng tiếng Việt:"
     )
 
     ai_res = await call_ollama_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=model,
-        num_predict=240,
+        num_predict=180,
+        num_ctx=2048,
         temperature=0.35,
-        timeout_sec=45.0,
+        timeout_sec=180.0,
     )
 
     source = "ai"
@@ -411,18 +449,17 @@ async def generate_and_apply_workspace_metadata(
         if not ws:
             return {"updated": False, "source": "not_found", "workspace": None}
 
-        # Nếu Ollama offline và workspace đã có tên tùy chỉnh/AI trước đó (không phải tên mặc định),
-        # giữ tên hiện tại và cập nhật mô tả phản ánh danh sách tài liệu mới.
+        existing_desc = (ws["description"] or "").strip()
         if source == "fallback" and not _is_default_workspace_name(ws["name"]) and len(doc_names) > 1:
             final_title = ws["name"]
             final_cat = ws["category"] or raw_cat
+            final_desc = existing_desc if (existing_desc and not _looks_like_file_list_desc(existing_desc)) else raw_desc[:500]
         else:
             final_title = _deduplicate_workspace_title(
                 conn, workspace_id, ws["owner_user_id"], raw_title
             )
             final_cat = raw_cat
-
-        final_desc = raw_desc[:500] if raw_desc else (ws["description"] or "")
+            final_desc = raw_desc[:500] if raw_desc else existing_desc
 
         conn.execute(
             """
@@ -506,17 +543,65 @@ def _score_vector_rows(
     ]
 
 
-def _keyword_match_score(query_norm: str, query_tokens: List[str], target_text: str) -> float:
+def _keyword_match_score(
+    query_norm: str,
+    query_tokens: List[str],
+    target_text: str,
+    raw_query_tokens: Optional[List[str]] = None,
+) -> float:
+    """So khớp từ khóa theo ranh giới nguyên từ và giữ phân biệt dấu tiếng Việt khi cần."""
     if not query_norm or not target_text:
         return 0.0
     target_norm = _normalize_vi(target_text)
     if not target_norm:
         return 0.0
-    if query_norm in target_norm:
-        return 1.0
+
+    target_spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", target_text)
+    target_raw_words = set(re.findall(r"[^\W_]+", target_spaced.lower(), flags=re.UNICODE))
+    target_norm_words = set(target_norm.split())
+
+    norm_to_raw_variants: Dict[str, set[str]] = {}
+    for rw in target_raw_words:
+        nw = _normalize_vi(rw)
+        if nw:
+            norm_to_raw_variants.setdefault(nw, set()).add(rw)
+
+    if re.search(rf"(?<!\w){re.escape(query_norm)}(?!\w)", target_norm):
+        if raw_query_tokens and any(_has_accent(rt) for rt in raw_query_tokens):
+            phrase_ok = True
+            for rt in raw_query_tokens:
+                rt_l = rt.lower()
+                nt = _normalize_vi(rt_l)
+                variants = norm_to_raw_variants.get(nt, set())
+                if _has_accent(rt_l) and variants and rt_l not in variants and nt not in variants:
+                    phrase_ok = False
+                    break
+            if phrase_ok:
+                return 1.0
+        else:
+            return 1.0
+
     if not query_tokens:
         return 0.0
-    hits = sum(1 for tok in query_tokens if tok in target_norm)
+
+    raw_map: Dict[str, str] = {}
+    if raw_query_tokens:
+        for rt in raw_query_tokens:
+            nt = _normalize_vi(rt)
+            if nt:
+                raw_map[nt] = rt.lower()
+
+    hits = 0
+    for tok in query_tokens:
+        if tok not in target_norm_words:
+            continue
+        raw_tok = raw_map.get(tok)
+        if raw_tok and _has_accent(raw_tok):
+            variants = norm_to_raw_variants.get(tok, set())
+            if variants and raw_tok not in variants and tok not in variants:
+                continue
+        hits += 1
+
     return hits / len(query_tokens)
 
 
@@ -568,9 +653,13 @@ def _query_fts_hits_for_user(
     conn: Any,
     user_id: str,
     tokens: List[str],
+    q_norm: str = "",
+    q_tokens: Optional[List[str]] = None,
     limit: int = 80,
 ) -> Dict[str, Tuple[float, str, str, str, int, str]]:
-    """Trả về map chunk_id -> (score, workspace_id, document_id, file_name, page_number, content)."""
+    """Trả về map chunk_id -> (score, workspace_id, document_id, file_name, page_number, content).
+    Hậu kiểm dấu tiếng Việt để tránh FTS5 unicode61 khớp nhầm 'đề thi' với 'để thì'.
+    """
     if not tokens:
         return {}
     match_query = " OR ".join('"' + tok.replace('"', '""') + '"' for tok in tokens)
@@ -592,9 +681,16 @@ def _query_fts_hits_for_user(
     except Exception:
         return {}
 
-    hits: Dict[str, Tuple[float, str, str, int]] = {}
+    norm_toks = q_tokens if q_tokens is not None else [_normalize_vi(t) for t in tokens if _normalize_vi(t)]
+    norm_str = q_norm or " ".join(norm_toks)
+    min_ratio = 0.66 if len(norm_toks) >= 2 else 1.0
+
+    hits: Dict[str, Tuple[float, str, str, str, int, str]] = {}
     for rank, r in enumerate(rows):
-        score = 1.0 / (1.0 + rank * 0.25)
+        kw_ratio = _keyword_match_score(norm_str, norm_toks, str(r["content"] or ""), tokens)
+        if kw_ratio < min_ratio:
+            continue
+        score = (1.0 / (1.0 + rank * 0.25)) * kw_ratio
         key = r["chunk_id"]
         hits[key] = (
             score,
@@ -692,7 +788,7 @@ def semantic_search_workspaces(
         if q_vec is not None:
             chunk_rows = conn.execute(
                 """
-                SELECT c.workspace_id, e.vector, e.dimensions
+                SELECT c.workspace_id, c.content, e.vector, e.dimensions
                 FROM chunk_embeddings e
                 JOIN document_chunks c ON c.id = e.chunk_id
                 JOIN workspaces w ON w.id = c.workspace_id
@@ -703,7 +799,10 @@ def semantic_search_workspaces(
             chunk_scores = _score_vector_rows(q_vec, chunk_rows)
             ws_top_scores: Dict[str, List[float]] = {}
             for row, sc in zip(chunk_rows, chunk_scores):
-                ws_top_scores.setdefault(row["workspace_id"], []).append(sc)
+                content_len = len((row["content"] or "").strip())
+                # Giảm trọng số các chunk tiêu đề/rác quá ngắn (vd 'PHẦN 1 SLIDE')
+                adj_sc = sc * 0.80 if content_len < 45 else sc
+                ws_top_scores.setdefault(row["workspace_id"], []).append(adj_sc)
             for ws_id, scs in ws_top_scores.items():
                 scs.sort(reverse=True)
                 best = scs[0]
@@ -712,28 +811,34 @@ def semantic_search_workspaces(
 
         q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
 
-        fts_hits = _query_fts_hits_for_user(conn, user_id, raw_tokens, limit=60)
+        fts_hits = _query_fts_hits_for_user(
+            conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+        )
         fts_by_ws: Dict[str, float] = {ws_id: 0.0 for ws_id in ws_ids}
         for hit in fts_hits.values():
             _, ws_id, _, _, _, _ = hit
             if ws_id in fts_by_ws:
                 fts_by_ws[ws_id] = max(fts_by_ws[ws_id], hit[0])
 
+        min_kw_ratio = 0.66 if len(q_tokens) >= 2 else 0.99
         scored: List[Tuple[float, bool, Dict[str, Any]]] = []
         for ws_id, ws in workspaces_by_id.items():
-            name_kw = _keyword_match_score(q_norm, q_tokens, ws.get("name", ""))
+            name_kw = _keyword_match_score(q_norm, q_tokens, ws.get("name", ""), raw_tokens)
             desc_kw = _keyword_match_score(
                 q_norm,
                 q_tokens,
                 f"{ws.get('description', '')} {ws.get('category', '')}",
+                raw_tokens,
             )
             files_kw = _keyword_match_score(
                 q_norm,
                 q_tokens,
                 " ".join(f"{fn} {_humanize_filename_stem(fn)}" for fn in doc_names_by_ws.get(ws_id, [])),
+                raw_tokens,
             )
-            note_kw = _keyword_match_score(q_norm, q_tokens, note_text_by_ws.get(ws_id, ""))
+            note_kw = _keyword_match_score(q_norm, q_tokens, note_text_by_ws.get(ws_id, ""), raw_tokens)
 
+            best_kw_ratio = max(name_kw, desc_kw, files_kw, note_kw)
             meta_kw = max(name_kw * 0.45, desc_kw * 0.30, files_kw * 0.28, note_kw * 0.22)
             m_dense = meta_dense_by_ws.get(ws_id, 0.0)
             c_dense = content_dense_by_ws.get(ws_id, 0.0)
@@ -743,9 +848,9 @@ def semantic_search_workspaces(
             synergy = min(m_dense, c_dense)
             final_score = best_semantic + 0.15 * synergy + meta_kw + 0.20 * fts_sc
 
-            has_kw = meta_kw >= 0.10 or fts_sc > 0.0
+            has_kw = best_kw_ratio >= min_kw_ratio or fts_sc > 0.0
             if q_vec is not None:
-                is_relevant = has_kw or best_semantic >= 0.45 or (m_dense >= 0.40 and c_dense >= 0.40)
+                is_relevant = has_kw or best_semantic >= 0.49
             else:
                 is_relevant = has_kw
 
@@ -758,7 +863,7 @@ def semantic_search_workspaces(
         if scored:
             top_score = scored[0][0]
             if top_score >= 0.65:
-                rel_floor = max(0.45, top_score * 0.62)
+                rel_floor = max(0.49, top_score * 0.65)
                 scored = [pair for pair in scored if pair[1] or pair[0] >= rel_floor]
         return {
             "workspaces": [pair[2] for pair in scored[:limit]],
@@ -772,6 +877,7 @@ def _score_small_entity_group(
     q_vec: Optional[List[float]],
     q_norm: str,
     q_tokens: List[str],
+    raw_tokens: List[str],
     records: List[Dict[str, Any]],
     ws_name_map: Dict[str, str],
     per_group_cap: int,
@@ -781,12 +887,13 @@ def _score_small_entity_group(
         return []
     texts = [r["embed_text"] for r in records]
     vecs = embed_texts(texts) if (q_vec is not None and len(records) <= 40) else None
+    min_kw_ratio = 0.66 if len(q_tokens) >= 2 else 0.99
     scored: List[Tuple[float, Dict[str, Any]]] = []
     for idx, rec in enumerate(records):
-        kw = _keyword_match_score(q_norm, q_tokens, rec["kw_text"])
+        kw = _keyword_match_score(q_norm, q_tokens, rec["kw_text"], raw_tokens)
         sem = max(0.0, _cosine_plain(q_vec, vecs[idx])) if (q_vec and vecs) else 0.0
         sc = sem + 0.5 * kw
-        if kw > 0.2 or sem >= 0.45:
+        if kw >= min_kw_ratio or sem >= 0.49:
             ws_name = ws_name_map.get(rec["workspace_id"], "Workspace")
             scored.append((
                 sc,
@@ -885,17 +992,21 @@ def semantic_global_search(
                 ).fetchall()
                 c_scores = _score_vector_rows(q_vec, c_rows)
                 for row, sc in zip(c_rows, c_scores):
+                    content_str = (row["content"] or "").strip()
+                    adj_sc = sc * 0.80 if len(content_str) < 45 else sc
                     doc_id = row["document_id"]
                     prev = best_by_doc.get(doc_id)
-                    if prev is None or sc > prev["dense_score"]:
+                    if prev is None or adj_sc > prev["dense_score"]:
                         best_by_doc[doc_id] = {
-                            "dense_score": sc,
+                            "dense_score": adj_sc,
                             "fts_score": 0.0,
-                            "snippet": (row["content"] or "").strip(),
+                            "snippet": content_str,
                             "page": int(row["page_number"] or 1),
                         }
 
-            fts_hits = _query_fts_hits_for_user(conn, user_id, raw_tokens, limit=60)
+            fts_hits = _query_fts_hits_for_user(
+                conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+            )
             for fts_sc, _, doc_id, _, page_no, content in fts_hits.values():
                 entry = best_by_doc.setdefault(
                     doc_id,
@@ -907,15 +1018,18 @@ def semantic_global_search(
                         entry["snippet"] = (content or "").strip()
                         entry["page"] = page_no
 
+            min_kw_ratio = 0.66 if len(q_tokens) >= 2 else 0.99
             doc_scored: List[Tuple[float, bool, Dict[str, Any]]] = []
             for doc_id, doc in doc_info.items():
-                name_kw = _keyword_match_score(q_norm, q_tokens, f"{doc['file_name']} {_humanize_filename_stem(doc['file_name'])}")
+                name_kw = _keyword_match_score(
+                    q_norm, q_tokens, f"{doc['file_name']} {_humanize_filename_stem(doc['file_name'])}", raw_tokens
+                )
                 entry = best_by_doc.get(doc_id, {"dense_score": 0.0, "fts_score": 0.0, "snippet": "", "page": 1})
                 dense_sc = float(entry["dense_score"])
                 fts_sc = float(entry["fts_score"])
                 score = dense_sc + 0.45 * name_kw + 0.25 * fts_sc
-                has_kw = name_kw > 0.2 or fts_sc > 0.0
-                is_rel = has_kw or (q_vec is not None and dense_sc >= 0.45)
+                has_kw = name_kw >= min_kw_ratio or fts_sc > 0.0
+                is_rel = has_kw or (q_vec is not None and dense_sc >= 0.49)
                 if not is_rel:
                     continue
 
@@ -945,7 +1059,7 @@ def semantic_global_search(
             if doc_scored:
                 top_doc_sc = doc_scored[0][0]
                 if top_doc_sc >= 0.65:
-                    doc_floor = max(0.45, top_doc_sc * 0.62)
+                    doc_floor = max(0.49, top_doc_sc * 0.65)
                     doc_scored = [p for p in doc_scored if p[1] or p[0] >= doc_floor]
             hits.extend(pair[2] for pair in doc_scored[:per_group_cap])
 
@@ -973,7 +1087,7 @@ def semantic_global_search(
                 }
                 for r in nb_rows
             ]
-            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, nb_records, ws_name_map, per_group_cap))
+            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, raw_tokens, nb_records, ws_name_map, per_group_cap))
 
         # 4. Notes
         if kind in ("all", "note"):
@@ -1001,7 +1115,7 @@ def semantic_global_search(
                 }
                 for r in note_rows
             ]
-            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, note_records, ws_name_map, per_group_cap))
+            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, raw_tokens, note_records, ws_name_map, per_group_cap))
 
         # 5. Conversations
         if kind in ("all", "conversation"):
@@ -1046,7 +1160,7 @@ def semantic_global_search(
                     "embed_text": f"{r['title']}. {recent_text[:350]}",
                     "kw_text": f"{r['title']} {recent_text}",
                 })
-            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, conv_records, ws_name_map, per_group_cap))
+            hits.extend(_score_small_entity_group(q_vec, q_norm, q_tokens, raw_tokens, conv_records, ws_name_map, per_group_cap))
 
         return {"hits": hits[:limit], "search_mode": search_mode}
     finally:

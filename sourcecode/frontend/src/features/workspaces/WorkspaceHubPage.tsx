@@ -16,6 +16,7 @@ import {
   Search,
   Settings,
   Sliders,
+  Sparkles,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -30,6 +31,7 @@ import { useSystemStatus } from "@/hooks/useSystemStatus"
 import { useAuthSession } from "@/hooks/useAuthSession"
 import {
   deleteWorkspaceApi,
+  generateWorkspaceMetadataApi,
   searchWorkspacesSemanticApi,
   updateWorkspaceApi,
 } from "@/services/api"
@@ -146,6 +148,7 @@ export function WorkspaceHubPage() {
   const conversations = useAppStore((s) => s.conversations)
   const setCurrent = useAppStore((s) => s.setCurrentWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
+  const mergeWorkspaces = useAppStore((s) => s.mergeWorkspacesFromBackend)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
   const createConversation = useAppStore((s) => s.createConversation)
   const status = useAppStore((s) => s.status)
@@ -695,6 +698,42 @@ export function WorkspaceHubPage() {
                         >
                           Đổi tên &amp; mô tả
                         </DropdownMenuItem>
+                        {authenticated && docCount > 0 ? (
+                          <DropdownMenuItem
+                            icon={<Sparkles className="h-3.5 w-3.5" />}
+                            onClick={async () => {
+                              toast({
+                                title: "AI đang phân tích tài liệu...",
+                                description: `Đang tổng hợp tiêu đề & mô tả cho "${w.name}".`,
+                                tone: "info",
+                              })
+                              try {
+                                const res = await generateWorkspaceMetadataApi(w.id)
+                                if (res.workspace) {
+                                  mergeWorkspaces([res.workspace])
+                                  setSemanticResults((prev) =>
+                                    prev
+                                      ? prev.map((item) => (item.id === w.id ? res.workspace! : item))
+                                      : null,
+                                  )
+                                  toast({
+                                    title: res.source === "ai" ? "Đã cập nhật bằng AI" : "Đã cập nhật metadata",
+                                    description: res.workspace.name,
+                                    tone: res.source === "ai" ? "success" : "warning",
+                                  })
+                                }
+                              } catch (err) {
+                                toast({
+                                  title: "Không thể tạo lại mô tả AI",
+                                  description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                                  tone: "error",
+                                })
+                              }
+                            }}
+                          >
+                            Tạo lại tiêu đề &amp; mô tả AI
+                          </DropdownMenuItem>
+                        ) : null}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           tone="danger"
