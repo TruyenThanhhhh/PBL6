@@ -249,6 +249,9 @@ export interface ChatResult {
     ref_id?: number
     document_id?: string
     document_name?: string
+    title?: string
+    url?: string
+    source_type?: string
     page_number?: number
     page_label?: string
     chunk_index?: number
@@ -324,16 +327,33 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
     role: "assistant" as const,
     content: result.answer,
     createdAt: nowIso(),
-    citations: (result.citations ?? []).map((c, i) => ({
-      refId: c.ref_id ?? i + 1,
-      documentId: c.document_id ?? null,
-      documentName: c.document_name ?? "Nguồn",
-      pageNumber: c.page_number ?? null,
-      chunkIndex: c.chunk_index ?? null,
-      snippet: c.snippet ?? "",
-      sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
-      url: c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined,
-    })),
+    citations: (result.citations ?? []).map((c, i) => {
+      const rawName = c.document_name ?? c.title
+      let docName = rawName
+      const url = c.url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined)
+      if (!docName || docName.toLowerCase() === "nguồn web" || docName.toLowerCase() === "web") {
+        if (url) {
+          try {
+            docName = new URL(url).hostname.replace(/^www\./, "")
+          } catch {
+            docName = "Nguồn Web"
+          }
+        } else {
+          docName = c.document_id ? "Tài liệu" : "Nguồn Web"
+        }
+      }
+
+      return {
+        refId: c.ref_id ?? i + 1,
+        documentId: c.document_id ?? null,
+        documentName: docName,
+        pageNumber: c.page_number ?? null,
+        chunkIndex: c.chunk_index ?? null,
+        snippet: c.snippet ?? "",
+        sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
+        url,
+      }
+    }),
     modeRequested: mode,
     modeUsed: mode === "auto" ? "local" : mode,
     engine: result.engine,

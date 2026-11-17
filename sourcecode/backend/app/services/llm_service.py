@@ -103,12 +103,31 @@ def _prepare_rag_prompts_and_citations(
 
     for source in (web_sources or []):
         ref_id = len(citations) + 1
-        context_text += f"\n--- [Nguồn web {ref_id}]: {source.get('title', 'Web')} ---\n{source.get('snippet', '')}\n"
+        raw_title = (source.get("title") or "").strip()
+        url = (source.get("url") or "").strip()
+        domain = ""
+        if url:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+        
+        # Tạo tiêu đề nguồn web rõ ràng, tránh generic "Web" hay "Nguồn Web"
+        if not raw_title or raw_title.lower() in {"web", "nguồn web"}:
+            clean_title = domain or "Trang web tham khảo"
+        elif domain and domain.lower() not in raw_title.lower():
+            clean_title = f"{raw_title} ({domain})"
+        else:
+            clean_title = raw_title
+
+        context_text += f"\n--- [Nguồn web {ref_id}]: {clean_title} ---\n{source.get('snippet', '')}\n"
         citations.append({
             "ref_id": ref_id,
             "source_type": "web",
-            "title": source.get("title"),
-            "url": source.get("url"),
+            "document_name": clean_title,
+            "title": clean_title,
+            "url": url,
             "snippet": source.get("snippet", "")
         })
 
@@ -129,13 +148,14 @@ def _prepare_rag_prompts_and_citations(
         "3. TRÌNH BÀY HƯỚNG DẪN / BÀI LAB / CÁC BƯỚC THỰC HÀNH (ĐẶC BIỆT CHÚ Ý):\n"
         "   - Khi người dùng hỏi về nội dung, hướng dẫn, cách làm hoặc các bước của một bài/chương/lab (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'hướng dẫn thực hành...'):\n"
         "     + Bắt đầu bằng mục tiêu tổng quan của bài thực hành.\n"
-        "     + Liệt kê ĐẦY ĐỦ TẤT CẢ CÁC BƯỚC từ Bước 1 đến Bước cuối cùng có trong tài liệu (ví dụ nếu tài liệu có 16 bước thì phải trình bày đủ từ Bước 1 đến Bước 16, TUYỆT ĐỐI KHÔNG dừng ở bước 3 hay bước 4).\n"
+        "     + BẮT BUỘC ĐÁNH SỐ LIÊN TỤC: Dùng 'Bước 1:', 'Bước 2:', 'Bước 3:'... tăng dần đến bước cuối cùng có trong tài liệu. Tuyệt đối KHÔNG bỏ qua các bước đầu hoặc chỉ dừng ở bước 3 hay bước 4.\n"
         "     + Mỗi bước cần nêu rõ: Thao tác cụ thể (click đâu, nhập lệnh gì, thiết lập thông số nào) và lưu ý kỹ thuật nếu có.\n"
+        "     + CHỐNG LẶP LẠI (ANTI-REPETITION): Tuyệt đối không lặp lại nguyên văn cùng một đoạn mô tả thao tác ở nhiều mục khác nhau. Mỗi bước phải mô tả một hành động mới nối tiếp quy trình.\n"
         "4. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
         "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Trả lời trực tiếp các số liệu cụ thể từ nguồn: nhiệt độ (°C), độ ẩm (%), tình trạng trời, gió và dự báo; tuyệt đối không bảo người dùng tự truy cập trang web.\n"
         "   - VỚI CÂU HỎI CÁCH LÀM / CÔNG THỨC / KỸ THUẬT TỪ WEB (ví dụ: cách làm bánh, nấu ăn, lập trình...):\n"
-        "     + Phải tổng hợp thành một bài hướng dẫn hoàn chỉnh, chi tiết từ đầu đến cuối: Nguyên liệu/Chuẩn bị -> Các bước thực hiện chi tiết (Bước 1, Bước 2...) -> Lưu ý/Bí quyết thành công.\n"
-        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành từng nguồn riêng lẻ như '[1]: ... rồi [2]: ...' với nội dung tóm tắt sơ sài 1-2 câu!\n"
+        "     + Phải tổng hợp toàn bộ các nguồn web thành MỘT BÀI HƯỚNG DẪN HOÀN CHỈNH, DUY NHẤT: Bắt đầu từ Nguyên liệu/Chuẩn bị -> Các bước thực hiện chi tiết từ Bước 1 đến hết -> Lưu ý & Bí quyết thành công.\n"
+        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành các phần rời rạc theo từng nguồn như '[1]: ... rồi [2]: ...' hoặc lặp lại '(4): ...', '(5): ...' với nội dung vắn tắt trùng lặp!\n"
         "   - VỚI CÂU HỎI TRI THỨC / ĐỊNH LÝ / CÔNG THỨC (ví dụ: hằng đẳng thức, định lý toán học): Trình bày đầy đủ toàn bộ các công thức/định lý một cách chính xác và rõ ràng.\n"
         "5. CÂU HỎI TỔNG HỢP / TÓM TẮT TOÀN BỘ TÀI LIỆU: Liệt kê rõ ràng và đầy đủ từng bài/chương theo thứ tự trong tài liệu, mỗi mục kèm mô tả súc tích về mục tiêu và nội dung chính.\n"
         "6. ĐỊNH DẠNG & TRÍCH DẪN:\n"
@@ -295,10 +315,10 @@ async def generate_rag_answer(
                     "stream": False,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 384 if image_base64 else 2048,
-                        "temperature": 0.60,
+                        "num_predict": 512 if image_base64 else 2048,
+                        "temperature": 0.50,
                         "top_p": 0.9,
-                        "repeat_penalty": 1.1,
+                        "repeat_penalty": 1.15,
                         "num_ctx": 4096,
                     },
                 }
@@ -491,10 +511,10 @@ async def stream_rag_answer(
                     "stream": True,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 384 if image_base64 else 1024,
-                        "temperature": 0.60,
+                        "num_predict": 512 if image_base64 else 2048,
+                        "temperature": 0.50,
                         "top_p": 0.9,
-                        "repeat_penalty": 1.1,
+                        "repeat_penalty": 1.15,
                         "num_ctx": 4096,
                     },
                 }

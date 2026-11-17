@@ -245,8 +245,11 @@ class MainContentExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.paragraphs: List[str] = []
+        self.page_title: str = ""
         self._current_tag = ""
         self._current_text: List[str] = []
+        self._title_text: List[str] = []
+        self._is_title = False
         self._ignore_depth = 0
         self._ignored_tags = {
             'script', 'style', 'nav', 'header', 'footer', 'aside',
@@ -255,7 +258,10 @@ class MainContentExtractor(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
-        if t in self._ignored_tags:
+        if t == 'title':
+            self._is_title = True
+            self._title_text = []
+        elif t in self._ignored_tags:
             self._ignore_depth += 1
         elif self._ignore_depth == 0:
             if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'blockquote', 'article'):
@@ -264,7 +270,13 @@ class MainContentExtractor(HTMLParser):
 
     def handle_endtag(self, tag):
         t = tag.lower()
-        if t in self._ignored_tags:
+        if t == 'title':
+            self._is_title = False
+            if self._title_text and not self.page_title:
+                candidate_title = " ".join("".join(self._title_text).split())
+                if len(candidate_title) >= 5:
+                    self.page_title = candidate_title
+        elif t in self._ignored_tags:
             if self._ignore_depth > 0:
                 self._ignore_depth -= 1
         elif self._ignore_depth == 0:
@@ -276,7 +288,9 @@ class MainContentExtractor(HTMLParser):
                 self._current_tag = ""
 
     def handle_data(self, data):
-        if self._ignore_depth == 0 and self._current_tag:
+        if self._is_title:
+            self._title_text.append(data)
+        elif self._ignore_depth == 0 and self._current_tag:
             self._current_text.append(data)
 
     def get_content(self, max_chars: int = 1500) -> str:
@@ -286,10 +300,10 @@ class MainContentExtractor(HTMLParser):
         return text
 
 
-async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Optional[str]:
-    """Tải và cào nội dung chi tiết bài viết thực tế từ trang web đích."""
+async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Tuple[Optional[str], Optional[str]]:
+    """Tải và cào nội dung chi tiết bài viết thực tế cùng tiêu đề từ trang web đích."""
     if not url or not url.startswith("http"):
-        return None
+        return None, None
     headers = {
         'User-Agent': 'KnowledgeRAGBot/1.0 (https://github.com/TruyenThanhhhh/PBL6; contact@example.com) Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -302,11 +316,11 @@ async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Optional[str
                 parser = MainContentExtractor()
                 parser.feed(resp.text)
                 content = parser.get_content(1500)
-                if len(content) > 120:
-                    return content
+                extracted_title = parser.page_title.strip() if parser.page_title else None
+                return (content if len(content) > 120 else None), extracted_title
     except Exception:
         pass
-    return None
+    return None, None
 
 
 class _ResultParser(HTMLParser):
@@ -432,15 +446,29 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
             parser = _ResultParser()
             parser.feed(response.text)
             if parser.results:
-                web_results = [
-                    {
+                web_results = []
+                for item in parser.results[:limit]:
+                    clean_url = _clean_web_url(item["url"])
+                    domain = ""
+                    if clean_url:
+                        try:
+                            domain = urlparse(clean_url).netloc.replace("www.", "")
+                        except Exception:
+                            domain = ""
+                    raw_title = item.get("title", "").strip()
+                    if not raw_title or raw_title.lower() in {"web", "nguồn web"}:
+                        final_title = domain or query
+                    elif domain and domain.lower() not in raw_title.lower():
+                        final_title = f"{raw_title} ({domain})"
+                    else:
+                        final_title = raw_title
+
+                    web_results.append({
                         "source_type": "web",
-                        "title": item["title"].strip(),
-                        "url": _clean_web_url(item["url"]),
-                        "snippet": item.get("snippet", "").strip() or item["title"].strip(),
-                    }
-                    for item in parser.results[:limit]
-                ]
+                        "title": final_title,
+                        "url": clean_url,
+                        "snippet": item.get("snippet", "").strip() or final_title,
+                    })
             else:
                 answer = await client.get(
                     url,
@@ -460,14 +488,19 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         logger.warning("DuckDuckGo web search failed: %s", exc)
 
     # 3. TỰ ĐỘNG CÀO NỘI DUNG BÀI VIẾT THẬT (Deep Content Extraction)
-    # Lấy nội dung chi tiết của tối đa 3 trang web đầu tiên song song (concurrent I/O)
+    # Lấy nội dung chi tiết và tiêu đề thực tế của tối đa 3 trang web đầu tiên song song (concurrent I/O)
     scrape_candidates = web_results[:3]
     if scrape_candidates:
         tasks = [_fetch_webpage_content(item["url"]) for item in scrape_candidates]
-        scraped_contents = await asyncio.gather(*tasks, return_exceptions=True)
-        for item, content in zip(scrape_candidates, scraped_contents):
-            if isinstance(content, str) and content.strip():
-                item["snippet"] = content.strip()
+        scraped_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item, res in zip(scrape_candidates, scraped_results):
+            if isinstance(res, tuple):
+                content, page_title = res
+                if content and content.strip():
+                    item["snippet"] = content.strip()
+                if page_title and len(page_title) >= 5:
+                    # Nếu tiêu đề bóc tách từ bài viết dài và rõ nghĩa hơn, cập nhật tiêu đề bài viết
+                    item["title"] = page_title
 
     # 4. Kết hợp kết quả: Đưa live weather lên đầu nếu có
     combined: List[Dict[str, Any]] = []
