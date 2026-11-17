@@ -33,13 +33,18 @@ def rerank_documents(
     if not RERANK_ENABLED or not documents:
         return documents[:top_k]
 
+    if len(documents) <= 1:
+        return documents[:top_k]
+
     candidates = documents[:max_candidates] if max_candidates else documents
     try:
         model = _get_model()
+        # Truncate văn bản xuống tối đa 1200 ký tự để reranking chạy nhanh hơn gấp 3-4 lần trên CPU
+        # mà vẫn đảm bảo đánh giá chính xác ngữ nghĩa của phần mở đầu và trọng tâm chunk
         scores = list(
             model.rerank(
                 query,
-                [str(doc.get("content", ""))[:4000] for doc in candidates],
+                [str(doc.get("content", ""))[:1200] for doc in candidates],
                 batch_size=RERANK_BATCH_SIZE,
             )
         )

@@ -46,13 +46,13 @@ import {
   sendChatMessageService,
 } from "@/services/chat-service"
 import {
-  generateStudyFlashcards,
-  generateStudyQuiz,
+  generateStudyFlashcardsAsync,
+  generateStudyQuizAsync,
   type StudySourceContext,
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
 import { formatDate, nowIso, uid } from "@/utils/format"
-import type { AIMode, ChatMessage, Conversation, Flashcard } from "@/types"
+import type { AIMode, ChatMessage, Conversation } from "@/types"
 import { cn } from "@/utils/cn"
 import { ModeSelector } from "./ModeSelector"
 import { CitationPanel } from "./CitationPanel"
@@ -63,14 +63,21 @@ function parseMessageSuggestions(rawContent: string): { mainContent: string; sug
   const separator = "---GỢI Ý TIẾP THEO---"
   const idx = rawContent.indexOf(separator)
   if (idx === -1) {
-    return { mainContent: rawContent, suggestions: [] }
+    // Ẩn marker đang stream dở ở cuối nếu có (ví dụ: "\n\n---GỢI...")
+    const streamTrim = rawContent.replace(/\n+---(?:G(?:Ợ(?:I(?: (?:\w*)?)?)?)?)?$/i, "")
+    return { mainContent: streamTrim, suggestions: [] }
   }
   const mainContent = rawContent.slice(0, idx).trimEnd()
   const rawSuggestions = rawContent.slice(idx + separator.length).trim()
   const suggestions = rawSuggestions
     .split("\n")
-    .map((line) => line.replace(/^[-*•\d.)\s]+/, "").trim())
-    .filter((line) => line.length > 0 && line.length < 150)
+    .map((line) =>
+      line
+        // Xóa gạch đầu dòng, số thứ tự dạng 1., 1), [1], (1), v.v.
+        .replace(/^[-*•\s]*(?:\[?\d+[\]\).:]\s*)?/, "")
+        .trim()
+    )
+    .filter((line) => line.length > 3 && line.length < 150 && !line.startsWith("---"))
     .slice(0, 3)
 
   return { mainContent, suggestions }
@@ -547,7 +554,7 @@ export function ChatPage() {
     })
   }
 
-  const handleCreateStudyFromMessage = (
+  const handleCreateStudyFromMessage = async (
     msg: ChatMessage,
     kind: "summary" | "quiz" | "flashcards",
   ) => {
@@ -582,46 +589,49 @@ export function ChatPage() {
     }
 
     if (kind === "quiz") {
-      const quiz = generateStudyQuiz(ctx, "medium", 5)
-      upsertQuiz({
-        ...quiz,
-        title: `Quiz: ${promptTitle.slice(0, 40)}`,
-      })
       toast({
-        title: "Đã tạo bộ câu hỏi Quiz",
-        tone: "success",
+        title: "AI đang soạn bộ câu hỏi Quiz...",
+        tone: "info",
       })
-      navigate("/study?tab=quiz")
+      try {
+        const quiz = await generateStudyQuizAsync(ctx, "medium", 5)
+        upsertQuiz({
+          ...quiz,
+          title: `Quiz: ${promptTitle.slice(0, 40)}`,
+        })
+        toast({
+          title: "Đã tạo bộ câu hỏi Quiz AI thành công",
+          tone: "success",
+        })
+        navigate("/study?tab=quiz")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo Quiz lúc này",
+          tone: "error",
+        })
+      }
       return
     }
 
     if (kind === "flashcards") {
-      const lines = effectiveContent
-        .split(/\n+/)
-        .map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim())
-        .filter((l) => l.length > 24)
-
-      let cards: Flashcard[]
-      if (lines.length >= 2) {
-        cards = lines.slice(0, 4).map((line, i) => ({
-          id: uid("fc"),
-          workspaceId: currentWsId,
-          documentId: citedDocId,
-          front: `${promptTitle.slice(0, 52)} — Ý #${i + 1}`,
-          back: line,
-          status: "new",
-          isMock: true,
-        }))
-      } else {
-        cards = generateStudyFlashcards(ctx)
-      }
-
-      addFlashcards(cards)
       toast({
-        title: `Đã tạo ${cards.length} Flashcards`,
-        tone: "success",
+        title: "AI đang tạo bộ Flashcards...",
+        tone: "info",
       })
-      navigate("/study?tab=flashcards")
+      try {
+        const cards = await generateStudyFlashcardsAsync(ctx, 6)
+        addFlashcards(cards)
+        toast({
+          title: `Đã tạo ${cards.length} Flashcards AI thành công`,
+          tone: "success",
+        })
+        navigate("/study?tab=flashcards")
+      } catch (e) {
+        toast({
+          title: "Không thể tạo Flashcards lúc này",
+          tone: "error",
+        })
+      }
     }
   }
 

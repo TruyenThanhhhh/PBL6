@@ -16,18 +16,30 @@ logger = logging.getLogger(__name__)
 
 def is_conversational_query(query: str) -> bool:
     """
-    Phát hiện các câu chào hỏi, giao tiếp xã giao thông thường không cần tra cứu tài liệu
+    Phát hiện các câu chào hỏi, giao tiếp xã giao thông thường không cần tra cứu tài liệu.
+    Dùng regex nguyên từ (\b) để không match nhầm 'thi', 'nghi', 'nhiều' khi gặp 'hi'.
     """
     q = query.lower().strip()
-    greetings = [
-        "chào", "hello", "hi", "alo", "xin chào", "bạn là ai", "bạn có thể làm gì",
-        "giới thiệu bản thân", "giúp tôi được gì", "cảm ơn", "thank you", "tạm biệt", "bye"
+    words = q.split()
+    if len(words) > 5:
+        return False
+
+    # Loại trừ nếu chứa các từ khóa học tập / tra cứu / câu hỏi nghiệp vụ
+    study_keywords = [
+        "thi", "đề", "bài", "chương", "lab", "tài liệu", "sách", "giáo trình",
+        "là gì", "thế nào", "cách", "hướng dẫn", "bao nhiêu", "mấy", "tại sao", "ở đâu"
     ]
-    if len(q.split()) <= 4:
-        for g in greetings:
-            if g in q:
-                return True
-    return False
+    if any(re.search(rf"\b{re.escape(k)}\b", q) for k in study_keywords):
+        return False
+
+    standalone_greetings = [
+        r"chào", r"chào bạn", r"hello", r"hi", r"alo", r"xin chào",
+        r"bạn là ai", r"bạn có thể làm gì", r"giới thiệu bản thân",
+        r"giúp tôi được gì", r"cảm ơn", r"thank you", r"thanks",
+        r"tạm biệt", r"bye", r"good morning", r"good afternoon"
+    ]
+    pattern = rf"^\s*(?:{'|'.join(standalone_greetings)})\s*[!?.~]*$"
+    return bool(re.match(pattern, q, re.IGNORECASE))
 
 
 async def check_ollama_status() -> Dict[str, Any]:
@@ -140,7 +152,16 @@ def _prepare_rag_prompts_and_citations(
         "- [Gợi ý câu hỏi hoặc bước đào sâu 3]\n"
     )
 
-    if has_web and not has_local:
+    if not has_local and not has_web:
+        user_prompt = (
+            f"Câu hỏi của người dùng: {query}\n\n"
+            "LƯU Ý ĐẶC BIỆT: Tài liệu trong kho tri thức của người dùng KHÔNG chứa thông tin về câu hỏi này.\n"
+            "1. Hãy thông báo rõ ràng cho người dùng biết điều đó (ví dụ: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về...').\n"
+            "2. Sau đó, giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác, đầy đủ của bạn.\n"
+            "3. TUYỆT ĐỐI KHÔNG gắn bất kỳ nhãn trích dẫn tài liệu nào như [1], [2], [Tài liệu 1].\n"
+            "4. Kết thúc câu trả lời bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+        )
+    elif has_web and not has_local:
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
@@ -186,11 +207,13 @@ async def generate_rag_answer(
                 model_name = candidate
                 model_available = True
                 break
-    history_messages = [
-        {"role": turn["role"], "content": turn["content"][:3000]}
-        for turn in (history or [])[-8:]
-        if turn.get("role") in {"user", "assistant"} and turn.get("content")
-    ]
+    history_messages = []
+    for turn in (history or [])[-8:]:
+        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
+            content = turn["content"]
+            if "---GỢI Ý TIẾP THEO---" in content:
+                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+            history_messages.append({"role": turn["role"], "content": content[:2000]})
 
     # 1. Chitchat
     if is_conversational_query(query) and not image_base64:
@@ -276,7 +299,7 @@ async def generate_rag_answer(
                         "temperature": 0.60,
                         "top_p": 0.9,
                         "repeat_penalty": 1.1,
-                        "num_ctx": 8192,
+                        "num_ctx": 4096,
                     },
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
@@ -341,11 +364,13 @@ async def stream_rag_answer(
                 model_available = True
                 break
 
-    history_messages = [
-        {"role": turn["role"], "content": turn["content"][:3000]}
-        for turn in (history or [])[-8:]
-        if turn.get("role") in {"user", "assistant"} and turn.get("content")
-    ]
+    history_messages = []
+    for turn in (history or [])[-8:]:
+        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
+            content = turn["content"]
+            if "---GỢI Ý TIẾP THEO---" in content:
+                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+            history_messages.append({"role": turn["role"], "content": content[:2000]})
 
     # 1. Chitchat stream
     if is_conversational_query(query) and not image_base64:
@@ -470,7 +495,7 @@ async def stream_rag_answer(
                         "temperature": 0.60,
                         "top_p": 0.9,
                         "repeat_penalty": 1.1,
-                        "num_ctx": 8192,
+                        "num_ctx": 4096,
                     },
                 }
                 async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:

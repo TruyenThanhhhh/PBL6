@@ -28,12 +28,12 @@ CHUNK_OVERLAP = 200    # độ gối đầu giữa các chunk
 TOP_K_RETRIEVAL = 8    # số chunk lấy ra đưa vào LLM (tăng để AI có đủ nội dung tổng hợp)
 
 # Hybrid retrieval: lấy rộng rồi fuse bằng RRF, sau đó rerank.
-RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "6"))
+RETRIEVAL_CANDIDATE_MULTIPLIER = int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER", "4"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual")
-RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "32"))
-RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "12"))
+RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "12"))
 
 # Search, embedding and network fallback
 ENABLE_DENSE_RETRIEVAL = os.getenv("ENABLE_DENSE_RETRIEVAL", "true").lower() == "true"
