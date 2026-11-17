@@ -1,4 +1,5 @@
 """Unit & API integration tests for AI Study Tools model resolution and error handling."""
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -9,10 +10,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import app.database as db_mod  # noqa: E402
 import app.services.document_service as doc_mod  # noqa: E402
+from app.api.study import _run_until_disconnect  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -180,6 +183,29 @@ class StudyServiceTestCase(unittest.TestCase):
         self.assertFalse(quiz_body["is_mock"])
         self.assertEqual(len(quiz_body["questions"]), 1)
         self.assertEqual(fake_client.post.call_args.kwargs["json"]["model"], "qwen2.5:3b")
+
+    def test_run_until_disconnect_cancels_task_when_client_aborts(self):
+        cancelled = False
+
+        async def slow_summary():
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(5)
+                return {"title": "done", "markdown": "ok", "is_mock": False}
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        fake_request = MagicMock()
+        fake_request.is_disconnected = AsyncMock(side_effect=[False, True])
+
+        async def run_case():
+            with self.assertRaises(HTTPException) as ctx:
+                await _run_until_disconnect(fake_request, slow_summary())
+            self.assertEqual(ctx.exception.status_code, 499)
+
+        asyncio.run(run_case())
+        self.assertTrue(cancelled)
 
 
 if __name__ == "__main__":
