@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react"
 import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
@@ -194,7 +195,14 @@ export function StudyToolsPage() {
   const [summaryTitle, setSummaryTitle] = useState("")
   const [summaryIsMock, setSummaryIsMock] = useState(false)
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
+  const summaryAbortRef = useRef<AbortController | null>(null)
   const summaryMarkdown = customSummary
+
+  useEffect(() => {
+    return () => {
+      summaryAbortRef.current?.abort()
+    }
+  }, [])
 
   // 2. Notes State
   const wsNotes = useMemo(
@@ -282,9 +290,13 @@ export function StudyToolsPage() {
   }
 
   const handleGenerateSummary = async () => {
+    summaryAbortRef.current?.abort()
+    const controller = new AbortController()
+    summaryAbortRef.current = controller
     setIsGeneratingSummary(true)
     try {
-      const res = await generateStudySummaryAsync(sourceContext, focusPrompt)
+      const res = await generateStudySummaryAsync(sourceContext, focusPrompt, controller.signal)
+      if (controller.signal.aborted) return
       setCustomSummary(res.markdown)
       setSummaryTitle(res.title)
       setSummaryIsMock(res.isMock)
@@ -295,11 +307,25 @@ export function StudyToolsPage() {
           : "Nội dung đã được AI đọc hiểu và tổng hợp.",
         tone: res.isMock ? (res.error ? "warning" : "info") : "success",
       })
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return
+      }
       toast({ title: "Không thể tạo tóm tắt", tone: "error" })
     } finally {
-      setIsGeneratingSummary(false)
+      if (summaryAbortRef.current === controller) {
+        summaryAbortRef.current = null
+        setIsGeneratingSummary(false)
+      }
     }
+  }
+
+  const handleCancelSummary = () => {
+    if (!summaryAbortRef.current) return
+    summaryAbortRef.current.abort()
+    summaryAbortRef.current = null
+    setIsGeneratingSummary(false)
+    toast({ title: "Đã hủy tạo bản tóm tắt AI", tone: "info" })
   }
 
   const handleGenerateNotes = async () => {
@@ -557,6 +583,9 @@ export function StudyToolsPage() {
                 aria-label="Chọn tài liệu làm nguồn học tập"
                 value={selectedDocId}
                 onChange={(e) => {
+                  summaryAbortRef.current?.abort()
+                  summaryAbortRef.current = null
+                  setIsGeneratingSummary(false)
                   setSelectedDocId(e.target.value)
                   setCustomSummary(null)
                   setSummaryTitle("")
@@ -704,6 +733,7 @@ export function StudyToolsPage() {
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
               <Input
                 value={focusPrompt}
+                disabled={isGeneratingSummary}
                 onChange={(e) => {
                   setFocusPrompt(e.target.value)
                   setCustomSummary(null)
@@ -713,15 +743,28 @@ export function StudyToolsPage() {
                 placeholder="Nhập trọng tâm cần tóm tắt (hoặc để trống để tóm tắt tổng thể)..."
                 className="flex-1"
               />
-              <Button
-                size="sm"
-                leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-                loading={isGeneratingSummary}
-                onClick={handleGenerateSummary}
-                className="bg-[#087F73] hover:bg-[#076b61] text-white shrink-0"
-              >
-                Tạo tóm tắt AI
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                  loading={isGeneratingSummary}
+                  onClick={handleGenerateSummary}
+                  className="bg-[#087F73] hover:bg-[#076b61] text-white"
+                >
+                  {isGeneratingSummary ? "Đang tóm tắt..." : "Tạo tóm tắt AI"}
+                </Button>
+                {isGeneratingSummary ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    leftIcon={<X className="h-3.5 w-3.5" />}
+                    onClick={handleCancelSummary}
+                  >
+                    Hủy
+                  </Button>
+                ) : null}
+              </div>
             </div>
 
             {/* Vùng hiển thị kết quả */}
@@ -732,14 +775,27 @@ export function StudyToolsPage() {
                 title="Chưa có bản tóm tắt AI"
                 description="Bấm Tạo tóm tắt AI để hệ thống phân tích và rút trích các luận điểm quan trọng từ tài liệu đã chọn."
                 action={
-                  <Button
-                    size="sm"
-                    loading={isGeneratingSummary}
-                    onClick={handleGenerateSummary}
-                    className="bg-[#087F73] hover:bg-[#076b61] text-white"
-                  >
-                    Bắt đầu tóm tắt AI
-                  </Button>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      size="sm"
+                      loading={isGeneratingSummary}
+                      onClick={handleGenerateSummary}
+                      className="bg-[#087F73] hover:bg-[#076b61] text-white"
+                    >
+                      {isGeneratingSummary ? "Đang tóm tắt..." : "Bắt đầu tóm tắt AI"}
+                    </Button>
+                    {isGeneratingSummary ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        leftIcon={<X className="h-3.5 w-3.5" />}
+                        onClick={handleCancelSummary}
+                      >
+                        Hủy
+                      </Button>
+                    ) : null}
+                  </div>
                 }
               />
             ) : (

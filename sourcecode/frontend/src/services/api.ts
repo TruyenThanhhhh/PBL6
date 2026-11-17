@@ -515,11 +515,15 @@ export interface StudySummaryResponse {
   error?: string
 }
 
-export async function fetchAiSummaryApi(payload: StudySummaryPayload): Promise<StudySummaryResponse> {
+export async function fetchAiSummaryApi(
+  payload: StudySummaryPayload,
+  signal?: AbortSignal,
+): Promise<StudySummaryResponse> {
   return request<StudySummaryResponse>("/api/v1/study/summary", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   })
 }
 

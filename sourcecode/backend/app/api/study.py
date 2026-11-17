@@ -8,8 +8,10 @@ Endpoints API cho Bộ công cụ hỗ trợ học tập (Study Tools):
 - POST /api/v1/study/plan
 - POST /api/v1/study/export
 """
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Response
+import asyncio
+from contextlib import suppress
+from typing import Any, Awaitable, Dict, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_user_optional
@@ -81,20 +83,46 @@ class StudyExportRequest(BaseModel):
     format: str = Field(default="md", pattern="^(md|docx|pdf)$")
 
 
+async def _run_until_disconnect(
+    request: Request,
+    coro: Awaitable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Chạy tác vụ AI nhưng hủy ngay nếu client ngắt kết nối (AbortController)."""
+    task = asyncio.create_task(coro)
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise HTTPException(status_code=499, detail="Yêu cầu đã bị hủy bởi người dùng.")
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            if done:
+                break
+        return await task
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
 @router.post("/summary")
 async def create_study_summary(
     req: StudySummaryRequest,
+    request: Request,
     user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
 ):
     """
     Sinh bản tóm tắt học tập định dạng Markdown bằng LLM AI từ tài liệu nguồn thực tế.
     """
-    return await generate_ai_summary(
-        workspace_id=req.workspace_id,
-        document_id=req.document_id,
-        document_ids=req.document_ids,
-        focus_prompt=req.focus_prompt,
-        model=req.model or DEFAULT_LLM_MODEL,
+    return await _run_until_disconnect(
+        request,
+        generate_ai_summary(
+            workspace_id=req.workspace_id,
+            document_id=req.document_id,
+            document_ids=req.document_ids,
+            focus_prompt=req.focus_prompt,
+            model=req.model or DEFAULT_LLM_MODEL,
+        ),
     )
 
 

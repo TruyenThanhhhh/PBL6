@@ -38,17 +38,21 @@ export interface StudySourceContext {
 export async function generateStudySummaryAsync(
   ctx: StudySourceContext,
   focusPrompt?: string,
+  signal?: AbortSignal,
 ): Promise<{ title: string; markdown: string; isMock: boolean; error?: string }> {
   try {
-    const res = await fetchAiSummaryApi({
-      workspace_id: ctx.workspaceId,
-      document_id: ctx.document?.id ?? null,
-      document_ids: !ctx.document && ctx.documentsInScope.length > 0
-        ? ctx.documentsInScope.map((d) => d.id)
-        : null,
-      focus_prompt: focusPrompt,
-      model: getPreferredLlmModel(),
-    })
+    const res = await fetchAiSummaryApi(
+      {
+        workspace_id: ctx.workspaceId,
+        document_id: ctx.document?.id ?? null,
+        document_ids: !ctx.document && ctx.documentsInScope.length > 0
+          ? ctx.documentsInScope.map((d) => d.id)
+          : null,
+        focus_prompt: focusPrompt,
+        model: getPreferredLlmModel(),
+      },
+      signal,
+    )
     if (res.markdown?.trim() && !res.error) {
       return {
         title: res.title,
@@ -64,6 +68,9 @@ export async function generateStudySummaryAsync(
       }
     }
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err
+    }
     console.warn("AI summary fallback:", err)
   }
   return generateStudySummary(ctx, focusPrompt)
