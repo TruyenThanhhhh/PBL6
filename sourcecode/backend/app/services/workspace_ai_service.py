@@ -29,6 +29,14 @@ ALLOWED_WORKSPACE_CATEGORIES = (
 DEFAULT_WORKSPACE_BASE_NAME = "Workspace mới"
 _DEFAULT_NAME_PATTERN = re.compile(r"^workspace\s+mới(?:\s+\d+|\s*\(\d+\))?$", re.IGNORECASE)
 
+_VI_SEARCH_STOPWORDS = {
+    "va", "cua", "cho", "voi", "ve", "trong", "la", "cac", "nhung", "nay", "do",
+    "khi", "nao", "sao", "tai", "lieu", "bai", "phan", "muc", "file", "tep",
+    "de", "tren", "duoi", "tu", "hay", "hoac", "mot", "hai", "ba", "khong",
+    "gi", "o", "dau", "nhu", "the", "co", "duoc", "noi", "dung", "thong", "tin",
+    "and", "for", "with", "of", "in", "on", "to", "the", "a", "an",
+}
+
 
 def _normalize_vi(text: str) -> str:
     """Chuẩn hóa chữ thường và bỏ dấu tiếng Việt để so khớp từ khóa chính xác."""
@@ -39,6 +47,21 @@ def _normalize_vi(text: str) -> str:
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_query_tokens(query: str) -> Tuple[str, List[str], List[str]]:
+    """Tách token chuẩn hóa (bỏ stopword) và token thô cho FTS5."""
+    q_norm = _normalize_vi(query)
+    all_norm_tokens = [t for t in q_norm.split() if len(t) >= 2 or t.isdigit()]
+    q_tokens = [t for t in all_norm_tokens if t not in _VI_SEARCH_STOPWORDS] or all_norm_tokens
+
+    raw_all = [
+        t
+        for t in re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE).split()
+        if len(t) >= 2 or t.isdigit()
+    ]
+    raw_tokens = [t for t in raw_all if _normalize_vi(t) not in _VI_SEARCH_STOPWORDS] or raw_all
+    return q_norm, q_tokens, raw_tokens
 
 
 def _is_default_workspace_name(name: str) -> bool:
@@ -255,18 +278,18 @@ def build_workspace_profile_text(conn: Any, workspace_id: str) -> Optional[str]:
         (workspace_id,),
     ).fetchall()
 
-    parts = [f"Tên không gian: {ws['name']}"]
-    if ws["category"]:
-        parts.append(f"Lĩnh vực: {ws['category']}")
+    parts = [str(ws["name"])]
+    if ws["category"] and str(ws["category"]).strip() != "Chung":
+        parts.append(str(ws["category"]))
     if ws["description"]:
-        parts.append(f"Mô tả: {ws['description']}")
+        parts.append(str(ws["description"]))
     if doc_rows:
-        parts.append("Tài liệu: " + ", ".join(str(r["file_name"]) for r in doc_rows))
+        parts.append(", ".join(_humanize_filename_stem(str(r["file_name"])) for r in doc_rows))
     if nb_rows:
-        parts.append("Chuyên mục: " + ", ".join(str(r["name"]) for r in nb_rows))
+        parts.append(", ".join(str(r["name"]) for r in nb_rows))
     if note_rows:
-        parts.append("Ghi chú: " + ", ".join(str(r["title"]) for r in note_rows))
-    return ". ".join(parts)
+        parts.append(", ".join(str(r["title"]) for r in note_rows))
+    return ". ".join(p for p in parts if p)
 
 
 def upsert_workspace_embedding(workspace_id: str) -> bool:
@@ -687,9 +710,7 @@ def semantic_search_workspaces(
                 top3_avg = sum(scs[:3]) / min(len(scs), 3)
                 content_dense_by_ws[ws_id] = 0.75 * best + 0.25 * top3_avg
 
-        q_norm = _normalize_vi(q_clean)
-        q_tokens = [t for t in q_norm.split() if len(t) >= 2 or t.isdigit()]
-        raw_tokens = [t for t in re.sub(r"[^\w\s]", " ", q_clean, flags=re.UNICODE).split() if len(t) >= 2 or t.isdigit()]
+        q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
 
         fts_hits = _query_fts_hits_for_user(conn, user_id, raw_tokens, limit=60)
         fts_by_ws: Dict[str, float] = {ws_id: 0.0 for ws_id in ws_ids}
@@ -698,7 +719,7 @@ def semantic_search_workspaces(
             if ws_id in fts_by_ws:
                 fts_by_ws[ws_id] = max(fts_by_ws[ws_id], hit[0])
 
-        scored: List[Tuple[float, Dict[str, Any]]] = []
+        scored: List[Tuple[float, bool, Dict[str, Any]]] = []
         for ws_id, ws in workspaces_by_id.items():
             name_kw = _keyword_match_score(q_norm, q_tokens, ws.get("name", ""))
             desc_kw = _keyword_match_score(
@@ -706,7 +727,11 @@ def semantic_search_workspaces(
                 q_tokens,
                 f"{ws.get('description', '')} {ws.get('category', '')}",
             )
-            files_kw = _keyword_match_score(q_norm, q_tokens, " ".join(doc_names_by_ws.get(ws_id, [])))
+            files_kw = _keyword_match_score(
+                q_norm,
+                q_tokens,
+                " ".join(f"{fn} {_humanize_filename_stem(fn)}" for fn in doc_names_by_ws.get(ws_id, [])),
+            )
             note_kw = _keyword_match_score(q_norm, q_tokens, note_text_by_ws.get(ws_id, ""))
 
             meta_kw = max(name_kw * 0.45, desc_kw * 0.30, files_kw * 0.28, note_kw * 0.22)
@@ -720,18 +745,23 @@ def semantic_search_workspaces(
 
             has_kw = meta_kw >= 0.10 or fts_sc > 0.0
             if q_vec is not None:
-                is_relevant = has_kw or best_semantic >= 0.34 or (m_dense >= 0.29 and c_dense >= 0.29)
+                is_relevant = has_kw or best_semantic >= 0.45 or (m_dense >= 0.40 and c_dense >= 0.40)
             else:
                 is_relevant = has_kw
 
             if is_relevant:
                 item = dict(ws)
                 item["score"] = round(final_score, 4)
-                scored.append((final_score, item))
+                scored.append((final_score, has_kw, item))
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
+        if scored:
+            top_score = scored[0][0]
+            if top_score >= 0.65:
+                rel_floor = max(0.45, top_score * 0.62)
+                scored = [pair for pair in scored if pair[1] or pair[0] >= rel_floor]
         return {
-            "workspaces": [pair[1] for pair in scored[:limit]],
+            "workspaces": [pair[2] for pair in scored[:limit]],
             "search_mode": search_mode,
         }
     finally:
@@ -756,7 +786,7 @@ def _score_small_entity_group(
         kw = _keyword_match_score(q_norm, q_tokens, rec["kw_text"])
         sem = max(0.0, _cosine_plain(q_vec, vecs[idx])) if (q_vec and vecs) else 0.0
         sc = sem + 0.5 * kw
-        if kw > 0.2 or sem >= 0.36:
+        if kw > 0.2 or sem >= 0.45:
             ws_name = ws_name_map.get(rec["workspace_id"], "Workspace")
             scored.append((
                 sc,
@@ -790,9 +820,7 @@ def semantic_global_search(
     q_vec = q_vecs[0] if q_vecs else None
     search_mode = "semantic" if q_vec is not None else "keyword"
 
-    q_norm = _normalize_vi(q_clean)
-    q_tokens = [t for t in q_norm.split() if len(t) >= 2 or t.isdigit()]
-    raw_tokens = [t for t in re.sub(r"[^\w\s]", " ", q_clean, flags=re.UNICODE).split() if len(t) >= 2 or t.isdigit()]
+    q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
 
     hits: List[Dict[str, Any]] = []
     per_group_cap = limit if kind != "all" else max(3, limit // 5)
@@ -879,15 +907,15 @@ def semantic_global_search(
                         entry["snippet"] = (content or "").strip()
                         entry["page"] = page_no
 
-            doc_scored: List[Tuple[float, Dict[str, Any]]] = []
+            doc_scored: List[Tuple[float, bool, Dict[str, Any]]] = []
             for doc_id, doc in doc_info.items():
-                name_kw = _keyword_match_score(q_norm, q_tokens, doc["file_name"])
+                name_kw = _keyword_match_score(q_norm, q_tokens, f"{doc['file_name']} {_humanize_filename_stem(doc['file_name'])}")
                 entry = best_by_doc.get(doc_id, {"dense_score": 0.0, "fts_score": 0.0, "snippet": "", "page": 1})
                 dense_sc = float(entry["dense_score"])
                 fts_sc = float(entry["fts_score"])
                 score = dense_sc + 0.45 * name_kw + 0.25 * fts_sc
                 has_kw = name_kw > 0.2 or fts_sc > 0.0
-                is_rel = has_kw or (q_vec is not None and dense_sc >= 0.35)
+                is_rel = has_kw or (q_vec is not None and dense_sc >= 0.45)
                 if not is_rel:
                     continue
 
@@ -901,6 +929,7 @@ def semantic_global_search(
                 ws_name = ws_name_map.get(doc["workspace_id"], "Workspace")
                 doc_scored.append((
                     score,
+                    has_kw,
                     {
                         "id": doc_id,
                         "kind": "document",
@@ -913,7 +942,12 @@ def semantic_global_search(
                     },
                 ))
             doc_scored.sort(key=lambda pair: pair[0], reverse=True)
-            hits.extend(pair[1] for pair in doc_scored[:per_group_cap])
+            if doc_scored:
+                top_doc_sc = doc_scored[0][0]
+                if top_doc_sc >= 0.65:
+                    doc_floor = max(0.45, top_doc_sc * 0.62)
+                    doc_scored = [p for p in doc_scored if p[1] or p[0] >= doc_floor]
+            hits.extend(pair[2] for pair in doc_scored[:per_group_cap])
 
         # 3. Notebooks
         if kind in ("all", "notebook"):
