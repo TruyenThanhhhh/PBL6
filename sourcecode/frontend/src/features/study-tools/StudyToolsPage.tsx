@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
+  BookmarkCheck,
   BookmarkPlus,
   CalendarCheck,
   Check,
@@ -11,14 +12,18 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Eye,
   FilePlus2,
   FileText,
   GitFork,
   HelpCircle,
+  History,
   Layers,
   PenSquare,
   Plus,
   RotateCcw,
+  Save,
+  Search,
   Sparkles,
   Trash2,
   X,
@@ -37,6 +42,13 @@ import {
   Select,
   Textarea,
 } from "@/components/ui"
+import { useAuthSession } from "@/hooks/useAuthSession"
+import {
+  deleteStudyArtifactApi,
+  fetchStudyArtifactsApi,
+  saveStudyArtifactApi,
+  type StudyArtifactRecord,
+} from "@/services/api"
 import {
   generateStudyFlashcardsAsync,
   generateStudyMindmapAsync,
@@ -48,9 +60,9 @@ import {
   type StudyToolId,
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
-import { nowIso, relativeTime, uid } from "@/utils/format"
+import { formatDateTime, nowIso, relativeTime, uid } from "@/utils/format"
 import { cn } from "@/utils/cn"
-import type { MindmapNode, Note } from "@/types"
+import type { MindmapNode, Note, SavedSummary } from "@/types"
 
 const VALID_TABS: StudyToolId[] = ["summary", "notes", "quiz", "flashcards", "mindmap", "plan"]
 
@@ -130,6 +142,32 @@ function MindmapTreeItem({
   )
 }
 
+function mapArtifactToSavedSummary(record: StudyArtifactRecord): SavedSummary | null {
+  if (record.artifact_type !== "summary") return null
+  const data = (record.data ?? {}) as Record<string, unknown>
+  const markdown = typeof data.markdown === "string" ? data.markdown : ""
+  if (!markdown.trim()) return null
+  return {
+    id: record.id,
+    workspaceId: record.workspace_id,
+    documentId: record.document_id ?? null,
+    documentName: typeof data.documentName === "string" ? data.documentName : null,
+    title: record.title || "Bản tóm tắt AI",
+    markdown,
+    focusPrompt: typeof data.focusPrompt === "string" ? data.focusPrompt : "",
+    isMock: Boolean(data.isMock),
+    createdAt: record.created_at || nowIso(),
+  }
+}
+
+function extractSummaryPreview(markdown: string): string {
+  return markdown
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_`>#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 export function StudyToolsPage() {
   const [params, setParams] = useSearchParams()
   const rawTab = params.get("tab") as StudyToolId | null
@@ -147,6 +185,9 @@ export function StudyToolsPage() {
 
   const saveNote = useAppStore((s) => s.saveNote)
   const deleteNote = useAppStore((s) => s.deleteNote)
+  const localSavedSummaries = useAppStore((s) => s.savedSummaries)
+  const saveSavedSummaryLocal = useAppStore((s) => s.saveSavedSummary)
+  const deleteSavedSummaryLocal = useAppStore((s) => s.deleteSavedSummary)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
   const setFlashStatus = useAppStore((s) => s.setFlashStatus)
   const addFlashcards = useAppStore((s) => s.addFlashcards)
@@ -190,19 +231,73 @@ export function StudyToolsPage() {
   )
 
   // 1. Summary State
+  const { authenticated } = useAuthSession()
+  const useBackendHistory = Boolean(authenticated && status.backendOnline)
   const [focusPrompt, setFocusPrompt] = useState("")
   const [customSummary, setCustomSummary] = useState<string | null>(null)
   const [summaryTitle, setSummaryTitle] = useState("")
   const [summaryIsMock, setSummaryIsMock] = useState(false)
+  const [summaryWsId, setSummaryWsId] = useState<string>("")
+  const [summarySourceMeta, setSummarySourceMeta] = useState<{
+    documentId: string | null
+    documentName: string | null
+    focusPrompt: string
+  }>({ documentId: null, documentName: null, focusPrompt: "" })
+  const [savedSummaryId, setSavedSummaryId] = useState<string | null>(null)
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
+  const [isSavingSummary, setIsSavingSummary] = useState(false)
+  const [backendSummariesByWs, setBackendSummariesByWs] = useState<Record<string, SavedSummary[]>>({})
+  const [summaryHistoryQuery, setSummaryHistoryQuery] = useState("")
+  const [summaryToDelete, setSummaryToDelete] = useState<SavedSummary | null>(null)
   const summaryAbortRef = useRef<AbortController | null>(null)
-  const summaryMarkdown = customSummary
+  const summaryViewerRef = useRef<HTMLDivElement | null>(null)
+  const summaryMarkdown = summaryWsId === wsId ? customSummary : null
 
   useEffect(() => {
     return () => {
       summaryAbortRef.current?.abort()
     }
   }, [])
+
+  useEffect(() => {
+    if (!useBackendHistory) return
+    let active = true
+    fetchStudyArtifactsApi(wsId, "summary")
+      .then((res) => {
+        if (!active) return
+        const mapped = (res.artifacts ?? [])
+          .map(mapArtifactToSavedSummary)
+          .filter((item): item is SavedSummary => item !== null)
+        setBackendSummariesByWs((prev) => ({ ...prev, [wsId]: mapped }))
+      })
+      .catch(() => {
+        // Giữ nguyên state hiện có nếu kết nối tạm thời lỗi
+      })
+    return () => {
+      active = false
+    }
+  }, [wsId, useBackendHistory])
+
+  const wsSavedSummaries = useMemo(() => {
+    if (useBackendHistory) {
+      return backendSummariesByWs[wsId] ?? []
+    }
+    return (localSavedSummaries ?? []).filter((s) => s.workspaceId === wsId)
+  }, [useBackendHistory, backendSummariesByWs, localSavedSummaries, wsId])
+
+  const isLoadingSavedSummaries = useBackendHistory && !(wsId in backendSummariesByWs)
+
+  const filteredSavedSummaries = useMemo(() => {
+    const q = summaryHistoryQuery.trim().toLowerCase()
+    if (!q) return wsSavedSummaries
+    return wsSavedSummaries.filter(
+      (item) =>
+        item.title.toLowerCase().includes(q) ||
+        item.markdown.toLowerCase().includes(q) ||
+        (item.documentName ?? "").toLowerCase().includes(q) ||
+        (item.focusPrompt ?? "").toLowerCase().includes(q),
+    )
+  }, [wsSavedSummaries, summaryHistoryQuery])
 
   // 2. Notes State
   const wsNotes = useMemo(
@@ -280,7 +375,7 @@ export function StudyToolsPage() {
       id: uid("note"),
       workspaceId: wsId,
       notebookId: null,
-      documentId: activeDoc?.id ?? null,
+      documentId: summarySourceMeta.documentId ?? activeDoc?.id ?? null,
       title: summaryTitle || "Tóm tắt học tập",
       content: summaryMarkdown,
       updatedAt: nowIso(),
@@ -289,17 +384,136 @@ export function StudyToolsPage() {
     toast({ title: "Đã lưu bản tóm tắt vào Ghi chú", tone: "success" })
   }
 
+  const handleSaveSummaryToHistory = async () => {
+    if (!summaryMarkdown || savedSummaryId || isSavingSummary) return
+    const title = (summaryTitle || "Bản tóm tắt học tập").trim()
+    const payloadData = {
+      markdown: summaryMarkdown,
+      focusPrompt: summarySourceMeta.focusPrompt,
+      documentName: summarySourceMeta.documentName,
+      isMock: summaryIsMock,
+    }
+    setIsSavingSummary(true)
+    try {
+      if (useBackendHistory) {
+        const res = await saveStudyArtifactApi(wsId, {
+          document_id: summarySourceMeta.documentId,
+          artifact_type: "summary",
+          title,
+          data: payloadData,
+        })
+        const saved = mapArtifactToSavedSummary(res.artifact) ?? {
+          id: res.artifact.id,
+          workspaceId: wsId,
+          documentId: summarySourceMeta.documentId,
+          documentName: summarySourceMeta.documentName,
+          title,
+          markdown: summaryMarkdown,
+          focusPrompt: summarySourceMeta.focusPrompt,
+          isMock: summaryIsMock,
+          createdAt: res.artifact.created_at || nowIso(),
+        }
+        setBackendSummariesByWs((prev) => ({
+          ...prev,
+          [wsId]: [saved, ...(prev[wsId] ?? [])],
+        }))
+        setSavedSummaryId(saved.id)
+      } else {
+        const localItem: SavedSummary = {
+          id: uid("sum"),
+          workspaceId: wsId,
+          documentId: summarySourceMeta.documentId,
+          documentName: summarySourceMeta.documentName,
+          title,
+          markdown: summaryMarkdown,
+          focusPrompt: summarySourceMeta.focusPrompt,
+          isMock: summaryIsMock,
+          createdAt: nowIso(),
+        }
+        saveSavedSummaryLocal(localItem)
+        setSavedSummaryId(localItem.id)
+      }
+      toast({ title: "Đã lưu bản tóm tắt vào lịch sử", tone: "success" })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : ""
+      toast({
+        title: "Không thể lưu bản tóm tắt",
+        description: detail || "Vui lòng thử lại sau.",
+        tone: "error",
+      })
+    } finally {
+      setIsSavingSummary(false)
+    }
+  }
+
+  const handleOpenSavedSummary = (item: SavedSummary) => {
+    summaryAbortRef.current?.abort()
+    summaryAbortRef.current = null
+    setIsGeneratingSummary(false)
+    setSummaryWsId(wsId)
+    setCustomSummary(item.markdown)
+    setSummaryTitle(item.title)
+    setSummaryIsMock(item.isMock)
+    setSavedSummaryId(item.id)
+    setFocusPrompt(item.focusPrompt ?? "")
+    setSummarySourceMeta({
+      documentId: item.documentId,
+      documentName: item.documentName ?? null,
+      focusPrompt: item.focusPrompt ?? "",
+    })
+    summaryViewerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+  }
+
+  const handleConfirmDeleteSummary = async () => {
+    if (!summaryToDelete) return
+    const target = summaryToDelete
+    try {
+      if (useBackendHistory) {
+        await deleteStudyArtifactApi(wsId, target.id)
+        setBackendSummariesByWs((prev) => ({
+          ...prev,
+          [wsId]: (prev[wsId] ?? []).filter((item) => item.id !== target.id),
+        }))
+      } else {
+        deleteSavedSummaryLocal(target.id)
+      }
+      if (savedSummaryId === target.id) {
+        setSavedSummaryId(null)
+      }
+      setSummaryToDelete(null)
+      toast({ title: "Đã xóa bản tóm tắt khỏi lịch sử", tone: "info" })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : ""
+      toast({
+        title: "Không thể xóa bản tóm tắt",
+        description: detail || "Vui lòng thử lại sau.",
+        tone: "error",
+      })
+    }
+  }
+
   const handleGenerateSummary = async () => {
     summaryAbortRef.current?.abort()
     const controller = new AbortController()
     summaryAbortRef.current = controller
+    const reqWsId = wsId
+    const reqDocId = activeDoc?.id ?? null
+    const reqDocName = activeDoc?.fileName ?? null
+    const reqFocus = focusPrompt.trim()
     setIsGeneratingSummary(true)
     try {
       const res = await generateStudySummaryAsync(sourceContext, focusPrompt, controller.signal)
       if (controller.signal.aborted) return
+      setSummaryWsId(reqWsId)
       setCustomSummary(res.markdown)
       setSummaryTitle(res.title)
       setSummaryIsMock(res.isMock)
+      setSummarySourceMeta({
+        documentId: reqDocId,
+        documentName: reqDocName,
+        focusPrompt: reqFocus,
+      })
+      setSavedSummaryId(null)
       toast({
         title: res.isMock ? "Đã tạo bản tóm tắt (Mô phỏng)" : "Đã tạo bản tóm tắt bằng AI thành công",
         description: res.isMock
@@ -509,7 +723,12 @@ export function StudyToolsPage() {
       label: "Tóm tắt AI",
       sublabel: "Tổng hợp cốt lõi",
       icon: FileText,
-      badgeText: summaryMarkdown ? "Sẵn sàng" : null,
+      badgeText:
+        wsSavedSummaries.length > 0
+          ? `${wsSavedSummaries.length}`
+          : summaryMarkdown
+            ? "Sẵn sàng"
+            : null,
     },
     {
       id: "notes",
@@ -590,6 +809,7 @@ export function StudyToolsPage() {
                   setCustomSummary(null)
                   setSummaryTitle("")
                   setSummaryIsMock(false)
+                  setSavedSummaryId(null)
                   setMindmapRoot(null)
                   setMindmapIsMock(false)
                 }}
@@ -739,6 +959,7 @@ export function StudyToolsPage() {
                   setCustomSummary(null)
                   setSummaryTitle("")
                   setSummaryIsMock(false)
+                  setSavedSummaryId(null)
                 }}
                 placeholder="Nhập trọng tâm cần tóm tắt (hoặc để trống để tóm tắt tổng thể)..."
                 className="flex-1"
@@ -768,6 +989,7 @@ export function StudyToolsPage() {
             </div>
 
             {/* Vùng hiển thị kết quả */}
+            <div ref={summaryViewerRef}>
             {!summaryMarkdown ? (
               <EmptyState
                 compact
@@ -804,7 +1026,7 @@ export function StudyToolsPage() {
                   <span className="font-semibold text-[#172B29]">
                     {summaryTitle || "Bản tóm tắt học tập"}
                   </span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <ExportFormatMenu
                       title={summaryTitle || "Tom_tat_hoc_tap"}
                       content={summaryMarkdown}
@@ -813,7 +1035,30 @@ export function StudyToolsPage() {
                     />
                     <Button
                       size="sm"
-                      className="h-7 text-xs bg-[#087F73] text-white hover:bg-[#076b61]"
+                      variant={savedSummaryId ? "outline" : "default"}
+                      disabled={Boolean(savedSummaryId)}
+                      loading={isSavingSummary}
+                      leftIcon={
+                        savedSummaryId ? (
+                          <BookmarkCheck className="h-3.5 w-3.5 text-[#087F73]" />
+                        ) : (
+                          <Save className="h-3.5 w-3.5" />
+                        )
+                      }
+                      className={cn(
+                        "h-7 text-xs",
+                        savedSummaryId
+                          ? "border-[#087F73]/40 bg-[#E6F3F1] text-[#087F73] opacity-100"
+                          : "bg-[#087F73] text-white hover:bg-[#076b61]",
+                      )}
+                      onClick={() => void handleSaveSummaryToHistory()}
+                    >
+                      {savedSummaryId ? "Đã lưu" : "Lưu tóm tắt"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
                       onClick={handleSaveSummaryAsNote}
                     >
                       Lưu vào Ghi chú
@@ -830,6 +1075,119 @@ export function StudyToolsPage() {
                 </article>
               </div>
             )}
+            </div>
+
+            {/* Lịch sử các bản tóm tắt đã lưu */}
+            <div className="border-t border-[#DCE7E4] pt-5 space-y-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-2">
+                  <History className="h-4 w-4 text-[#087F73]" />
+                  <h3 className="text-sm font-bold text-[#172B29]">
+                    Lịch sử tóm tắt đã lưu ({wsSavedSummaries.length})
+                  </h3>
+                </div>
+
+                {wsSavedSummaries.length >= 2 ? (
+                  <div className="relative w-full sm:w-64">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#647C79]" />
+                    <Input
+                      value={summaryHistoryQuery}
+                      onChange={(e) => setSummaryHistoryQuery(e.target.value)}
+                      placeholder="Tìm bản tóm tắt đã lưu..."
+                      className="h-8 pl-8 text-xs"
+                    />
+                  </div>
+                ) : null}
+              </div>
+
+              {isLoadingSavedSummaries ? (
+                <p className="text-xs text-[#647C79]">Đang tải lịch sử tóm tắt...</p>
+              ) : wsSavedSummaries.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-[#DCE7E4] bg-[#F9FCFB] px-4 py-3 text-xs text-[#647C79]">
+                  Chưa có bản tóm tắt nào được lưu trong workspace này. Sau khi tóm tắt xong, bấm{" "}
+                  <strong className="text-[#172B29]">Lưu tóm tắt</strong> nếu bạn muốn giữ lại để mở xem sau.
+                </p>
+              ) : filteredSavedSummaries.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-[#DCE7E4] bg-[#F9FCFB] px-4 py-3 text-xs text-[#647C79]">
+                  Không tìm thấy bản tóm tắt nào khớp từ khóa &ldquo;{summaryHistoryQuery}&rdquo;.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+                  {filteredSavedSummaries.map((item) => {
+                    const isActive = savedSummaryId === item.id
+                    return (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          "group flex flex-col justify-between rounded-xl border p-3.5 transition-all",
+                          isActive
+                            ? "border-[#087F73] bg-[#F0FDFA] shadow-xs"
+                            : "border-[#DCE7E4] bg-white hover:border-[#087F73]/40 hover:shadow-xs",
+                        )}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenSavedSummary(item)}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <h4 className="line-clamp-1 text-xs sm:text-sm font-bold text-[#172B29] group-hover:text-[#087F73] transition-colors">
+                                {item.title}
+                              </h4>
+                            </button>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                leftIcon={<Eye className="h-3 w-3" />}
+                                className="h-7 px-2 text-xs text-[#087F73] hover:bg-[#E6F3F1]"
+                                onClick={() => handleOpenSavedSummary(item)}
+                              >
+                                Xem lại
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-[#647C79] hover:text-red-600"
+                                onClick={() => setSummaryToDelete(item)}
+                                aria-label={`Xóa bản tóm tắt ${item.title}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+
+                          <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-[#647C79]">
+                            {extractSummaryPreview(item.markdown)}
+                          </p>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#DCE7E4]/60 pt-2 text-[11px] text-[#647C79]">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="max-w-[160px] truncate font-medium text-[#172B29]">
+                              {item.documentName || "Toàn bộ workspace"}
+                            </span>
+                            {isActive ? (
+                              <Badge tone="accent">Đang mở</Badge>
+                            ) : (
+                              <Badge tone={item.isMock ? "neutral" : "success"}>
+                                {item.isMock ? "Mô phỏng" : "AI"}
+                              </Badge>
+                            )}
+                          </div>
+                          <span title={formatDateTime(item.createdAt)}>
+                            {relativeTime(item.createdAt)}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1794,6 +2152,15 @@ export function StudyToolsPage() {
             toast({ title: "Đã xóa ghi chú", tone: "info" })
           }
         }}
+      />
+
+      {/* Xác nhận xóa bản tóm tắt đã lưu */}
+      <ConfirmDialog
+        open={Boolean(summaryToDelete)}
+        title="Xóa bản tóm tắt?"
+        description={`Bạn có chắc muốn xóa "${summaryToDelete?.title ?? ""}" khỏi lịch sử?`}
+        onClose={() => setSummaryToDelete(null)}
+        onConfirm={() => void handleConfirmDeleteSummary()}
       />
     </div>
   )

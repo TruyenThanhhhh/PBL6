@@ -386,6 +386,75 @@ class WorkspaceAITestCase(unittest.TestCase):
         self.assertNotIn("Tổng hợp 2 tài liệu:", desc)
         self.assertEqual(desc, "Tài liệu học từ vựng và mẫu câu tiếng Nhật trình độ JLPT N3.")
 
+    def test_study_summary_history_save_list_filter_and_delete(self):
+        ws_id = self.client.post("/api/v1/workspaces", json={"name": "WS Summary"}, headers=self.user_a_headers).json()["workspace"]["id"]
+
+        # Lưu 1 bản tóm tắt (kể cả document_id không tồn tại phải fallback doc_id=None thay vì lỗi FK)
+        save_sum = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            json={
+                "artifact_type": "summary",
+                "title": "Tóm tắt AI · Đề thi JLPT N3",
+                "document_id": "nonexistent_doc_id",
+                "data": {
+                    "markdown": "# Tổng Quan\nĐề thi gồm Từ vựng, Ngữ pháp, Đọc hiểu, Nghe hiểu.",
+                    "focusPrompt": "cấu trúc đề thi",
+                    "documentName": "n3_2017.pdf",
+                    "isMock": False,
+                },
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(save_sum.status_code, 201, save_sum.text)
+        artifact = save_sum.json()["artifact"]
+        self.assertEqual(artifact["artifact_type"], "summary")
+        self.assertIsNone(artifact["document_id"])
+        self.assertTrue(artifact["created_at"].endswith("Z"))
+
+        # Lưu 1 artifact loại khác để kiểm tra filter ?artifact_type=summary
+        save_quiz = self.client.post(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            json={
+                "artifact_type": "quiz",
+                "title": "Quiz test",
+                "data": {"questions": []},
+            },
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(save_quiz.status_code, 201, save_quiz.text)
+
+        list_res = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            params={"artifact_type": "summary"},
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(list_res.status_code, 200, list_res.text)
+        items = list_res.json()["artifacts"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], artifact["id"])
+        self.assertIn("Từ vựng", items[0]["data"]["markdown"])
+        self.assertTrue(items[0]["created_at"].endswith("Z"))
+
+        # Cô lập người dùng khác
+        forbidden = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            headers=self.user_b_headers,
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        del_res = self.client.delete(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts/{artifact['id']}",
+            headers=self.user_a_headers,
+        )
+        self.assertEqual(del_res.status_code, 200, del_res.text)
+
+        after_del = self.client.get(
+            f"/api/v1/workspaces/{ws_id}/study-artifacts",
+            params={"artifact_type": "summary"},
+            headers=self.user_a_headers,
+        ).json()["artifacts"]
+        self.assertEqual(after_del, [])
+
 
 if __name__ == "__main__":
     unittest.main()
