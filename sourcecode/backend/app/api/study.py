@@ -6,13 +6,15 @@ Endpoints API cho Bộ công cụ hỗ trợ học tập (Study Tools):
 - POST /api/v1/study/mindmap
 - POST /api/v1/study/notes
 - POST /api/v1/study/plan
+- POST /api/v1/study/export
 """
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_user_optional
 from app.config import DEFAULT_LLM_MODEL
+from app.services.export_service import build_content_disposition, build_export_payload
 from app.services.study_service import (
     generate_ai_summary,
     generate_ai_quiz,
@@ -71,6 +73,12 @@ class StudyPlanRequest(BaseModel):
     day_span: int = Field(default=7, ge=1, le=30)
     focus_prompt: Optional[str] = None
     model: Optional[str] = None
+
+
+class StudyExportRequest(BaseModel):
+    title: str = Field(default="Tai_lieu_hoc_tap", max_length=200)
+    content: str
+    format: str = Field(default="md", pattern="^(md|docx|pdf)$")
 
 
 @router.post("/summary")
@@ -178,4 +186,35 @@ async def create_study_plan(
         day_span=req.day_span,
         focus_prompt=req.focus_prompt,
         model=req.model or DEFAULT_LLM_MODEL,
+    )
+
+
+@router.post("/export")
+async def export_study_document(
+    req: StudyExportRequest,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """
+    Xuất nội dung học tập / báo cáo Markdown sang định dạng .md, .docx hoặc .pdf.
+    """
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="Không có nội dung để xuất file.")
+
+    try:
+        payload_bytes, media_type, ascii_name, utf8_name = build_export_payload(
+            title=req.title,
+            content=req.content,
+            fmt=req.format,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Không thể tạo file {req.format}: {str(exc)}") from exc
+
+    return Response(
+        content=payload_bytes,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": build_content_disposition(ascii_name, utf8_name),
+        },
     )

@@ -13,7 +13,7 @@ import { fileKindFromName, nowIso, uid } from "@/utils/format"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function authorizedFetch(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers)
   Object.entries(authHeaders()).forEach(([key, value]) => headers.set(key, value))
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
@@ -22,6 +22,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text()
     throw new Error(text || `HTTP ${res.status}`)
   }
+  return res
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await authorizedFetch(path, init)
   return res.json() as Promise<T>
 }
 
@@ -507,6 +512,7 @@ export interface StudySummaryResponse {
   title: string
   markdown: string
   is_mock: boolean
+  error?: string
 }
 
 export async function fetchAiSummaryApi(payload: StudySummaryPayload): Promise<StudySummaryResponse> {
@@ -693,4 +699,19 @@ export async function deleteStudyArtifactApi(
   return request<{ message: string; id: string }>(`/api/v1/workspaces/${workspaceId}/study-artifacts/${artifactId}`, {
     method: "DELETE",
   })
+}
+
+export type ExportDocumentFormat = "md" | "docx" | "pdf"
+
+export async function exportStudyDocumentApi(payload: {
+  title: string
+  content: string
+  format: ExportDocumentFormat
+}): Promise<Blob> {
+  const res = await authorizedFetch("/api/v1/study/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return res.blob()
 }

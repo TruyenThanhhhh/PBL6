@@ -12,7 +12,7 @@ import httpx
 
 from app.config import DEFAULT_LLM_MODEL, OLLAMA_BASE_URL, OLLAMA_TIMEOUT
 from app.database import get_db_connection
-from app.services.llm_service import check_ollama_status
+from app.services.llm_service import check_ollama_status, resolve_available_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -203,12 +203,29 @@ def _normalize_mindmap_node(node: Any, depth: int, max_depth: int) -> Optional[D
     return normalized
 
 
+async def _ensure_ollama_chat_model(
+    requested_model: str = DEFAULT_LLM_MODEL,
+) -> tuple[Optional[str], Optional[str]]:
+    """Kiểm tra dịch vụ Ollama cục bộ và chọn model chat thực tế khả dụng."""
+    status = await check_ollama_status()
+    if not status["running"]:
+        return None, "Dịch vụ AI Ollama chưa chạy. Hãy khởi động Ollama để sinh nội dung AI."
+
+    chosen_model = resolve_available_chat_model(requested_model, status["available_models"])
+    if not chosen_model:
+        return (
+            None,
+            "Ollama đang chạy nhưng chưa có model chat khả dụng (ví dụ: `ollama pull qwen2.5:3b`).",
+        )
+    return chosen_model, None
+
+
 async def _call_ollama_chat(
     system_prompt: str,
     user_prompt: str,
     model: str = DEFAULT_LLM_MODEL,
     json_mode: bool = False,
-    timeout_sec: float = 90.0,
+    timeout_sec: float = OLLAMA_TIMEOUT,
 ) -> str:
     payload: Dict[str, Any] = {
         "model": model,
@@ -231,8 +248,17 @@ async def _call_ollama_chat(
     timeout = httpx.Timeout(timeout_sec, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
+        if resp.status_code >= 400:
+            detail = ""
+            try:
+                detail = str(resp.json().get("error") or "").strip()
+            except Exception:
+                detail = resp.text.strip()[:300]
+            raise RuntimeError(f"Ollama trả về lỗi {resp.status_code}: {detail or resp.reason_phrase}")
+        content = resp.json().get("message", {}).get("content", "").strip()
+        if not content:
+            raise ValueError("Phản hồi AI rỗng")
+        return content
 
 
 async def generate_ai_summary(
@@ -260,11 +286,12 @@ async def generate_ai_summary(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "title": "Tóm tắt tài liệu",
-            "markdown": "Dịch vụ AI Ollama chưa chạy. Hãy khởi động Ollama để sinh bản tóm tắt AI thông minh.",
+            "markdown": "",
+            "error": model_error or "Dịch vụ AI Ollama chưa chạy.",
             "is_mock": True,
         }
 
@@ -279,15 +306,17 @@ async def generate_ai_summary(
         "## 🎯 Kết Luận & Ứng Dụng Thực Tiễn"
     )
 
+    clean_focus = (focus_prompt or "").strip()
     user_prompt = f"TÀI LIỆU NGUỒN THAM KHẢO:\n{context}\n\n"
-    if focus_prompt and focus_prompt.strip():
-        user_prompt += f"YÊU CẦU TRỌNG TÂM ĐẶC BIỆT CỦA NGƯỜI DÙNG: {focus_prompt.strip()}\n\n"
+    if clean_focus:
+        user_prompt += f"YÊU CẦU TRỌNG TÂM ĐẶC BIỆT CỦA NGƯỜI DÙNG: {clean_focus}\n\n"
     user_prompt += "Hãy tạo bản tóm tắt học tập theo cấu trúc trên:"
 
     try:
-        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=model)
+        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model)
+        title_suffix = (clean_focus[:40] + "...") if len(clean_focus) > 40 else (clean_focus or "Tài liệu học tập")
         return {
-            "title": "Tóm tắt AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập"),
+            "title": f"Tóm tắt AI · {title_suffix}",
             "markdown": markdown_res,
             "is_mock": False,
         }
@@ -295,7 +324,8 @@ async def generate_ai_summary(
         logger.exception("Lỗi khi sinh tóm tắt bằng AI: %s", exc)
         return {
             "title": "Tóm tắt tài liệu",
-            "markdown": f"Quá trình sinh tóm tắt gặp lỗi: {str(exc)}",
+            "markdown": "",
+            "error": f"Quá trình sinh tóm tắt gặp lỗi: {str(exc)}",
             "is_mock": True,
         }
 
@@ -321,12 +351,12 @@ async def generate_ai_quiz(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "title": "Quiz trắc nghiệm",
             "questions": [],
-            "error": "Ollama chưa được khởi động.",
+            "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
@@ -355,7 +385,7 @@ async def generate_ai_quiz(
     user_prompt += f"Hãy tạo đúng {count} câu hỏi trắc nghiệm độ khó {difficulty} dưới dạng JSON object có key 'questions':"
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
+        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
         data = _parse_json_response(raw_res)
 
         questions = []
@@ -419,11 +449,11 @@ async def generate_ai_flashcards(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "flashcards": [],
-            "error": "Ollama chưa được khởi động.",
+            "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
@@ -450,7 +480,7 @@ async def generate_ai_flashcards(
     user_prompt += f"Hãy tạo danh sách {card_count} Flashcards dạng JSON:"
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
+        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
         data = _parse_json_response(raw_res)
 
         if isinstance(data, list):
@@ -522,11 +552,11 @@ async def generate_ai_mindmap(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "root": None,
-            "error": "Ollama chưa được khởi động.",
+            "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
@@ -552,7 +582,7 @@ async def generate_ai_mindmap(
     user_prompt += "Hãy tạo cây Mindmap dạng JSON object theo đúng cấu trúc:"
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
+        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
         data = _parse_json_response(raw_res)
         root = _normalize_mindmap_node(data, depth=0, max_depth=depth_limit)
         if not root:
@@ -593,12 +623,12 @@ async def generate_ai_notes(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "title": "Ghi chú học tập",
             "markdown": "",
-            "error": "Ollama chưa được khởi động.",
+            "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
@@ -619,7 +649,7 @@ async def generate_ai_notes(
     user_prompt += "Hãy soạn ghi chú học tập theo đúng cấu trúc trên:"
 
     try:
-        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=model)
+        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model)
         return {
             "title": "Ghi chú AI · " + (focus_prompt[:40] + "..." if focus_prompt else "Tài liệu học tập"),
             "markdown": markdown_res,
@@ -662,11 +692,11 @@ async def generate_ai_plan(
             "is_mock": False,
         }
 
-    status = await check_ollama_status()
-    if not status["running"]:
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
         return {
             "tasks": [],
-            "error": "Ollama chưa được khởi động.",
+            "error": model_error or "Ollama chưa được khởi động.",
             "is_mock": True,
         }
 
@@ -695,7 +725,7 @@ async def generate_ai_plan(
     user_prompt += f"Hãy tạo lộ trình học tập trong {span} ngày kể từ {base_date.isoformat()}, trả về JSON object có key 'tasks':"
 
     try:
-        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=model, json_mode=True)
+        raw_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model, json_mode=True)
         data = _parse_json_response(raw_res)
         raw_tasks = data if isinstance(data, list) else data.get("tasks", [])
         if not isinstance(raw_tasks, list):

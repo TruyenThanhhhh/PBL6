@@ -8,7 +8,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Download,
   FileText,
   MoreHorizontal,
   Pencil,
@@ -17,6 +16,7 @@ import {
   Telescope,
   Trash2,
 } from "lucide-react"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { InlineEdit } from "@/components/common/InlineEdit"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
 import { PageHeader } from "@/components/common/PageHeader"
@@ -254,16 +254,6 @@ export function ResearchPage() {
     }
   }
 
-  const handleExportMarkdown = (proj: ResearchProject) => {
-    const blob = new Blob([proj.report], { type: "text/markdown;charset=utf-8" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${proj.title.replace(/\s+/g, "-")}.md`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   const scrollToSection = (sectionId: string) => {
     const el = document.getElementById(sectionId)
     if (el) {
@@ -306,14 +296,11 @@ export function ResearchPage() {
             >
               {copied ? "Đã chép" : "Sao chép"}
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<Download className="h-3.5 w-3.5" />}
-              onClick={() => handleExportMarkdown(selected)}
-            >
-              Xuất .md
-            </Button>
+            <ExportFormatMenu
+              title={selected.title}
+              content={selected.report}
+              label="Xuất file"
+            />
             <Button
               variant="outline"
               size="sm"
