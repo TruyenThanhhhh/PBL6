@@ -37,6 +37,8 @@ export interface Workspace {
   description: string
   category?: string
   icon?: string
+  docCount?: number
+  conversationCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -228,6 +230,7 @@ export interface Toast {
 export interface SearchHit {
   id: string
   kind: "workspace" | "notebook" | "document" | "note" | "conversation" | "research"
+  workspaceId?: string
   title: string
   snippet: string
   path: string

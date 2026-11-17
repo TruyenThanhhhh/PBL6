@@ -1,4 +1,6 @@
-import type { Conversation, KnowledgeDocument, Note, Notebook } from "@/types"
+import type { Conversation, KnowledgeDocument, Note, Notebook, Workspace } from "@/types"
+import { createWorkspaceApi } from "@/services/api"
+import { useAppStore } from "@/store/app-store"
 
 export interface NotebookStats {
   documentCount: number
@@ -44,6 +46,15 @@ export function hasDuplicateName(existing: string[], candidate: string) {
   return existing.some((name) => normalizeName(name) === target)
 }
 
+export function nextDefaultWorkspaceName(existing: string[], base = "Workspace mới"): string {
+  if (!hasDuplicateName(existing, base)) return base
+  let index = 2
+  while (hasDuplicateName(existing, `${base} ${index}`)) {
+    index += 1
+  }
+  return `${base} ${index}`
+}
+
 export interface WorkspaceCounts {
   notebooks: number
   documents: number
@@ -70,4 +81,24 @@ export function getWorkspaceCounts(
 
 export function describeWorkspaceDeletion(counts: WorkspaceCounts) {
   return `Sẽ xóa khỏi giao diện: ${counts.notebooks} notebook, ${counts.documents} tài liệu, ${counts.notes} ghi chú, ${counts.conversations} hội thoại cùng quiz, flashcard và dự án nghiên cứu thuộc workspace. Tệp đã tải lên máy chủ (nếu có) không bị xóa. Thao tác này không thể hoàn tác.`
+}
+
+/** Tạo workspace mới ngay lập tức không cần nhập tên/mô tả; AI sẽ đặt tên khi tải tài liệu. */
+export async function createQuickWorkspaceFlow(authenticated: boolean): Promise<Workspace> {
+  const state = useAppStore.getState()
+  let ws: Workspace
+  if (authenticated) {
+    ws = await createWorkspaceApi("", "")
+    state.mergeWorkspacesFromBackend([ws])
+    state.setCurrentWorkspace(ws.id)
+  } else {
+    const defaultName = nextDefaultWorkspaceName(state.workspaces.map((w) => w.name))
+    ws = state.createWorkspace(defaultName, "")
+  }
+  state.toast({
+    title: "Đã tạo Workspace mới",
+    description: "Tải tài liệu lên để AI tự động đặt tiêu đề & mô tả.",
+    tone: "success",
+  })
+  return ws
 }

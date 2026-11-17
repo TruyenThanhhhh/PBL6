@@ -4,11 +4,14 @@ import {
   BookOpen,
   FileText,
   FolderOpen,
+  Loader2,
   MessageSquare,
   Search,
   StickyNote,
   X,
 } from "lucide-react"
+import { useAuthSession } from "@/hooks/useAuthSession"
+import { fetchConversations, fetchDocuments, searchGlobalSemanticApi } from "@/services/api"
 import { useAppStore } from "@/store/app-store"
 import type { SearchHit } from "@/types"
 
@@ -37,13 +40,21 @@ export function GlobalSearch() {
   const [q, setQ] = useState("")
   const [filter, setFilter] = useState<GroupFilter>("all")
   const [activeIndex, setActiveIndex] = useState(0)
+  const [remoteHits, setRemoteHits] = useState<SearchHit[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchMode, setSearchMode] = useState<string>("local")
 
   const navigate = useNavigate()
+  const { authenticated } = useAuthSession()
   const workspaces = useAppStore((s) => s.workspaces)
   const notebooks = useAppStore((s) => s.notebooks)
   const documents = useAppStore((s) => s.documents)
   const notes = useAppStore((s) => s.notes)
   const conversations = useAppStore((s) => s.conversations)
+  const currentWorkspaceId = useAppStore((s) => s.currentWorkspaceId)
+  const setCurrentWorkspace = useAppStore((s) => s.setCurrentWorkspace)
+  const replaceDocs = useAppStore((s) => s.replaceDocumentsFromBackend)
+  const replaceConvs = useAppStore((s) => s.replaceConversationsFromBackend)
   const status = useAppStore((s) => s.status)
 
   useEffect(() => {
@@ -65,8 +76,50 @@ export function GlobalSearch() {
     }
   }, [])
 
+  useEffect(() => {
+    const query = q.trim()
+    if (!open || !query || !authenticated || !status.backendOnline) {
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setSearching(true)
+      try {
+        const res = await searchGlobalSemanticApi(query, filter, controller.signal)
+        if (!controller.signal.aborted) {
+          setRemoteHits(res.hits)
+          setSearchMode(res.searchMode)
+          setActiveIndex(0)
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setRemoteHits(null)
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setSearching(false)
+        }
+      }
+    }, 260)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [open, q, filter, authenticated, status.backendOnline])
+
+  const activeRemoteHits =
+    open && q.trim() && authenticated && status.backendOnline ? remoteHits : null
+  const showSearching =
+    Boolean(open && q.trim() && authenticated && status.backendOnline && searching)
+
   const hits = useMemo(() => {
     const query = q.trim().toLowerCase()
+    if (query && activeRemoteHits !== null) {
+      return filter === "all" ? activeRemoteHits : activeRemoteHits.filter((h) => h.kind === filter)
+    }
+
     const list: SearchHit[] = []
 
     // Khi chưa nhập từ khóa, hiển thị gợi ý truy cập nhanh các mục gần đây
@@ -179,7 +232,7 @@ export function GlobalSearch() {
 
     const filtered = filter === "all" ? list : list.filter((h) => h.kind === filter)
     return filtered.slice(0, 24)
-  }, [q, filter, workspaces, notebooks, documents, notes, conversations])
+  }, [q, filter, activeRemoteHits, workspaces, notebooks, documents, notes, conversations])
 
   if (!open) return null
 
@@ -192,6 +245,16 @@ export function GlobalSearch() {
   ]
 
   const handleOpenHit = (hit: SearchHit) => {
+    const targetWsId = hit.workspaceId ?? (hit.kind === "workspace" ? hit.id : undefined)
+    if (targetWsId && targetWsId !== currentWorkspaceId) {
+      setCurrentWorkspace(targetWsId)
+      if (authenticated && status.backendOnline) {
+        void Promise.all([
+          fetchDocuments(targetWsId).then(replaceDocs).catch(() => undefined),
+          fetchConversations(targetWsId).then(replaceConvs).catch(() => undefined),
+        ])
+      }
+    }
     navigate(hit.path)
     setOpen(false)
     setQ("")
@@ -214,13 +277,22 @@ export function GlobalSearch() {
       >
         {/* Thanh nhập từ khóa */}
         <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
-          <Search className="h-4 w-4 shrink-0 text-muted" />
+          {showSearching ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand" />
+          ) : (
+            <Search className="h-4 w-4 shrink-0 text-muted" />
+          )}
           <input
             autoFocus
             value={q}
             onChange={(e) => {
-              setQ(e.target.value)
+              const next = e.target.value
+              setQ(next)
               setActiveIndex(0)
+              if (!next.trim()) {
+                setRemoteHits(null)
+                setSearching(false)
+              }
             }}
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") {
@@ -324,8 +396,9 @@ export function GlobalSearch() {
         {/* Ghi chú phạm vi tìm kiếm trung thực */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line bg-bg-secondary/50 px-3.5 py-2 text-[11px] text-muted">
           <span>
-            Phạm vi: Tìm trên metadata và văn bản đã trích xuất trong bộ nhớ trình duyệt
-            {!status.backendOnline ? " (Dữ liệu mô phỏng cục bộ)" : ""}.
+            {authenticated && status.backendOnline
+              ? `Phạm vi: Tìm kiếm ngữ nghĩa (${searchMode === "semantic" ? "BGE-M3" : "Từ khóa"}) xuyên suốt toàn bộ Workspace & tài liệu.`
+              : `Phạm vi: Tìm trên metadata và văn bản đã trích xuất trong bộ nhớ trình duyệt${!status.backendOnline ? " (Dữ liệu mô phỏng cục bộ)" : ""}.`}
           </span>
           <span>↑↓ di chuyển · Enter mở</span>
         </div>

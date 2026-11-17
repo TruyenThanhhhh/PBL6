@@ -15,7 +15,6 @@ import {
   MoreHorizontal,
   TrendingUp,
 } from "lucide-react"
-import { NameDialog } from "@/components/common/NameDialog"
 import {
   Button,
   Dialog,
@@ -30,6 +29,8 @@ import {
   Textarea,
   Tooltip,
 } from "@/components/ui"
+import { createQuickWorkspaceFlow } from "@/features/workspaces/workspace-utils"
+import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
 import {
   formatBytes,
@@ -42,7 +43,7 @@ import {
 
 export function DashboardPage() {
   const navigate = useNavigate()
-  const [wsOpen, setWsOpen] = useState(false)
+  const { authenticated } = useAuthSession()
   const [noteOpen, setNoteOpen] = useState(false)
 
   const [noteTitle, setNoteTitle] = useState("")
@@ -56,7 +57,6 @@ export function DashboardPage() {
   const studyTasks = useAppStore((s) => s.studyTasks)
   const conversations = useAppStore((s) => s.conversations)
   const current = useAppStore((s) => s.currentWorkspaceId)
-  const createWorkspace = useAppStore((s) => s.createWorkspace)
   const createConversation = useAppStore((s) => s.createConversation)
   const saveNote = useAppStore((s) => s.saveNote)
   const log = useAppStore((s) => s.log)
@@ -182,7 +182,17 @@ export function DashboardPage() {
             </DropdownMenuItem>
             <DropdownMenuItem
               icon={<FolderPlus className="h-3.5 w-3.5 text-brand" />}
-              onClick={() => setWsOpen(true)}
+              onClick={() => {
+                void createQuickWorkspaceFlow(authenticated)
+                  .then((ws) => navigate(`/knowledge/${ws.id}`))
+                  .catch((err) =>
+                    toast({
+                      title: "Không thể tạo không gian",
+                      description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+                      tone: "error",
+                    }),
+                  )
+              }}
             >
               Tạo không gian mới
             </DropdownMenuItem>
@@ -474,20 +484,6 @@ export function DashboardPage() {
           </div>
         </div>
       </div>
-
-      {/* Dialog tạo Không gian làm việc mới */}
-      <NameDialog
-        open={wsOpen}
-        title="Tạo không gian làm việc mới"
-        confirmLabel="Tạo"
-        showDescription
-        onClose={() => setWsOpen(false)}
-        onSubmit={(name, description) => {
-          const ws = createWorkspace(name, description)
-          toast({ title: "Đã tạo không gian mới", description: ws.name, tone: "success" })
-          navigate(`/knowledge/${ws.id}`)
-        }}
-      />
 
       {/* Dialog tạo Ghi chú nhanh */}
       <Dialog

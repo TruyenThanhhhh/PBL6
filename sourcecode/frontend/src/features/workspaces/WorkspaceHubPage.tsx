@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   FolderKanban,
   Layers,
+  Loader2,
   LogOut,
   MessageSquare,
   Moon,
@@ -20,22 +21,22 @@ import {
 } from "lucide-react"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
 import {
-  Button,
-  Dialog,
   DropdownMenu,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  FormField,
-  Input,
 } from "@/components/ui"
 import { useSystemStatus } from "@/hooks/useSystemStatus"
 import { useAuthSession } from "@/hooks/useAuthSession"
-import { createWorkspaceApi, deleteWorkspaceApi, updateWorkspaceApi } from "@/services/api"
+import {
+  deleteWorkspaceApi,
+  searchWorkspacesSemanticApi,
+  updateWorkspaceApi,
+} from "@/services/api"
 import { logout } from "@/services/auth-service"
 import { useAppStore } from "@/store/app-store"
 import { formatBytes, greeting, relativeTime } from "@/utils/format"
-import { hasDuplicateName } from "@/features/workspaces/workspace-utils"
+import { createQuickWorkspaceFlow, hasDuplicateName } from "@/features/workspaces/workspace-utils"
 import type { Workspace } from "@/types"
 import { cn } from "@/utils/cn"
 
@@ -144,10 +145,8 @@ export function WorkspaceHubPage() {
   const documents = useAppStore((s) => s.documents)
   const conversations = useAppStore((s) => s.conversations)
   const setCurrent = useAppStore((s) => s.setCurrentWorkspace)
-  const createWorkspace = useAppStore((s) => s.createWorkspace)
   const updateWorkspace = useAppStore((s) => s.updateWorkspace)
   const deleteWorkspace = useAppStore((s) => s.deleteWorkspace)
-  const mergeWorkspaces = useAppStore((s) => s.mergeWorkspacesFromBackend)
   const createConversation = useAppStore((s) => s.createConversation)
   const status = useAppStore((s) => s.status)
   const theme = useAppStore((s) => s.theme)
@@ -158,14 +157,56 @@ export function WorkspaceHubPage() {
   // Search & Sort
   const [searchQuery, setSearchQuery] = useState("")
   const [sortOption, setSortOption] = useState<SortOption>("updated")
+  const [semanticResults, setSemanticResults] = useState<Workspace[] | null>(null)
+  const [searchingSemantic, setSearchingSemantic] = useState(false)
 
-  // Dialogs
-  const [createOpen, setCreateOpen] = useState(false)
+  // Quick Create & Dialogs
+  const [creatingWs, setCreatingWs] = useState(false)
   const [editTarget, setEditTarget] = useState<Workspace | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null)
 
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q || !authenticated || !status.backendOnline) {
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setSearchingSemantic(true)
+      try {
+        const res = await searchWorkspacesSemanticApi(q, controller.signal)
+        if (!controller.signal.aborted) {
+          setSemanticResults(res.workspaces)
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setSemanticResults(null)
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setSearchingSemantic(false)
+        }
+      }
+    }, 280)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [searchQuery, authenticated, status.backendOnline])
+
+  const activeSemanticResults =
+    searchQuery.trim() && authenticated && status.backendOnline ? semanticResults : null
+  const showSearchingSemantic =
+    Boolean(searchQuery.trim() && authenticated && status.backendOnline && searchingSemantic)
+
   // Calculate Metrics
-  const totalDocs = documents.length
+  const totalDocs = useMemo(() => {
+    const backendSum = workspaces.reduce((acc, w) => acc + (w.docCount ?? 0), 0)
+    const hasBackendCounts = workspaces.some((w) => w.docCount !== undefined)
+    return hasBackendCounts ? backendSum : documents.length
+  }, [workspaces, documents.length])
 
   const totalChunks = useMemo(
     () => documents.reduce((acc, d) => acc + (d.totalChunks || 0), 0),
@@ -183,6 +224,10 @@ export function WorkspaceHubPage() {
   // Filtered and Sorted Workspaces
   const filteredWorkspaces = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
+    if (q && activeSemanticResults !== null) {
+      return activeSemanticResults
+    }
+
     const list = workspaces.filter((w) => {
       if (q) {
         const matchName = w.name.toLowerCase().includes(q)
@@ -197,22 +242,24 @@ export function WorkspaceHubPage() {
         return a.name.localeCompare(b.name, "vi")
       }
       if (sortOption === "documents") {
-        const aDocs = documents.filter((d) => d.workspaceId === a.id).length
-        const bDocs = documents.filter((d) => d.workspaceId === b.id).length
+        const aDocs = a.docCount ?? documents.filter((d) => d.workspaceId === a.id).length
+        const bDocs = b.docCount ?? documents.filter((d) => d.workspaceId === b.id).length
         return bDocs - aDocs
       }
       return b.updatedAt.localeCompare(a.updatedAt)
     })
-  }, [workspaces, searchQuery, sortOption, documents])
+  }, [workspaces, searchQuery, activeSemanticResults, sortOption, documents])
 
   // Actions: Mở thẳng Workspace Studio (trung tâm là Chat AI)
-  const handleEnterWorkspace = (w: Workspace, forceNewChat = false) => {
+  const handleEnterWorkspace = (w: Workspace, forceNewChat = false, silent = false) => {
     setCurrent(w.id)
-    toast({
-      title: "Đã mở Workspace Studio",
-      description: w.name,
-      tone: "info",
-    })
+    if (!silent) {
+      toast({
+        title: "Đã mở Workspace Studio",
+        description: w.name,
+        tone: "info",
+      })
+    }
     const convInWs = conversations.find((c) => c.workspaceId === w.id)
     if (convInWs && !forceNewChat) {
       navigate(`/chat/${convInWs.id}`)
@@ -221,6 +268,23 @@ export function WorkspaceHubPage() {
       navigate(`/chat/${newConv.id}`)
     } else {
       navigate("/chat")
+    }
+  }
+
+  const handleQuickCreateWorkspace = async () => {
+    if (creatingWs) return
+    setCreatingWs(true)
+    try {
+      const ws = await createQuickWorkspaceFlow(authenticated)
+      handleEnterWorkspace(ws, false, true)
+    } catch (err) {
+      toast({
+        title: "Không thể tạo Workspace",
+        description: err instanceof Error ? err.message : "Lỗi kết nối backend",
+        tone: "error",
+      })
+    } finally {
+      setCreatingWs(false)
     }
   }
 
@@ -286,12 +350,13 @@ export function WorkspaceHubPage() {
             {/* Nút tạo Workspace mới kiểu pill đen đặc trưng của Motivo */}
             <button
               type="button"
-              onClick={() => setCreateOpen(true)}
-              className="group inline-flex items-center gap-2.5 rounded-full bg-[#0B1315] py-1.5 pr-2 pl-4 text-xs font-semibold text-white shadow-sm transition-all duration-200 hover:bg-[#0F766E]"
+              disabled={creatingWs}
+              onClick={() => void handleQuickCreateWorkspace()}
+              className="group inline-flex items-center gap-2.5 rounded-full bg-[#0B1315] py-1.5 pr-2 pl-4 text-xs font-semibold text-white shadow-sm transition-all duration-200 hover:bg-[#0F766E] disabled:opacity-60"
             >
-              <span>Workspace mới</span>
+              <span>{creatingWs ? "Đang tạo..." : "Workspace mới"}</span>
               <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/25 transition-transform group-hover:rotate-90">
-                <Plus className="h-3 w-3" />
+                {creatingWs ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
               </span>
             </button>
 
@@ -510,11 +575,22 @@ export function WorkspaceHubPage() {
           {/* Thanh Tìm kiếm & Nút Sắp xếp */}
           <div className="flex flex-wrap items-center gap-3 sm:flex-nowrap">
             <div className="relative flex w-full items-center gap-2 rounded-full border border-[#C8DED9] bg-white px-4 py-2 shadow-2xs transition-all focus-within:border-[#0F766E] focus-within:ring-2 focus-within:ring-[#0F766E]/15 sm:w-72">
-              <Search className="h-4 w-4 shrink-0 text-[#647D7A]" />
+              {showSearchingSemantic ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0F766E]" />
+              ) : (
+                <Search className="h-4 w-4 shrink-0 text-[#647D7A]" />
+              )}
               <input
                 ref={searchInputRef}
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setSearchQuery(next)
+                  if (!next.trim()) {
+                    setSemanticResults(null)
+                    setSearchingSemantic(false)
+                  }
+                }}
                 className="w-full border-none bg-transparent font-sans text-xs text-[#0B1716] placeholder-[#7A9490] outline-none focus:ring-0"
                 placeholder="Tìm kiếm Workspace..."
                 type="text"
@@ -557,7 +633,8 @@ export function WorkspaceHubPage() {
           {filteredWorkspaces.map((w, idx) => {
             const wsDocs = documents.filter((d) => d.workspaceId === w.id)
             const wsConvs = conversations.filter((c) => c.workspaceId === w.id)
-            const docCount = wsDocs.length
+            const docCount = w.docCount ?? wsDocs.length
+            const convCount = w.conversationCount ?? wsConvs.length
 
             return (
               <article
@@ -643,7 +720,7 @@ export function WorkspaceHubPage() {
                   <div className="flex items-center gap-2 text-xs font-medium text-[#526B68]">
                     <span>{docCount} tài liệu</span>
                     <span className="text-[#CBDAD7]">&bull;</span>
-                    <span>{wsConvs.length} hội thoại</span>
+                    <span>{convCount} hội thoại</span>
                   </div>
 
                   <button
@@ -665,17 +742,18 @@ export function WorkspaceHubPage() {
           {/* Thẻ Tạo Workspace mới */}
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
-            className="group flex min-h-[210px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#B2D0CA] bg-white/65 p-5 text-center transition-all duration-200 hover:-translate-y-1 hover:border-[#0F766E] hover:bg-white hover:shadow-md"
+            disabled={creatingWs}
+            onClick={() => void handleQuickCreateWorkspace()}
+            className="group flex min-h-[210px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#B2D0CA] bg-white/65 p-5 text-center transition-all duration-200 hover:-translate-y-1 hover:border-[#0F766E] hover:bg-white hover:shadow-md disabled:opacity-60"
           >
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-[#D5E8E3] bg-[#F2F9F7] text-[#0F6E66] transition-colors duration-200 group-hover:border-[#0B1315] group-hover:bg-[#0B1315] group-hover:text-white">
-              <Plus className="h-5 w-5" />
+              {creatingWs ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
             </div>
             <h3 className="text-[15px] font-bold text-[#0B1716]">
-              Tạo Workspace mới
+              {creatingWs ? "Đang tạo Workspace..." : "Tạo Workspace mới"}
             </h3>
             <p className="mt-1 max-w-[220px] text-[12px] leading-relaxed text-[#526B68]">
-              Khởi tạo không gian độc lập cho môn học hoặc dự án mới.
+              Vào thẳng không gian và tải tài liệu để AI tự đặt tiêu đề, mô tả.
             </p>
           </button>
         </div>
@@ -693,87 +771,6 @@ export function WorkspaceHubPage() {
           <span>&copy; 2026 Motivo Workspace. All rights reserved.</span>
         </div>
       </footer>
-
-      {/* Dialog: Create Workspace */}
-      <Dialog
-        open={createOpen}
-        title="Tạo Workspace mới"
-        onClose={() => setCreateOpen(false)}
-      >
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault()
-            const form = e.currentTarget
-            const nameInput = form.elements.namedItem("wsName") as HTMLInputElement
-            const descInput = form.elements.namedItem("wsDesc") as HTMLTextAreaElement
-            const name = nameInput.value.trim()
-            if (!name) return
-
-            const duplicate = hasDuplicateName(
-              workspaces.map((w) => w.name),
-              name,
-            )
-            if (duplicate) {
-              toast({ title: "Đã có Workspace cùng tên", tone: "error" })
-              return
-            }
-
-            let ws: Workspace
-            try {
-              if (authenticated) {
-                ws = await createWorkspaceApi(name, descInput.value.trim())
-                mergeWorkspaces([ws])
-              } else {
-                ws = createWorkspace(name, descInput.value.trim())
-              }
-            } catch (err) {
-              toast({
-                title: "Không thể tạo Workspace",
-                description: err instanceof Error ? err.message : "Lỗi kết nối backend",
-                tone: "error",
-              })
-              return
-            }
-            toast({
-              title: "Đã tạo Workspace mới",
-              description: ws.name,
-              tone: "success",
-            })
-            setCreateOpen(false)
-            handleEnterWorkspace(ws, false)
-          }}
-          className="space-y-3"
-        >
-          <FormField label="Tên Workspace">
-            <Input
-              name="wsName"
-              autoFocus
-              required
-              placeholder="Ví dụ: Đồ án Mạng & An toàn thông tin..."
-            />
-          </FormField>
-
-          <FormField label="Mô tả">
-            <textarea
-              name="wsDesc"
-              rows={3}
-              className="w-full rounded-md border border-line bg-bg p-2 text-xs text-ink placeholder:text-muted focus:border-brand focus:outline-hidden"
-              placeholder="Mô tả ngắn gọn về đề tài, tài liệu hoặc mục tiêu nghiên cứu..."
-            />
-          </FormField>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setCreateOpen(false)}
-            >
-              Hủy
-            </Button>
-            <Button type="submit">Tạo không gian</Button>
-          </div>
-        </form>
-      </Dialog>
 
       {/* Dialog: Edit Workspace */}
       <NameDialog
