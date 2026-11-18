@@ -106,7 +106,7 @@ export function DocumentUploadPanel({
         if (status.backendOnline) {
           const uploadPromise = uploadDocumentWithProgress(targetWorkspaceId, item.file, {
             notebookId: targetNotebookId || null,
-            deferMetadata: isBatchUpload,
+            deferMetadata: true,
             signal: controller.signal,
             onProgress: (pct) => {
               // Mạng upload chiếm 5% - 25%
@@ -262,16 +262,18 @@ export function DocumentUploadPanel({
 
       if (isBatchUpload || !updatedWorkspace) {
         setUpdatingMetadata(true)
-        try {
-          const metaRes = await generateWorkspaceMetadataApi(targetWorkspaceId)
-          if (metaRes.workspace) {
-            updatedWorkspace = metaRes.workspace
-          }
-        } catch {
-          // Không làm gián đoạn trạng thái upload thành công nếu sinh metadata lỗi
-        } finally {
-          setUpdatingMetadata(false)
-        }
+        void generateWorkspaceMetadataApi(targetWorkspaceId)
+          .then((metaRes) => {
+            if (metaRes.workspace) {
+              mergeWorkspaces([metaRes.workspace])
+            }
+          })
+          .catch(() => {
+            // Không làm gián đoạn trạng thái upload thành công nếu sinh metadata lỗi
+          })
+          .finally(() => {
+            setUpdatingMetadata(false)
+          })
       }
 
       if (updatedWorkspace) {
@@ -282,7 +284,7 @@ export function DocumentUploadPanel({
         title: `Đã xử lý & lập chỉ mục ${successCount} tài liệu thành công`,
         description: updatedWorkspace
           ? `Đã cập nhật workspace "${updatedWorkspace.name}".`
-          : "Các đoạn văn bản và vector BGE-M3 đã sẵn sàng phục vụ hỏi đáp AI.",
+          : "Các đoạn văn bản đã được lập chỉ mục FTS5 & đang đồng bộ vector ngữ nghĩa.",
         tone: "success",
       })
     } else if (!status.backendOnline && successCount > 0) {
@@ -295,10 +297,10 @@ export function DocumentUploadPanel({
 
     setUploading(false)
     abortRef.current = null
-    // Cho người dùng xem trạng thái hoàn tất 100% trong 3 giây trước khi tự dọn dẹp hàng đợi
+    // Cho người dùng xem trạng thái hoàn tất 100% trong 1.5 giây trước khi tự dọn dẹp hàng đợi
     setTimeout(() => {
       setQueue((prev) => prev.filter((q) => q.uploadState !== "done"))
-    }, 3000)
+    }, 1500)
   }
 
   return (

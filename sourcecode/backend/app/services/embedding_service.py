@@ -29,13 +29,25 @@ logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 @lru_cache(maxsize=1)
 def _get_sentence_transformer():
+    import torch
     from sentence_transformers import SentenceTransformer
+
+    cpu_threads = max(4, os.cpu_count() or 4)
+    try:
+        torch.set_num_threads(cpu_threads)
+    except Exception:
+        pass
+
     try:
         # Ưu tiên sử dụng model đã tải trong cache cục bộ để xử lý tức thì, tránh timeout mạng
-        return SentenceTransformer(EMBEDDING_MODEL, device="cpu", local_files_only=True)
+        model = SentenceTransformer(EMBEDDING_MODEL, device="cpu", local_files_only=True)
     except Exception:
         # Tự động tải từ Hugging Face nếu máy mới chưa có file cache
-        return SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+        model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+
+    # Giới hạn chiều dài token hợp lý với kích thước chunk (~1100-1500 ký tự) để tăng tốc CPU gấp nhiều lần
+    model.max_seq_length = 512
+    return model
 
 
 @lru_cache(maxsize=1)
@@ -47,11 +59,12 @@ def _get_fastembed_model():
 def _embed_with_sentence_transformers(texts: List[str]) -> List[List[float]]:
     vectors = _get_sentence_transformer().encode(
         texts,
-        batch_size=EMBEDDING_BATCH_SIZE,
+        batch_size=max(EMBEDDING_BATCH_SIZE, 32),
         normalize_embeddings=True,
         show_progress_bar=False,
+        convert_to_numpy=True,
     )
-    return [list(map(float, vector)) for vector in vectors]
+    return vectors.tolist()
 
 
 def _embed_with_fastembed(texts: List[str]) -> List[List[float]]:

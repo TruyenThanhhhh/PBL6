@@ -17,6 +17,7 @@ from app.services.document_service import (
 from app.services.workspace_ai_service import (
     generate_and_apply_workspace_metadata,
     generate_unique_default_workspace_name,
+    schedule_workspace_embedding,
     semantic_global_search,
     semantic_search_workspaces,
     upsert_workspace_embedding,
@@ -325,7 +326,7 @@ async def upload_document(
     updated_workspace: Optional[Dict[str, Any]] = None
     metadata_source = "deferred"
     if defer_metadata:
-        await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+        await run_in_threadpool(schedule_workspace_embedding, workspace_id)
     else:
         try:
             meta_res = await generate_and_apply_workspace_metadata(workspace_id)
@@ -334,7 +335,7 @@ async def upload_document(
         except Exception:
             logger.exception("Tự động tạo metadata workspace thất bại cho %s", workspace_id)
             metadata_source = "error"
-            await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+            await run_in_threadpool(schedule_workspace_embedding, workspace_id)
 
     return {
         "message": "Tài liệu đã được tải lên và lập chỉ mục thành công",
