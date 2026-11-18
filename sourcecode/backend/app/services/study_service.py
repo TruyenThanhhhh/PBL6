@@ -280,6 +280,39 @@ def _get_document_context(
     return text
 
 
+def _get_summary_context(
+    workspace_id: str,
+    document_id: Optional[str],
+    document_ids: Optional[List[str]],
+    max_chars: int = 7800,
+) -> str:
+    """Build a compact, page-spanning context without loading embedding/reranker models."""
+    from app.services.retrieval_service import search_spanning_chunks
+
+    chunks = search_spanning_chunks(
+        workspace_id=workspace_id,
+        query="Tóm tắt nội dung chính",
+        max_chunks=32,
+        document_id=document_id,
+        document_ids=document_ids,
+        max_chars=max_chars,
+    )
+    parts: List[str] = []
+    total_chars = 0
+    for chunk in chunks:
+        page = chunk.get("page_number")
+        source = f"[{chunk.get('document_name') or 'Tài liệu'} - Trang {page}]"
+        part = f"{source}\n{str(chunk.get('content') or '').strip()}"
+        remaining = max_chars - total_chars
+        if remaining <= 0:
+            break
+        if len(part) > remaining:
+            part = part[:remaining]
+        parts.append(part)
+        total_chars += len(part)
+    return "\n\n".join(parts)
+
+
 def _parse_json_response(raw: str) -> Any:
     """Bóc tách JSON từ phản hồi LLM, kể cả khi bị bọc bởi markdown code fence."""
     text = (raw or "").strip()
@@ -400,14 +433,7 @@ async def generate_ai_summary(
     """
     Sinh bản tóm tắt học tập có cấu trúc Markdown từ tài liệu thực.
     """
-    context = _get_document_context(
-        workspace_id,
-        document_id,
-        document_ids,
-        max_chunks=16,
-        max_chars=8000,
-        focus_prompt=focus_prompt,
-    )
+    context = _get_summary_context(workspace_id, document_id, document_ids)
     if not context:
         return {
             "title": "Tóm tắt tài liệu",
@@ -425,14 +451,12 @@ async def generate_ai_summary(
         }
 
     system_prompt = (
-        "Bạn là Trợ lý Học tập và Nghiên cứu AI thông thái. "
-        "Nhiệm vụ của bạn là đọc hiểu sâu sắc ngữ cảnh tài liệu được cung cấp và sinh một bản tóm tắt học tập "
-        "toàn diện, rõ ràng, có cấu trúc chặt chẽ bằng định dạng Markdown (tiếng Việt).\n\n"
-        "CẤU TRÚC BẢN TÓM TẮT:\n"
-        "# 📌 Tổng Quan Cốt Lõi (1-2 đoạn văn súc tích, nắm bắt bản chất vấn đề)\n"
-        "## 🔑 Các Khái Niệm / Luận Điểm Then Chốt (gạch đầu dòng phân tích rõ nguyên nhân, bản chất và ý nghĩa)\n"
-        "## 💡 Phân Tích & Điểm Cần Lưu Ý (nếu có các bước, phân loại hoặc công thức/nguyên tắc)\n"
-        "## 🎯 Kết Luận & Ứng Dụng Thực Tiễn"
+        "Bạn là trợ lý học tập. Tóm tắt CHỈ dựa trên nội dung nguồn đã cho, bằng tiếng Việt, "
+        "ngắn gọn và chính xác. Với PDF dạng slide, đọc tiêu đề, agenda, các trang nội dung và kết luận "
+        "theo thứ tự trang; xác định chủ đề xuyên suốt và các luận điểm chính, không suy diễn từ tên tệp. "
+        "Nếu có số liệu, nêu đúng số liệu và phân biệt kết quả đạt/chưa đạt. Không lặp ý. "
+        "Dùng Markdown với: ## Nội dung chính, ## Các ý quan trọng, ## Kết luận. "
+        "Giữ câu trả lời trong khoảng 350-550 từ."
     )
 
     clean_focus = (focus_prompt or "").strip()
@@ -442,7 +466,13 @@ async def generate_ai_summary(
     user_prompt += "Hãy tạo bản tóm tắt học tập theo cấu trúc trên:"
 
     try:
-        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model)
+        markdown_res = await _call_ollama_chat(
+            system_prompt,
+            user_prompt,
+            model=chosen_model,
+            num_predict=700,
+            timeout_sec=OLLAMA_TIMEOUT,
+        )
         title_suffix = (clean_focus[:40] + "...") if len(clean_focus) > 40 else (clean_focus or "Tài liệu học tập")
         return {
             "title": f"Tóm tắt AI · {title_suffix}",

@@ -181,13 +181,14 @@ def search_section_chunks(
 def search_spanning_chunks(
     workspace_id: str,
     query: str,
-    max_chunks: int = 14,
+    max_chunks: int = 32,
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
+    max_chars: int = 7800,
 ) -> List[Dict[str, Any]]:
     """
-    Lấy chunk phân phối ĐỀU toàn bộ tài liệu (theo thứ tự trang/chunk_index).
-    Dùng cho câu hỏi "tóm tắt toàn bộ", "liệt kê các chương", v.v.
+    Tạo ngữ cảnh tóm tắt có độ phủ đều theo trang. Với PDF/PPTX dạng slide,
+    giữ tiêu đề và một phần nội dung của mọi slide trong giới hạn ngữ cảnh.
     """
     conn = get_db_connection()
     try:
@@ -206,7 +207,8 @@ def search_spanning_chunks(
         cursor.execute(
             f"""
             SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
-                   c.page_number, c.chunk_index, d.file_name AS document_name
+                   c.page_number, c.chunk_index, d.file_name AS document_name,
+                   d.file_type, d.total_pages
             FROM document_chunks c
             JOIN documents d ON d.id = c.document_id
             WHERE c.workspace_id = ?{doc_filter}
@@ -219,12 +221,97 @@ def search_spanning_chunks(
         if not all_chunks:
             return []
 
-        total = len(all_chunks)
-        if total <= max_chunks:
-            selected = all_chunks
-        else:
-            step = total / max_chunks
-            selected = [all_chunks[int(i * step)] for i in range(max_chunks)]
+        by_document: Dict[str, List[Dict[str, Any]]] = {}
+        for chunk in all_chunks:
+            by_document.setdefault(chunk["document_id"], []).append(chunk)
+
+        # Detect page-based slide decks (one or two extracted chunks per slide).
+        slide_docs: set[str] = set()
+        page_groups: Dict[tuple[str, int], List[Dict[str, Any]]] = {}
+        for doc_id, chunks in by_document.items():
+            file_type = str(chunks[0].get("file_type") or "").lower()
+            page_count = max(int(chunk.get("total_pages") or 1) for chunk in chunks)
+            if file_type not in {"pdf", "pptx"} or page_count < 8 or len(chunks) > page_count * 2.5:
+                continue
+            slide_docs.add(doc_id)
+            for chunk in chunks:
+                page = int(chunk.get("page_number") or 1)
+                page_groups.setdefault((doc_id, page), []).append(chunk)
+
+        selected: List[Dict[str, Any]] = []
+        if slide_docs:
+            # Keep page order and cover every slide when the deck fits. Very
+            # large decks are sampled evenly, with the opening and ending retained.
+            page_limit = max(1, max_chunks // max(1, len(slide_docs)))
+            slide_pages: List[tuple[str, int]] = []
+            for doc_id in sorted(slide_docs):
+                doc_pages = sorted(page for grouped_doc, page in page_groups if grouped_doc == doc_id)
+                if len(doc_pages) > page_limit:
+                    if page_limit == 1:
+                        doc_pages = [doc_pages[0]]
+                    else:
+                        last = len(doc_pages) - 1
+                        indices = sorted({round(i * last / (page_limit - 1)) for i in range(page_limit)})
+                        doc_pages = [doc_pages[i] for i in indices]
+                slide_pages.extend((doc_id, page) for page in doc_pages)
+
+            per_page_budget = max(120, max_chars // max(1, len(slide_pages)))
+            for doc_id, page in slide_pages:
+                page_chunks = page_groups[(doc_id, page)]
+                page_chunks.sort(key=lambda item: item["chunk_index"])
+                text_parts: List[str] = []
+                for chunk in page_chunks:
+                    content = str(chunk.get("content") or "").strip()
+                    if not content:
+                        continue
+                    if text_parts:
+                        previous = text_parts[-1]
+                        overlap = min(300, len(previous), len(content))
+                        while overlap >= 40 and not previous.endswith(content[:overlap]):
+                            overlap -= 1
+                        if overlap >= 40:
+                            content = content[overlap:].lstrip()
+                    if content:
+                        text_parts.append(content)
+                page_text = "\n".join(text_parts)
+                lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.splitlines()]
+                lines = [line for line in lines if line and not re.fullmatch(r"\d{1,4}", line)]
+                compact = "\n".join(lines)
+                if len(compact) > per_page_budget:
+                    title = "\n".join(lines[:2])[: min(120, per_page_budget // 2)]
+                    body = " ".join(lines[2:]) if len(lines) > 2 else " ".join(lines[1:])
+                    remaining = max(0, per_page_budget - len(title) - 5)
+                    head_len = int(remaining * 0.68)
+                    tail_len = remaining - head_len
+                    if len(body) > remaining:
+                        head = body[:head_len].rsplit(" ", 1)[0].rstrip()
+                        tail = body[-tail_len:].lstrip() if tail_len else ""
+                        compact = f"{title}\n{head} … {tail}".strip()
+                    else:
+                        compact = f"{title}\n{body}".strip()
+                first = page_chunks[0]
+                selected.append({
+                    **first,
+                    "content": compact,
+                    "page_number": page,
+                    "page_label": f"Trang {page}",
+                })
+
+        # Keep the original spanning behavior for ordinary text/PDF documents.
+        non_slide_chunks = [chunk for chunk in all_chunks if chunk["document_id"] not in slide_docs]
+        if non_slide_chunks:
+            non_slide_docs = list(dict.fromkeys(chunk["document_id"] for chunk in non_slide_chunks))
+            per_doc_limit = max(1, max_chunks // max(1, len(non_slide_docs)))
+            for doc_id in non_slide_docs:
+                doc_chunks = [chunk for chunk in non_slide_chunks if chunk["document_id"] == doc_id]
+                if len(doc_chunks) <= per_doc_limit:
+                    selected.extend(doc_chunks)
+                else:
+                    step = (len(doc_chunks) - 1) / max(1, per_doc_limit - 1)
+                    selected.extend(doc_chunks[round(i * step)] for i in range(per_doc_limit))
+
+        selected.sort(key=lambda item: (item["document_id"], item.get("page_number") or 0, item["chunk_index"]))
+        selected = selected[:max_chunks]
         for c in selected:
             if "page_label" not in c and c.get("page_number") is not None:
                 c["page_label"] = f"Trang {c['page_number']}"

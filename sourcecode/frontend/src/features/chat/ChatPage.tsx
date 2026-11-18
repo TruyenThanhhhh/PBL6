@@ -39,9 +39,11 @@ import { CitationMarkdown } from "@/features/citations/CitationMarkdown"
 import {
   createConversationApi,
   deleteConversationApi,
+  fetchDocuments,
   fetchConversationMessages,
   renameConversationApi,
   saveStudyArtifactApi,
+  uploadDocumentWithProgress,
 } from "@/services/api"
 import { getAuthToken } from "@/services/auth-service"
 import {
@@ -100,6 +102,7 @@ export function ChatPage() {
   const createConversation = useAppStore((s) => s.createConversation)
   const renameConversation = useAppStore((s) => s.renameConversation)
   const deleteConversation = useAppStore((s) => s.deleteConversation)
+  const replaceDocumentsFromBackend = useAppStore((s) => s.replaceDocumentsFromBackend)
   const appendMessage = useAppStore((s) => s.appendMessage)
   const updateMessage = useAppStore((s) => s.updateMessage)
   const setConversationMessages = useAppStore((s) => s.setConversationMessages)
@@ -123,6 +126,7 @@ export function ChatPage() {
 
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, "up" | "down">>({})
 
@@ -163,10 +167,17 @@ export function ChatPage() {
 
   useEffect(() => {
     const convId = conversation?.id
-    if (!convId || !getAuthToken()) return
-    if (loadedConvIdsRef.current.has(convId)) return
+    if (!convId || !getAuthToken()) {
+      setLoadingMessages(false)
+      return
+    }
+    if (loadedConvIdsRef.current.has(convId)) {
+      setLoadingMessages(false)
+      return
+    }
     if (conversation.messages.length > 0) {
       loadedConvIdsRef.current.add(convId)
+      setLoadingMessages(false)
       return
     }
 
@@ -389,6 +400,57 @@ export function ChatPage() {
     if (abortRef.current) {
       abortRef.current.abort()
       abortRef.current = null
+    }
+  }
+
+  const handleUploadAttachment = async (files: File[]) => {
+    if (uploadingAttachment || files.length === 0) return
+    if (!status.backendOnline) {
+      toast({ title: "Cần kết nối Backend để tải và lập chỉ mục tệp", tone: "warning" })
+      return
+    }
+
+    setUploadingAttachment(true)
+    const uploadedIds: string[] = []
+    try {
+      for (const file of files) {
+        if (file.size > 25 * 1024 * 1024) {
+          throw new Error(`Tệp “${file.name}” vượt quá giới hạn 25 MB.`)
+        }
+        const result = await uploadDocumentWithProgress(currentWsId, file, { deferMetadata: true })
+        const documentId = String(result.document?.document_id ?? "")
+        if (!documentId) throw new Error(`Backend chưa trả về mã của tệp “${file.name}”.`)
+        uploadedIds.push(documentId)
+      }
+
+      const refreshedDocs = await fetchDocuments(currentWsId)
+      const otherWorkspaceDocs = useAppStore.getState().documents.filter(
+        (doc) => doc.workspaceId !== currentWsId,
+      )
+      replaceDocumentsFromBackend([...otherWorkspaceDocs, ...refreshedDocs])
+
+      const indexedIds = uploadedIds.filter((id) => refreshedDocs.some(
+        (doc) => doc.id === id && doc.status === "ready",
+      ))
+      if (indexedIds.length > 0) {
+        setAttachedDocIds(indexedIds)
+      }
+      if (indexedIds.length !== uploadedIds.length) {
+        throw new Error("Một số tệp chưa lập chỉ mục xong. Hãy thử lại từ mục Tài liệu.")
+      }
+
+      toast({
+        title: indexedIds.length === 1 ? "Đã tải và thêm tệp vào cuộc trò chuyện" : `Đã tải và thêm ${indexedIds.length} tệp vào cuộc trò chuyện`,
+        tone: "success",
+      })
+    } catch (error) {
+      toast({
+        title: "Không thể thêm tệp",
+        description: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      })
+    } finally {
+      setUploadingAttachment(false)
     }
   }
 
@@ -1119,6 +1181,8 @@ export function ChatPage() {
             attachedDocIds={scopedAttachedDocIds}
             onToggleAttachDoc={toggleAttachDoc}
             onClearAttachedDocs={() => setAttachedDocIds([])}
+            onUploadAttachment={(files) => void handleUploadAttachment(files)}
+            uploadingAttachment={uploadingAttachment}
             backendOnline={status.backendOnline}
           />
         </div>

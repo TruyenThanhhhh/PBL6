@@ -13,6 +13,20 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
+_SUMMARY_QUERY_PATTERN = re.compile(
+    r"tóm\s*tắt|tổng\s*hợp|nội\s*dung\s*chính|overview|summari[sz]e|summary|"
+    r"liệt\s*kê\s+(?:tất\s+cả|các)|có\s+những\s+gì|gồm\s+những\s+gì",
+    re.IGNORECASE,
+)
+
+
+def _answer_token_limit(query: str, image_base64: Optional[str]) -> int:
+    if image_base64:
+        return 512
+    # Summaries should finish promptly and avoid spending time generating an
+    # unnecessarily long answer. Leave the normal limit for detailed questions.
+    return 900 if _SUMMARY_QUERY_PATTERN.search(query or "") else 2048
+
 
 def is_conversational_query(query: str) -> bool:
     """
@@ -315,7 +329,7 @@ async def generate_rag_answer(
                     "stream": False,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 512 if image_base64 else 2048,
+                        "num_predict": _answer_token_limit(query, image_base64),
                         "temperature": 0.50,
                         "top_p": 0.9,
                         "repeat_penalty": 1.15,
@@ -511,7 +525,7 @@ async def stream_rag_answer(
                     "stream": True,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 512 if image_base64 else 2048,
+                        "num_predict": _answer_token_limit(query, image_base64),
                         "temperature": 0.50,
                         "top_p": 0.9,
                         "repeat_penalty": 1.15,

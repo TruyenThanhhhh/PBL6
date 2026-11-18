@@ -1,5 +1,7 @@
 """Routes a turn through local retrieval and optionally adds online sources, supporting sync and streaming."""
+import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, AsyncGenerator
 from starlette.concurrency import run_in_threadpool
 
@@ -12,6 +14,7 @@ from app.services.retrieval_service import (
     detect_section_intent,
     is_global_summary_query,
 )
+from app.services.vocabulary_listing_service import extract_vocabulary_listing
 from app.services.web_search_service import search_web
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,29 @@ def _resolve_routing_modes(mode: str, query: str, include_web: Optional[bool] = 
     # Auto mode: ưu tiên Local RAG, chỉ kích hoạt Web khi có từ khóa thời gian hoặc được yêu cầu
     auto_web = bool(include_web) or _detect_web_intent(query)
     return auto_web, True
+
+
+def _is_document_summary_query(query: str) -> bool:
+    return is_global_summary_query(query) and bool(re.search(
+        r"\b(?:tài\s+liệu|file|tệp|pdf|slide|presentation|bài\s+trình\s+bày|nội\s+dung\s+chính)\b",
+        query,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _apply_document_scope_to_routing(
+    mode: str,
+    query: str,
+    selected_document_id: Optional[str],
+    document_ids: Optional[list[str]],
+    should_web: bool,
+    should_local: bool,
+) -> tuple[bool, bool]:
+    # A selected local source, or an explicit document-summary request, must
+    # not be silently ignored just because the UI is in Internet mode.
+    if (selected_document_id or document_ids or _is_document_summary_query(query)) and (mode or "").lower() == "web":
+        return False, True
+    return should_web, should_local
 
 
 def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] = None) -> str:
@@ -111,9 +137,10 @@ async def _retrieve_local_sources(
             search_spanning_chunks,
             workspace_id,
             query,
-            14,
+            32,
             selected_document_id,
             document_ids,
+            7800,
         )
         if spanning_chunks:
             return spanning_chunks
@@ -144,7 +171,29 @@ async def answer_query(
     mode: str = "auto",
 ) -> Dict[str, Any]:
     history = (history or [])[-8:]
+    if not image_base64:
+        vocabulary_listing = await run_in_threadpool(
+            extract_vocabulary_listing,
+            workspace_id,
+            query,
+            selected_document_id,
+            document_ids,
+        )
+        if vocabulary_listing:
+            vocabulary_listing.update({
+                "workspace_id": workspace_id,
+                "mode_requested": mode,
+                "retrieval": "exact_document_listing",
+                "selected_document_id": selected_document_id,
+                "web_search": "not_requested",
+                "network_fallback": False,
+            })
+            return vocabulary_listing
+
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
+    should_web, should_local = _apply_document_scope_to_routing(
+        mode, query, selected_document_id, document_ids, should_web, should_local
+    )
 
     local_sources: List[Dict[str, Any]] = []
     if should_local:
@@ -200,7 +249,33 @@ async def stream_query(
     collector: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[str, None]:
     history = (history or [])[-8:]
+    if not image_base64:
+        vocabulary_listing = await run_in_threadpool(
+            extract_vocabulary_listing,
+            workspace_id,
+            query,
+            selected_document_id,
+            document_ids,
+        )
+        if vocabulary_listing:
+            answer = vocabulary_listing["answer"]
+            citations = vocabulary_listing["citations"]
+            yield f"data: {json.dumps({'citations': citations, 'model_used': vocabulary_listing['model_used'], 'engine': vocabulary_listing['engine']}, ensure_ascii=False)}\n\n"
+            if collector is not None:
+                collector["full_answer"] = answer
+                collector["citations"] = citations
+                collector["model_used"] = vocabulary_listing["model_used"]
+                collector["engine"] = vocabulary_listing["engine"]
+            for offset in range(0, len(answer), 240):
+                yield f"data: {json.dumps({'delta': answer[offset:offset + 240]}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'answer': answer, 'done': True}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
+    should_web, should_local = _apply_document_scope_to_routing(
+        mode, query, selected_document_id, document_ids, should_web, should_local
+    )
 
     local_sources: List[Dict[str, Any]] = []
     if should_local:

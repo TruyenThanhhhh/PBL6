@@ -21,7 +21,7 @@ import {
 } from "@/components/ui"
 import type { AIMode, KnowledgeDocument, Notebook, Workspace } from "@/types"
 import { AI_MODEL_OPTIONS, getModeDescriptor } from "@/services/chat-service"
-import { formatBytes } from "@/utils/format"
+import { ACCEPTED_EXTENSIONS, formatBytes } from "@/utils/format"
 import { cn } from "@/utils/cn"
 
 export function ChatComposer({
@@ -41,6 +41,9 @@ export function ChatComposer({
   attachedDocIds,
   onToggleAttachDoc,
   onClearAttachedDocs,
+  onUploadAttachment,
+  uploadingAttachment,
+  backendOnline,
 }: {
   value: string
   onChange: (next: string) => void
@@ -59,9 +62,12 @@ export function ChatComposer({
   attachedDocIds: string[]
   onToggleAttachDoc: (docId: string) => void
   onClearAttachedDocs: () => void
+  onUploadAttachment: (files: File[]) => void
+  uploadingAttachment: boolean
   backendOnline?: boolean
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const attachmentInputRef = useRef<HTMLInputElement>(null)
   const attachedDocs = workspaceDocuments.filter((d) => attachedDocIds.includes(d.id))
   const currentModelOption =
     AI_MODEL_OPTIONS.find((m) => m.id === modelId) ?? AI_MODEL_OPTIONS[0]
@@ -254,71 +260,42 @@ export function ChatComposer({
                 ) : null}
               </DropdownMenu>
 
-              {/* Đính kèm tài liệu */}
-              <DropdownMenu
-                align="start"
+              {/* Chỉ mở trình chọn file mới; tài liệu đã tải được chọn ở menu phạm vi bên trái. */}
+              <Tooltip
+                content={uploadingAttachment ? "Đang tải và lập chỉ mục tài liệu" : "Thêm tệp từ thiết bị"}
                 side="top"
-                trigger={
-                  <button
-                    type="button"
-                    aria-label="Đính kèm tài liệu"
-                    title="Đính kèm tài liệu"
-                    className={cn(
-                      "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
-                      attachedDocIds.length > 0
-                        ? "bg-[#087F73]/10 font-semibold text-[#087F73]"
-                        : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
-                    )}
-                  >
-                    <Paperclip className="h-3.5 w-3.5" />
-                    {attachedDocIds.length > 0 ? (
-                      <span className="text-[10px]">{attachedDocIds.length}</span>
-                    ) : null}
-                  </button>
-                }
               >
-                <DropdownMenuLabel>Đính kèm tài liệu ({workspaceDocuments.length})</DropdownMenuLabel>
-                {workspaceDocuments.length === 0 ? (
-                  <div className="px-2.5 py-2 text-xs text-[#647C79]">
-                    Chưa có tài liệu trong không gian này.
-                  </div>
-                ) : (
-                  workspaceDocuments.map((doc) => {
-                    const isAttached = attachedDocIds.includes(doc.id)
-                    return (
-                      <DropdownMenuItem
-                        key={doc.id}
-                        icon={
-                          <span
-                            className={cn(
-                              "flex h-3.5 w-3.5 items-center justify-center rounded border",
-                              isAttached
-                                ? "border-[#087F73] bg-[#087F73] text-white"
-                                : "border-[#DCE7E4]",
-                            )}
-                          >
-                            {isAttached ? <Check className="h-2.5 w-2.5 stroke-[3]" /> : null}
-                          </span>
-                        }
-                        onClick={() => onToggleAttachDoc(doc.id)}
-                        className="flex items-center justify-between gap-3"
-                      >
-                        <span
-                          className={cn(
-                            "truncate text-xs",
-                            isAttached && "font-semibold text-[#087F73]",
-                          )}
-                        >
-                          {doc.fileName}
-                        </span>
-                        <span className="shrink-0 text-[10.5px] text-[#647C79]">
-                          {formatBytes(doc.fileSize)}
-                        </span>
-                      </DropdownMenuItem>
-                    )
-                  })
-                )}
-              </DropdownMenu>
+                <button
+                  type="button"
+                  aria-label="Thêm tệp từ thiết bị"
+                  title="Thêm tệp từ thiết bị"
+                  disabled={uploadingAttachment || !backendOnline}
+                  onClick={() => attachmentInputRef.current?.click()}
+                  className={cn(
+                    "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
+                    uploadingAttachment
+                      ? "cursor-wait text-[#087F73]"
+                      : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29] disabled:cursor-not-allowed disabled:opacity-40",
+                  )}
+                >
+                  {uploadingAttachment
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Paperclip className="h-3.5 w-3.5" />}
+                </button>
+              </Tooltip>
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                multiple
+                accept={ACCEPTED_EXTENSIONS.join(",")}
+                className="hidden"
+                onChange={(event) => {
+                  if (event.currentTarget.files?.length) {
+                    onUploadAttachment(Array.from(event.currentTarget.files))
+                  }
+                  event.currentTarget.value = ""
+                }}
+              />
 
               {/* Chọn mô hình LLM */}
               <DropdownMenu
