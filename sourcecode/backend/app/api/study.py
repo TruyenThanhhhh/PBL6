@@ -12,6 +12,7 @@ import asyncio
 from contextlib import suppress
 from typing import Any, Awaitable, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_user_optional
@@ -24,6 +25,7 @@ from app.services.study_service import (
     generate_ai_mindmap,
     generate_ai_notes,
     generate_ai_plan,
+    stream_ai_summary,
 )
 
 router = APIRouter(prefix="/api/v1/study", tags=["Study Tools (AI Learning)"])
@@ -127,6 +129,26 @@ async def create_study_summary(
             focus_prompt=req.focus_prompt,
             model=req.model or DEFAULT_LLM_MODEL,
         ),
+    )
+
+
+@router.post("/summary/stream")
+async def create_study_summary_stream(
+    req: StudySummaryRequest,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """
+    Stream bản tóm tắt học tập định dạng Markdown theo thời gian thực (SSE).
+    """
+    return StreamingResponse(
+        stream_ai_summary(
+            workspace_id=req.workspace_id,
+            document_id=req.document_id,
+            document_ids=req.document_ids,
+            focus_prompt=req.focus_prompt,
+            model=req.model or DEFAULT_LLM_MODEL,
+        ),
+        media_type="text/event-stream",
     )
 
 
