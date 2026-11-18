@@ -18,6 +18,7 @@ import {
   fetchAiPlanApi,
   fetchAiQuizApi,
   fetchAiSummaryApi,
+  streamAiSummaryApi,
 } from "./api"
 
 export type StudyToolId = "summary" | "notes" | "quiz" | "flashcards" | "mindmap" | "plan"
@@ -35,26 +36,29 @@ export interface StudySourceContext {
 }
 
 /**
- * Gọi AI Backend sinh tóm tắt học tập thực tế từ tài liệu trong kho tri thức
+ * Gọi AI Backend sinh tóm tắt học tập thực tế từ tài liệu trong kho tri thức (ưu tiên SSE stream thời gian thực)
  */
 export async function generateStudySummaryAsync(
   ctx: StudySourceContext,
   focusPrompt?: string,
   signal?: AbortSignal,
+  onStreamUpdate?: (partialMarkdown: string, title: string) => void,
 ): Promise<{ title: string; markdown: string; isMock: boolean; error?: string }> {
+  const payload = {
+    workspace_id: ctx.workspaceId,
+    document_id: ctx.document?.id ?? null,
+    document_ids: !ctx.document && ctx.documentsInScope.length > 0
+      ? ctx.documentsInScope.map((d) => d.id)
+      : null,
+    focus_prompt: focusPrompt,
+    model: getPreferredLlmModel(),
+  }
+
   try {
-    const res = await fetchAiSummaryApi(
-      {
-        workspace_id: ctx.workspaceId,
-        document_id: ctx.document?.id ?? null,
-        document_ids: !ctx.document && ctx.documentsInScope.length > 0
-          ? ctx.documentsInScope.map((d) => d.id)
-          : null,
-        focus_prompt: focusPrompt,
-        model: getPreferredLlmModel(),
-      },
-      signal,
-    )
+    const res = onStreamUpdate
+      ? await streamAiSummaryApi(payload, onStreamUpdate, signal)
+      : await fetchAiSummaryApi(payload, signal)
+
     if (res.markdown?.trim() && !res.error) {
       return {
         title: res.title,

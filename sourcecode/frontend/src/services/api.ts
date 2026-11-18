@@ -527,6 +527,79 @@ export async function fetchAiSummaryApi(
   })
 }
 
+export async function streamAiSummaryApi(
+  payload: StudySummaryPayload,
+  onProgress?: (partialMarkdown: string, title: string) => void,
+  signal?: AbortSignal,
+): Promise<StudySummaryResponse> {
+  const res = await authorizedFetch("/api/v1/study/summary/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  })
+
+  if (!res.body) {
+    return fetchAiSummaryApi(payload, signal)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder("utf-8")
+  let buffer = ""
+  let title = "Tóm tắt AI"
+  let markdown = ""
+  let isMock = false
+  let errorMsg: string | undefined
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() ?? ""
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line.startsWith("data:")) continue
+      const jsonStr = line.slice(5).trim()
+      if (!jsonStr) continue
+      try {
+        const evt = JSON.parse(jsonStr) as {
+          type?: string
+          title?: string
+          content?: string
+          markdown?: string
+          error?: string
+          is_mock?: boolean
+        }
+        if (evt.title) title = evt.title
+        if (typeof evt.is_mock === "boolean") isMock = evt.is_mock
+        if (evt.type === "token" && evt.content) {
+          markdown += evt.content
+          onProgress?.(markdown, title)
+        } else if (evt.type === "done") {
+          if (typeof evt.markdown === "string") {
+            markdown = evt.markdown
+          }
+          onProgress?.(markdown, title)
+        } else if (evt.type === "error") {
+          errorMsg = evt.error || "Quá trình sinh tóm tắt gặp lỗi."
+          isMock = true
+        }
+      } catch {
+        // Bỏ qua dòng SSE không hợp lệ
+      }
+    }
+  }
+
+  return {
+    title,
+    markdown: markdown.trim(),
+    is_mock: isMock,
+    error: errorMsg,
+  }
+}
+
 export interface StudyQuizPayload {
   workspace_id: string
   document_id?: string | null

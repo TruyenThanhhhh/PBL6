@@ -10,6 +10,7 @@ from app.config import (
 )
 
 logger = logging.getLogger(__name__)
+_RERANKER_FAILED = False
 
 
 @lru_cache(maxsize=1)
@@ -30,7 +31,8 @@ def rerank_documents(
     the download fails. Retrieval must keep working even without the optional
     reranker model.
     """
-    if not RERANK_ENABLED or not documents:
+    global _RERANKER_FAILED
+    if not RERANK_ENABLED or _RERANKER_FAILED or not documents:
         return documents[:top_k]
 
     if len(documents) <= 1:
@@ -59,6 +61,7 @@ def rerank_documents(
             enriched["rerank_score"] = float(score)
             result.append(enriched)
         return result
-    except Exception:
-        logger.exception("Reranker unavailable; falling back to RRF order")
+    except Exception as exc:
+        _RERANKER_FAILED = True
+        logger.warning("Reranker unavailable (%s); falling back to RRF order", exc)
         return documents[:top_k]

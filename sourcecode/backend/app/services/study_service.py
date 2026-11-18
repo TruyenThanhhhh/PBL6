@@ -4,9 +4,10 @@ Sử dụng LLM cục bộ (Ollama) kết hợp nội dung tài liệu thực t�
 """
 import json
 import logging
+import os
 import re
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from uuid import uuid4
 import httpx
 
@@ -59,11 +60,27 @@ _GENERIC_FOCUS_TERMS = {
     "nhap",
     "đề thi",
     "de thi",
+    "tóm tắt",
+    "tom tat",
+    "tóm tắt tài liệu",
+    "tom tat tai lieu",
+    "tóm tắt nội dung",
+    "tom tat noi dung",
+    "nội dung chính",
+    "noi dung chinh",
+    "ý chính",
+    "y chinh",
+    "tổng quan",
+    "tong quan",
+    "khái quát",
+    "khai quat",
+    "summary",
+    "summarize",
 }
 
 
 def _is_generic_focus_prompt(focus_prompt: Optional[str]) -> bool:
-    """Kiểm tra xem chuỗi chủ đề chỉ là nhãn đặt tên chung (vd: 'test', 'kiểm tra 1') hay chủ đề thực sự."""
+    """Kiểm tra xem chuỗi chủ đề chỉ là nhãn/yêu cầu chung (vd: 'test', 'tóm tắt nội dung chính') hay chủ đề cụ thể."""
     clean = (focus_prompt or "").strip().lower()
     if not clean:
         return True
@@ -71,6 +88,11 @@ def _is_generic_focus_prompt(focus_prompt: Optional[str]) -> bool:
         return True
     if re.match(
         r"^(?:test|quiz|đề|de|bài|bai|kiểm tra|kiem tra|ôn tập|on tap|trắc nghiệm|trac nghiem)\s*#?\d*$",
+        clean,
+    ):
+        return True
+    if re.match(
+        r"^(?:hãy\s+|xin\s+|vui\s+lòng\s+|giúp\s+mình\s+)?(?:tóm\s*tắt|tom\s*tat|tổng\s*hợp|tong\s*hop|tổng\s*quan|tong\s*quan|nội\s*dung\s*chính|noi\s*dung\s*chinh|ý\s*chính|y\s*chinh|khái\s*quát|khai\s*quat|summarize|summary)(?:\s+(?:nội\s*dung|noi\s*dung|chính|chinh|cốt\s*lõi|cot\s*loi|của|cua|trong|tài\s*liệu|tai\s*lieu|file|tệp|bài|bai|học|hoc|này|nay|đó|do|toàn\s*bộ|toan\s*bo|chi\s*tiết|chi\s*tiet|ngắn\s*gọn|ngan\s*gon))*[\.\!\?]*$",
         clean,
     ):
         return True
@@ -155,7 +177,7 @@ def _get_document_context_items(
         )
         return total_len < max_chars and len(source_refs) < max_chunks
 
-    # 1. Nếu có yêu cầu trọng tâm thực sự (không phải nhãn 'test'/'quiz'), ưu tiên Hybrid Search
+    # 1. Nếu có yêu cầu trọng tâm thực sự, ưu tiên truy vấn nhanh qua chỉ mục FTS5 (BM25 < 5ms) trước để tránh trễ CPU
     semantic_focus = (
         focus_prompt.strip()
         if focus_prompt and not _is_generic_focus_prompt(focus_prompt)
@@ -163,34 +185,50 @@ def _get_document_context_items(
     )
     if semantic_focus:
         try:
-            from app.services.retrieval_service import search_relevant_chunks
+            tokens = [
+                t
+                for t in re.findall(r"[\w]{2,}", semantic_focus, flags=re.UNICODE)
+                if t.lower() not in {"tóm", "tắt", "nội", "dung", "tài", "liệu", "trong", "của", "các", "những"}
+            ]
+            if tokens:
+                fts_query = " OR ".join(f'"{t}"' for t in tokens[:8])
+                conn_fts = get_db_connection()
+                try:
+                    cur_fts = conn_fts.cursor()
+                    resolved_fts_ids = _resolve_document_ids(cur_fts, workspace_id, document_id, document_ids)
+                    if resolved_fts_ids:
+                        placeholders = ",".join("?" for _ in resolved_fts_ids)
+                        fts_rows = cur_fts.execute(
+                            f"""
+                            SELECT c.content, c.document_id, d.file_name, c.page_number, c.chunk_index
+                            FROM chunks_fts f
+                            JOIN document_chunks c ON c.id = f.chunk_id
+                            JOIN documents d ON d.id = c.document_id
+                            WHERE f.workspace_id = ?
+                              AND c.document_id IN ({placeholders})
+                              AND chunks_fts MATCH ?
+                            ORDER BY bm25(chunks_fts)
+                            LIMIT ?
+                            """,
+                            (workspace_id, *resolved_fts_ids, fts_query, max_chunks),
+                        ).fetchall()
+                        for row in fts_rows:
+                            ok = _append_chunk(
+                                str(row["content"] or ""),
+                                row["document_id"],
+                                str(row["file_name"] or "Tài liệu"),
+                                int(row["page_number"] or 1),
+                                row["chunk_index"],
+                            )
+                            if not ok:
+                                break
+                finally:
+                    conn_fts.close()
 
-            relevant = search_relevant_chunks(
-                workspace_id=workspace_id,
-                query=semantic_focus,
-                top_k=max_chunks,
-                document_id=document_id,
-                document_ids=document_ids,
-            )
-            if relevant:
-                for r in relevant:
-                    ok = _append_chunk(
-                        str(r.get("content") or ""),
-                        r.get("document_id"),
-                        str(r.get("document_name") or "Tài liệu"),
-                        int(r.get("page_number") or 1),
-                        r.get("chunk_index"),
-                    )
-                    if not ok:
-                        break
-                if len(source_refs) >= min(6, max_chunks) or total_len >= int(max_chars * 0.7):
-                    return "\n\n".join(parts), source_refs
+            if len(source_refs) >= min(5, max_chunks) or total_len >= int(max_chars * 0.65):
+                return "\n\n".join(parts), source_refs
         except Exception as exc:
-            logger.warning("Truy xuất theo trọng tâm thất bại, chuyển về spanning sampling: %s", exc)
-            source_refs.clear()
-            parts.clear()
-            seen_chunks.clear()
-            total_len = 0
+            logger.debug("Truy vấn nhanh FTS5 không khớp, bổ sung bằng spanning sampling: %s", exc)
 
     # 2. Spanning Sampling: Lấy mẫu trải đều qua toàn bộ tài liệu trong phạm vi đã chọn
     conn = get_db_connection()
@@ -390,6 +428,59 @@ async def _call_ollama_chat(
         return content
 
 
+def _prepare_summary_prompts(
+    workspace_id: str,
+    document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+    focus_prompt: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """Chuẩn bị ngữ cảnh tinh gọn (tối ưu tốc độ prefill trên CPU) và cặp system/user prompt cho Tóm tắt AI."""
+    context, source_refs = _get_document_context_items(
+        workspace_id=workspace_id,
+        document_id=document_id,
+        document_ids=document_ids,
+        max_chunks=6,
+        max_chars=1500,
+        focus_prompt=focus_prompt,
+        numbered_sources=False,
+    )
+    clean_focus = (focus_prompt or "").strip()
+    semantic_focus = clean_focus if clean_focus and not _is_generic_focus_prompt(clean_focus) else None
+    primary_doc = source_refs[0]["documentName"] if source_refs else "Tài liệu học tập"
+    title_label = semantic_focus or clean_focus or primary_doc
+    title_suffix = (title_label[:42] + "...") if len(title_label) > 42 else title_label
+    summary_title = f"Tóm tắt AI · {title_suffix}"
+
+    if not context:
+        return "", "", summary_title
+
+    vocab_entries = _extract_vocab_entries(source_refs)
+    if len(vocab_entries) >= 8:
+        sampled_lines: List[str] = [f"Tài liệu từ vựng: {primary_doc} (mẫu từ vựng tiêu biểu):"]
+        step = max(1, len(vocab_entries) // 12)
+        for idx in range(0, len(vocab_entries), step):
+            ve = vocab_entries[idx]
+            sampled_lines.append(f"- {ve['term']} ({ve['reading']}): {ve['meaning']}")
+            if len(sampled_lines) >= 13:
+                break
+        effective_context = "\n".join(sampled_lines)
+    else:
+        effective_context = context[:1500]
+
+    system_prompt = (
+        "Bạn là Trợ lý Học tập AI. Tóm tắt ngắn gọn tài liệu bằng tiếng Việt (Markdown) theo 3 mục:\n"
+        "# 📌 Tổng Quan Cốt Lõi\n"
+        "## 🔑 Các Luận Điểm & Kiến Thức Chính\n"
+        "## 🎯 Ghi Nhớ & Ứng Dụng"
+    )
+
+    user_prompt = f"TÀI LIỆU:\n{effective_context}\n\n"
+    if semantic_focus:
+        user_prompt += f"TRỌNG TÂM: {semantic_focus}\n\n"
+    user_prompt += "Tóm tắt súc tích bằng tiếng Việt:"
+    return system_prompt, user_prompt, summary_title
+
+
 async def generate_ai_summary(
     workspace_id: str,
     document_id: Optional[str] = None,
@@ -398,17 +489,12 @@ async def generate_ai_summary(
     model: str = DEFAULT_LLM_MODEL,
 ) -> Dict[str, Any]:
     """
-    Sinh bản tóm tắt học tập có cấu trúc Markdown từ tài liệu thực.
+    Sinh bản tóm tắt học tập có cấu trúc Markdown từ tài liệu thực (tối ưu tốc độ phản hồi trên CPU).
     """
-    context = _get_document_context(
-        workspace_id,
-        document_id,
-        document_ids,
-        max_chunks=16,
-        max_chars=8000,
-        focus_prompt=focus_prompt,
+    system_prompt, user_prompt, summary_title = _prepare_summary_prompts(
+        workspace_id, document_id, document_ids, focus_prompt
     )
-    if not context:
+    if not user_prompt:
         return {
             "title": "Tóm tắt tài liệu",
             "markdown": "Chưa tìm thấy nội dung văn bản từ các tài liệu được chọn. Vui lòng kiểm tra lại tài liệu đã tải lên.",
@@ -424,28 +510,15 @@ async def generate_ai_summary(
             "is_mock": True,
         }
 
-    system_prompt = (
-        "Bạn là Trợ lý Học tập và Nghiên cứu AI thông thái. "
-        "Nhiệm vụ của bạn là đọc hiểu sâu sắc ngữ cảnh tài liệu được cung cấp và sinh một bản tóm tắt học tập "
-        "toàn diện, rõ ràng, có cấu trúc chặt chẽ bằng định dạng Markdown (tiếng Việt).\n\n"
-        "CẤU TRÚC BẢN TÓM TẮT:\n"
-        "# 📌 Tổng Quan Cốt Lõi (1-2 đoạn văn súc tích, nắm bắt bản chất vấn đề)\n"
-        "## 🔑 Các Khái Niệm / Luận Điểm Then Chốt (gạch đầu dòng phân tích rõ nguyên nhân, bản chất và ý nghĩa)\n"
-        "## 💡 Phân Tích & Điểm Cần Lưu Ý (nếu có các bước, phân loại hoặc công thức/nguyên tắc)\n"
-        "## 🎯 Kết Luận & Ứng Dụng Thực Tiễn"
-    )
-
-    clean_focus = (focus_prompt or "").strip()
-    user_prompt = f"TÀI LIỆU NGUỒN THAM KHẢO:\n{context}\n\n"
-    if clean_focus:
-        user_prompt += f"YÊU CẦU TRỌNG TÂM ĐẶC BIỆT CỦA NGƯỜI DÙNG: {clean_focus}\n\n"
-    user_prompt += "Hãy tạo bản tóm tắt học tập theo cấu trúc trên:"
-
     try:
-        markdown_res = await _call_ollama_chat(system_prompt, user_prompt, model=chosen_model)
-        title_suffix = (clean_focus[:40] + "...") if len(clean_focus) > 40 else (clean_focus or "Tài liệu học tập")
+        markdown_res = await _call_ollama_chat(
+            system_prompt,
+            user_prompt,
+            model=chosen_model,
+            num_predict=450,
+        )
         return {
-            "title": f"Tóm tắt AI · {title_suffix}",
+            "title": summary_title,
             "markdown": markdown_res,
             "is_mock": False,
         }
@@ -457,6 +530,77 @@ async def generate_ai_summary(
             "error": f"Quá trình sinh tóm tắt gặp lỗi: {str(exc)}",
             "is_mock": True,
         }
+
+
+async def stream_ai_summary(
+    workspace_id: str,
+    document_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+    focus_prompt: Optional[str] = None,
+    model: str = DEFAULT_LLM_MODEL,
+) -> AsyncIterator[str]:
+    """
+    Stream bản tóm tắt học tập theo thời gian thực (SSE) để hiển thị tức thì từng câu ngay khi AI đang viết.
+    """
+    system_prompt, user_prompt, summary_title = _prepare_summary_prompts(
+        workspace_id, document_id, document_ids, focus_prompt
+    )
+    if not user_prompt:
+        yield f"data: {json.dumps({'type': 'done', 'title': 'Tóm tắt tài liệu', 'markdown': 'Chưa tìm thấy nội dung văn bản từ các tài liệu được chọn.', 'is_mock': False}, ensure_ascii=False)}\n\n"
+        return
+
+    chosen_model, model_error = await _ensure_ollama_chat_model(model)
+    if model_error or not chosen_model:
+        yield f"data: {json.dumps({'type': 'error', 'title': 'Tóm tắt tài liệu', 'error': model_error or 'Dịch vụ AI Ollama chưa chạy.', 'is_mock': True}, ensure_ascii=False)}\n\n"
+        return
+
+    yield f"data: {json.dumps({'type': 'meta', 'title': summary_title, 'is_mock': False}, ensure_ascii=False)}\n\n"
+
+    payload: Dict[str, Any] = {
+        "model": chosen_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": True,
+        "keep_alive": "30m",
+        "options": {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "num_predict": 450,
+            "num_ctx": 4096,
+        },
+    }
+
+    collected: List[str] = []
+    timeout = httpx.Timeout(OLLAMA_TIMEOUT, connect=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
+                if resp.status_code >= 400:
+                    body_bytes = await resp.aread()
+                    detail = body_bytes.decode("utf-8", errors="ignore").strip()[:300]
+                    raise RuntimeError(f"Ollama trả về lỗi {resp.status_code}: {detail or resp.reason_phrase}")
+
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk_data = json.loads(line)
+                    except Exception:
+                        continue
+                    token = str(chunk_data.get("message", {}).get("content") or "")
+                    if token:
+                        collected.append(token)
+                        yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
+                    if chunk_data.get("done"):
+                        break
+
+        full_md = "".join(collected).strip()
+        yield f"data: {json.dumps({'type': 'done', 'title': summary_title, 'markdown': full_md, 'is_mock': False}, ensure_ascii=False)}\n\n"
+    except Exception as exc:
+        logger.exception("Lỗi khi stream tóm tắt bằng AI: %s", exc)
+        yield f"data: {json.dumps({'type': 'error', 'title': 'Tóm tắt tài liệu', 'error': f'Quá trình sinh tóm tắt gặp lỗi: {str(exc)}', 'is_mock': True}, ensure_ascii=False)}\n\n"
 
 
 _VOCAB_ROW_PATTERN = re.compile(

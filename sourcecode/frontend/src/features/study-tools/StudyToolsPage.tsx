@@ -467,19 +467,30 @@ export function StudyToolsPage() {
     const reqDocName = activeDoc?.fileName ?? null
     const reqFocus = focusPrompt.trim()
     setIsGeneratingSummary(true)
+    setSavedSummaryId(null)
+    setSummarySourceMeta({
+      documentId: reqDocId,
+      documentName: reqDocName,
+      focusPrompt: reqFocus,
+    })
     try {
-      const res = await generateStudySummaryAsync(sourceContext, focusPrompt, controller.signal)
+      const res = await generateStudySummaryAsync(
+        sourceContext,
+        focusPrompt,
+        controller.signal,
+        (partialMarkdown, streamingTitle) => {
+          if (controller.signal.aborted) return
+          setSummaryWsId(reqWsId)
+          setSummaryTitle(streamingTitle)
+          setSummaryIsMock(false)
+          setCustomSummary(partialMarkdown)
+        },
+      )
       if (controller.signal.aborted) return
       setSummaryWsId(reqWsId)
       setCustomSummary(res.markdown)
       setSummaryTitle(res.title)
       setSummaryIsMock(res.isMock)
-      setSummarySourceMeta({
-        documentId: reqDocId,
-        documentName: reqDocName,
-        focusPrompt: reqFocus,
-      })
-      setSavedSummaryId(null)
       toast({
         title: res.isMock ? "Đã tạo bản tóm tắt (Mô phỏng)" : "Đã tạo bản tóm tắt bằng AI thành công",
         description: res.isMock
