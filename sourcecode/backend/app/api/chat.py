@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,6 +20,10 @@ from app.config import (
 )
 from app.database import get_db_connection
 from app.services.ai_router import answer_query, stream_query
+from app.services.hardware_profile_service import (
+    get_hardware_profile_summary,
+    set_selected_profile_mode,
+)
 from app.services.llm_service import check_ollama_status
 from app.services.web_search_service import search_web
 
@@ -71,6 +75,7 @@ class ChatStreamRequest(BaseModel):
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
+    reasoning_mode: Optional[Literal["auto", "fast", "deep"]] = "auto"
     top_k: int = Field(default=8, ge=1, le=30)
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
     image_base64: Optional[str] = None
@@ -126,17 +131,41 @@ def _ensure_conversation_record(
         )
 
 
+class HardwareProfileUpdateRequest(BaseModel):
+    mode: Literal["auto", "eco", "balanced", "performance"]
+
+
 @router.get("/status")
 async def get_system_status():
     ollama_info = await check_ollama_status()
+    hardware_profile = get_hardware_profile_summary()
     return {
         "status": "online",
         "database": "SQLite FTS5 Local",
         "ollama": ollama_info,
-        "dense_retrieval": {"enabled": ENABLE_DENSE_RETRIEVAL, "model": EMBEDDING_MODEL},
+        "dense_retrieval": {
+            "enabled": ENABLE_DENSE_RETRIEVAL,
+            "model": EMBEDDING_MODEL,
+            "rerank_enabled": hardware_profile["runtime"]["rerank_enabled"],
+            "fts_first_shortcut": hardware_profile["runtime"]["fts_first_shortcut"],
+        },
+        "hardware_profile": hardware_profile,
         "web_search_enabled": WEB_SEARCH_ENABLED,
         "google_auth_enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
     }
+
+
+@router.patch("/system/hardware-profile")
+async def update_hardware_profile(
+    req: HardwareProfileUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Chuyển đổi hồ sơ hiệu năng AI (Auto / Eco / Balanced / Performance)."""
+    try:
+        profile = set_selected_profile_mode(req.mode)
+        return {"hardware_profile": profile, "message": f"Đã chuyển sang chế độ {profile['active_label']}"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # =============================================================================
@@ -146,6 +175,7 @@ async def get_system_status():
 @router.post("/chat/stream")
 async def stream_chat_knowledge_base(
     req: ChatStreamRequest,
+    request: Request,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     """
@@ -199,22 +229,26 @@ async def stream_chat_knowledge_base(
                 selected_document_id=req.selected_document_id,
                 document_ids=req.document_ids,
                 collector=collector,
+                is_disconnected=request.is_disconnected,
+                reasoning_mode=req.reasoning_mode or "auto",
             ):
                 yield chunk
         finally:
             full_ans = collector.get("full_answer", "")
             citations = collector.get("citations", [])
+            action_res = collector.get("action_result")
             asst_model = collector.get("model_used", req.model or DEFAULT_LLM_MODEL)
             if full_ans:
                 db = get_db_connection()
                 try:
                     asst_msg_id = str(uuid.uuid4())
+                    action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
                     db.execute(
                         """
-                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, mode_used)
-                        VALUES (?, ?, 'assistant', ?, ?, ?)
+                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used)
+                        VALUES (?, ?, 'assistant', ?, ?, ?, ?)
                         """,
-                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), req.mode or "auto"),
+                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), action_json, req.mode or "auto"),
                     )
                     db.execute(
                         """
@@ -475,7 +509,7 @@ def get_conversation_messages(
 
         rows = conn.execute(
             """
-            SELECT id, sender, content, citations_json, mode_used, latency_seconds, created_at
+            SELECT id, sender, content, citations_json, action_json, mode_used, latency_seconds, created_at
             FROM chat_messages
             WHERE session_id = ?
             ORDER BY created_at ASC
@@ -489,6 +523,10 @@ def get_conversation_messages(
                 citations = json.loads(r["citations_json"]) if r["citations_json"] else []
             except Exception:
                 citations = []
+            try:
+                action_result = json.loads(r["action_json"]) if r["action_json"] else None
+            except Exception:
+                action_result = None
             formatted_citations = []
             for idx, c in enumerate(citations):
                 formatted_citations.append({
@@ -508,6 +546,7 @@ def get_conversation_messages(
                 "content": r["content"],
                 "createdAt": r["created_at"],
                 "citations": formatted_citations,
+                **({"actionArtifact": action_result} if action_result else {}),
                 "modeUsed": r["mode_used"] or "auto",
                 "streaming": False,
             })

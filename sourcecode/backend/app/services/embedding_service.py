@@ -27,12 +27,21 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 
+def _get_runtime_profile() -> dict:
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+        return get_active_profile_config()
+    except Exception:
+        return {"cpu_threads_cap": max(4, os.cpu_count() or 4), "embed_batch_size": EMBEDDING_BATCH_SIZE}
+
+
 @lru_cache(maxsize=1)
 def _get_sentence_transformer():
     import torch
     from sentence_transformers import SentenceTransformer
 
-    cpu_threads = max(4, os.cpu_count() or 4)
+    profile = _get_runtime_profile()
+    cpu_threads = int(profile.get("cpu_threads_cap") or max(4, os.cpu_count() or 4))
     try:
         torch.set_num_threads(cpu_threads)
     except Exception:
@@ -57,9 +66,18 @@ def _get_fastembed_model():
 
 
 def _embed_with_sentence_transformers(texts: List[str]) -> List[List[float]]:
+    profile = _get_runtime_profile()
+    try:
+        import torch
+        torch.set_num_threads(int(profile.get("cpu_threads_cap") or 4))
+    except Exception:
+        pass
+
+    profile_batch = int(profile.get("embed_batch_size") or EMBEDDING_BATCH_SIZE)
+    batch_size = min(profile_batch, 12) if profile.get("id") == "eco" else max(EMBEDDING_BATCH_SIZE, profile_batch)
     vectors = _get_sentence_transformer().encode(
         texts,
-        batch_size=max(EMBEDDING_BATCH_SIZE, 32),
+        batch_size=max(1, batch_size),
         normalize_embeddings=True,
         show_progress_bar=False,
         convert_to_numpy=True,

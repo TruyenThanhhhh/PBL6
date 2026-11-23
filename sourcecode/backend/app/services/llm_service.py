@@ -2,7 +2,7 @@ import json
 import httpx
 import re
 import logging
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Awaitable, Callable
 from app.config import (
     OLLAMA_BASE_URL,
     DEFAULT_LLM_MODEL,
@@ -71,25 +71,244 @@ async def check_ollama_status() -> Dict[str, Any]:
     }
 
 
+_MAX_RAG_CONTEXT_TOKENS = 2200
+_MAX_RAG_HISTORY_TOKENS = 550
+
+
+def _resolve_llm_runtime_budget() -> tuple[int, int, int, int]:
+    """Lấy ngân sách token & tham số Ollama theo hồ sơ phần cứng hiện hành."""
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+
+        cfg = get_active_profile_config()
+        return (
+            int(cfg.get("max_context_tokens") or _MAX_RAG_CONTEXT_TOKENS),
+            int(cfg.get("max_history_tokens") or _MAX_RAG_HISTORY_TOKENS),
+            int(cfg.get("num_ctx") or 4096),
+            int(cfg.get("num_predict") or 2048),
+        )
+    except Exception:
+        return _MAX_RAG_CONTEXT_TOKENS, _MAX_RAG_HISTORY_TOKENS, 4096, 2048
+
+
+async def warmup_ollama_model(model_name: Optional[str] = None) -> bool:
+    """Làm nóng model Ollama vào bộ nhớ (keep_alive=30m) bằng prompt rỗng để loại bỏ độ trễ lần hỏi đầu."""
+    status = await check_ollama_status()
+    if not status.get("running"):
+        return False
+    chosen = resolve_available_chat_model(
+        model_name or DEFAULT_LLM_MODEL,
+        status.get("available_models", []),
+    )
+    if not chosen:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=5.0)) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={"model": chosen, "prompt": "", "stream": False, "keep_alive": "30m"},
+            )
+            return resp.status_code == 200
+    except Exception:
+        logger.debug("Ollama warm-up skipped/failed for %s", chosen)
+        return False
+
+
+def _estimate_tokens(text: str) -> int:
+    """Ước lượng an toàn số token cho ngữ liệu pha trộn tiếng Việt / Nhật (CJK) / tiếng Anh."""
+    if not text:
+        return 0
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    ascii_cnt = len(text) - non_ascii
+    return max(1, int(non_ascii * 0.9 + ascii_cnt * 0.32))
+
+
+def _build_bounded_history_messages(
+    history: Optional[List[Dict[str, str]]],
+    max_turns: int = 4,
+    max_tokens: Optional[int] = None,
+) -> List[Dict[str, str]]:
+    """Giữ lịch sử hội thoại cô đọng trong ngân sách token để không đẩy [Tài liệu 1] ra khỏi cửa sổ ngữ cảnh."""
+    if max_tokens is None:
+        _, max_tokens, _, _ = _resolve_llm_runtime_budget()
+    selected: List[Dict[str, str]] = []
+    used_tokens = 0
+    for turn in reversed((history or [])[-max_turns:]):
+        role = turn.get("role")
+        raw_content = turn.get("content")
+        if role not in {"user", "assistant"} or not raw_content:
+            continue
+        content = raw_content
+        if "---GỢI Ý TIẾP THEO---" in content:
+            content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+        cap = 220 if max_tokens <= 300 else (320 if role == "user" else 480)
+        trimmed = content[:cap].strip()
+        if not trimmed:
+            continue
+        toks = _estimate_tokens(trimmed)
+        if selected and used_tokens + toks > max_tokens:
+            break
+        selected.append({"role": role, "content": trimmed})
+        used_tokens += toks
+    selected.reverse()
+    return selected
+
+
+_TABULAR_STOPWORDS = {
+    "là", "gì", "của", "từ", "trong", "file", "tệp", "tài", "liệu", "nghĩa",
+    "cho", "tôi", "biết", "xem", "hãy", "nêu", "giải", "thích", "và", "với",
+}
+
+
+def _extract_tabular_match_excerpt(query: str, body: str, max_len: int = 220) -> Optional[str]:
+    """Khi chunk dạng bảng Excel ('|') chứa nhiều từ, trích nhanh vùng quanh từ khóa khớp để LLM & UI thấy ngay."""
+    if body.count("|") < 6 or not query:
+        return None
+    cjk_terms = re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+", query)
+    word_terms = [
+        w for w in re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE).split()
+        if len(w) >= 3 and w.lower() not in _TABULAR_STOPWORDS
+    ]
+    terms = cjk_terms + word_terms
+    if not terms:
+        return None
+
+    body_lower = body.lower()
+    best_pos = -1
+    for term in terms:
+        pos = body_lower.find(term.lower())
+        if pos != -1 and (best_pos == -1 or pos < best_pos):
+            best_pos = pos
+    if best_pos == -1:
+        return None
+
+    raw_start = max(0, best_pos - 60)
+    if raw_start > 0:
+        pipe_idx = body.find("|", raw_start, best_pos)
+        nl_idx = body.find("\n", raw_start, best_pos)
+        snapped = max(pipe_idx, nl_idx)
+        start = snapped + 1 if snapped != -1 else raw_start
+    else:
+        start = 0
+
+    end = min(len(body), start + max_len)
+    if end < len(body):
+        next_nl = body.find("\n", best_pos, end)
+        if next_nl != -1:
+            end = next_nl
+        else:
+            last_pipe = body.rfind("|", best_pos, end)
+            if last_pipe > best_pos + 10:
+                end = last_pipe
+
+    excerpt = body[start:end].strip(" |\n")
+    return excerpt or None
+
+
+_LAB_STEPS_CUE_RE = re.compile(
+    r"\b(?:bài|chương|lab|bước|thực\s*hành|cách\s*làm|hướng\s*dẫn|quy\s*trình|step)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_GLOBAL_SUMMARY_CUE_RE = re.compile(
+    r"\b(?:tóm\s*tắt|tổng\s*hợp|toàn\s*bộ|các\s*bài|các\s*chương|liệt\s*kê|overview|summary)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _build_dynamic_system_prompt(
+    query: str,
+    has_local: bool,
+    has_web: bool,
+    image_base64: Optional[str] = None,
+) -> str:
+    """Tạo system prompt gọn nhẹ theo ngữ cảnh (Dynamic Prompt Slimming) để giảm thời gian prefill."""
+    sections: List[str] = [
+        "Bạn là Trợ lý Tri thức Cá nhân AI (Personal Knowledge AI) — chuyên gia phân tích chính xác, khách quan và dễ hiểu.\n\n"
+        "## NGUYÊN TẮC CỐT LÕI:\n"
+        "1. ĐỌC HIỂU SÂU & TRUNG THỰC: Tổng hợp mạch lạc từ nguồn được cung cấp; chỉ gắn nhãn trích dẫn [1], [2]... nếu nguồn đó THỰC SỰ đề cập nội dung tương ứng.\n"
+        "2. KHI KHO TÀI LIỆU KHÔNG CÓ THÔNG TIN: Nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].' rồi mới giải đáp bằng kiến thức chuẩn xác của bạn (tuyệt đối không gắn nhãn trích dẫn giả)."
+    ]
+
+    if has_local and _LAB_STEPS_CUE_RE.search(query or ""):
+        sections.append(
+            "3. TRÌNH BÀY HƯỚNG DẪN / BÀI THỰC HÀNH: Nêu mục tiêu ngắn gọn, đánh số liên tục 'Bước 1:', 'Bước 2:'... đủ quy trình, nêu rõ thao tác/lệnh cụ thể và tuyệt đối không lặp lại nội dung giữa các bước."
+        )
+    if _GLOBAL_SUMMARY_CUE_RE.search(query or ""):
+        sections.append(
+            "- TỔNG HỢP TOÀN TÀI LIỆU: Liệt kê rõ ràng theo thứ tự từng phần/bài/chương kèm mục tiêu và ý chính."
+        )
+    if has_web:
+        sections.append(
+            "4. KHI DÙNG NGUỒN INTERNET: Tổng hợp tất cả nguồn web thành MỘT câu trả lời thống nhất hoàn chỉnh (không tách vụn '[1]: ... [2]: ...'); nêu trực tiếp số liệu nếu hỏi thời tiết/tỷ giá/quy trình."
+        )
+    if image_base64:
+        sections.append(
+            "- KHI CÓ ẢNH ĐÍNH KÈM: Đọc kỹ chữ/số/chi tiết trong ảnh và trả lời trực diện vào trọng tâm câu hỏi."
+        )
+
+    sections.append(
+        "5. ĐỊNH DẠNG & GỢI Ý TIẾP THEO:\n"
+        "   - Trả lời bằng tiếng Việt rõ ràng (Markdown + công thức KaTeX `$x$` / `$$x$$`), hiểu ngữ cảnh lịch sử hội thoại.\n"
+        "   - Cuối câu trả lời LUÔN tạo đúng 3 gợi ý câu hỏi tiếp theo theo định dạng:\n"
+        "---GỢI Ý TIẾP THEO---\n"
+        "- [Gợi ý 1]\n"
+        "- [Gợi ý 2]\n"
+        "- [Gợi ý 3]"
+    )
+    return "\n\n".join(sections)
+
+
 def _prepare_rag_prompts_and_citations(
     query: str,
     context_chunks: List[Dict[str, Any]],
     web_sources: Optional[List[Dict[str, Any]]] = None,
     image_base64: Optional[str] = None,
+    max_context_tokens: Optional[int] = None,
 ) -> tuple[str, str, List[Dict[str, Any]]]:
+    if max_context_tokens is None:
+        max_context_tokens, _, _, _ = _resolve_llm_runtime_budget()
     context_text = ""
     citations: List[Dict[str, Any]] = []
+    used_tokens = 0
 
-    for i, chunk in enumerate(context_chunks):
-        ref_id = i + 1
+    for chunk in context_chunks:
+        ref_id = len(citations) + 1
         page_label = chunk.get("page_label") or (
             f"Trang {chunk['page_number']}" if chunk.get("page_number") is not None else ""
         )
-        page_suffix = f" ({page_label})" if page_label else ""
-        context_text += (
-            f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
-            f"{chunk['content']}\n"
+        ver_num = int(chunk.get("version_number") or 1)
+        eff_date = chunk.get("effective_date")
+        meta_parts: List[str] = []
+        if ver_num > 1:
+            meta_parts.append(f"Phiên bản v{ver_num}")
+        if eff_date:
+            meta_parts.append(f"Hiệu lực: {eff_date}")
+        if page_label:
+            meta_parts.append(page_label)
+        page_suffix = f" ({' · '.join(meta_parts)})" if meta_parts else ""
+        header = f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
+        raw_body = str(chunk.get("content", ""))
+        focused_excerpt = _extract_tabular_match_excerpt(query, raw_body)
+        body = (
+            f"[Khớp trực tiếp]: {focused_excerpt}\n{raw_body}"
+            if focused_excerpt
+            else raw_body
         )
+        block = f"{header}{body}\n"
+        block_tokens = _estimate_tokens(block)
+
+        if citations and used_tokens + block_tokens > max_context_tokens:
+            break
+        if not citations and block_tokens > max_context_tokens:
+            # Đảm bảo Tài liệu 1 luôn nằm gọn trong cửa sổ ngữ cảnh
+            max_chars = max(800, int(max_context_tokens * 1.4))
+            body = body[:max_chars]
+            block = f"{header}{body}\n"
+            block_tokens = _estimate_tokens(block)
+
+        context_text += block
+        used_tokens += block_tokens
+        snippet_src = focused_excerpt if focused_excerpt else raw_body
         citations.append({
             "ref_id": ref_id,
             "source_type": "document",
@@ -98,7 +317,7 @@ def _prepare_rag_prompts_and_citations(
             "page_number": chunk.get("page_number"),
             "page_label": page_label or None,
             "chunk_index": chunk.get("chunk_index"),
-            "snippet": chunk["content"][:200] + "..." if len(chunk["content"]) > 200 else chunk["content"]
+            "snippet": snippet_src[:200] + "..." if len(snippet_src) > 200 else snippet_src,
         })
 
     for source in (web_sources or []):
@@ -112,7 +331,7 @@ def _prepare_rag_prompts_and_citations(
                 domain = urlparse(url).netloc.replace("www.", "")
             except Exception:
                 domain = ""
-        
+
         # Tạo tiêu đề nguồn web rõ ràng, tránh generic "Web" hay "Nguồn Web"
         if not raw_title or raw_title.lower() in {"web", "nguồn web"}:
             clean_title = domain or "Trang web tham khảo"
@@ -121,56 +340,27 @@ def _prepare_rag_prompts_and_citations(
         else:
             clean_title = raw_title
 
-        context_text += f"\n--- [Nguồn web {ref_id}]: {clean_title} ---\n{source.get('snippet', '')}\n"
+        snippet_text = str(source.get("snippet", ""))
+        block = f"\n--- [Nguồn web {ref_id}]: {clean_title} ---\n{snippet_text}\n"
+        block_tokens = _estimate_tokens(block)
+        if citations and used_tokens + block_tokens > max_context_tokens:
+            break
+
+        context_text += block
+        used_tokens += block_tokens
         citations.append({
             "ref_id": ref_id,
             "source_type": "web",
             "document_name": clean_title,
             "title": clean_title,
             "url": url,
-            "snippet": source.get("snippet", "")
+            "snippet": snippet_text,
         })
 
-    has_local = bool(context_chunks)
-    has_web = bool(web_sources)
+    has_local = any(c["source_type"] == "document" for c in citations)
+    has_web = any(c["source_type"] == "web" for c in citations)
 
-    system_prompt = (
-        "Bạn là Trợ lý Tri thức Cá nhân AI (Personal Knowledge AI) — một chuyên gia phân tích và người bạn đồng hành nghiên cứu thông thái, "
-        "chính xác, khách quan và sư phạm theo tiêu chuẩn NotebookLM.\n\n"
-        "## NGUYÊN TẮC TRẢ LỜI CỐT LÕI:\n"
-        "1. ĐỌC HIỂU SÂU SẮC & TOÀN DIỆN: Đọc toàn bộ các nguồn tham khảo (tài liệu hoặc web) được cung cấp. "
-        "Tổng hợp logic mạch lạc, giải thích nguyên nhân, mục đích và bản chất vấn đề; tuyệt đối không sao chép máy móc hay cắt xén thông tin.\n"
-        "2. ĐỐI CHIẾU NGUỒN VÀ TRÁNH ẢO GIÁC (RẤT QUAN TRỌNG):\n"
-        "   - Chỉ trích dẫn [Tài liệu 1], [Tài liệu 2]... nếu nội dung trong tài liệu đó THỰC SỰ đề cập đến câu hỏi của người dùng.\n"
-        "   - Khi tra cứu tài liệu cá nhân mà kho tài liệu HOÀN TOÀN KHÔNG CHỨA THÔNG TIN liên quan: "
-        "     Nói rõ ngay: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].' "
-        "     Sau đó bạn hãy giải đáp bằng kiến thức chuẩn xác của bạn (không gắn nhãn trích dẫn tài liệu) để hỗ trợ người dùng tốt nhất.\n"
-        "3. TRÌNH BÀY HƯỚNG DẪN / BÀI LAB / CÁC BƯỚC THỰC HÀNH (ĐẶC BIỆT CHÚ Ý):\n"
-        "   - Khi người dùng hỏi về nội dung, hướng dẫn, cách làm hoặc các bước của một bài/chương/lab (ví dụ: 'bài 1 làm về gì', 'cách làm bài 1', 'hướng dẫn thực hành...'):\n"
-        "     + Bắt đầu bằng mục tiêu tổng quan của bài thực hành.\n"
-        "     + BẮT BUỘC ĐÁNH SỐ LIÊN TỤC: Dùng 'Bước 1:', 'Bước 2:', 'Bước 3:'... tăng dần đến bước cuối cùng có trong tài liệu. Tuyệt đối KHÔNG bỏ qua các bước đầu hoặc chỉ dừng ở bước 3 hay bước 4.\n"
-        "     + Mỗi bước cần nêu rõ: Thao tác cụ thể (click đâu, nhập lệnh gì, thiết lập thông số nào) và lưu ý kỹ thuật nếu có.\n"
-        "     + CHỐNG LẶP LẠI (ANTI-REPETITION): Tuyệt đối không lặp lại nguyên văn cùng một đoạn mô tả thao tác ở nhiều mục khác nhau. Mỗi bước phải mô tả một hành động mới nối tiếp quy trình.\n"
-        "4. KHI SỬ DỤNG NGUỒN INTERNET ([Nguồn web 1], [Nguồn web 2]...):\n"
-        "   - VỚI CÂU HỎI THỜI TIẾT / NHIỆT ĐỘ: Trả lời trực tiếp các số liệu cụ thể từ nguồn: nhiệt độ (°C), độ ẩm (%), tình trạng trời, gió và dự báo; tuyệt đối không bảo người dùng tự truy cập trang web.\n"
-        "   - VỚI CÂU HỎI CÁCH LÀM / CÔNG THỨC / KỸ THUẬT TỪ WEB (ví dụ: cách làm bánh, nấu ăn, lập trình...):\n"
-        "     + Phải tổng hợp toàn bộ các nguồn web thành MỘT BÀI HƯỚNG DẪN HOÀN CHỈNH, DUY NHẤT: Bắt đầu từ Nguyên liệu/Chuẩn bị -> Các bước thực hiện chi tiết từ Bước 1 đến hết -> Lưu ý & Bí quyết thành công.\n"
-        "     + TUYỆT ĐỐI KHÔNG chia câu trả lời thành các phần rời rạc theo từng nguồn như '[1]: ... rồi [2]: ...' hoặc lặp lại '(4): ...', '(5): ...' với nội dung vắn tắt trùng lặp!\n"
-        "   - VỚI CÂU HỎI TRI THỨC / ĐỊNH LÝ / CÔNG THỨC (ví dụ: hằng đẳng thức, định lý toán học): Trình bày đầy đủ toàn bộ các công thức/định lý một cách chính xác và rõ ràng.\n"
-        "5. CÂU HỎI TỔNG HỢP / TÓM TẮT TOÀN BỘ TÀI LIỆU: Liệt kê rõ ràng và đầy đủ từng bài/chương theo thứ tự trong tài liệu, mỗi mục kèm mô tả súc tích về mục tiêu và nội dung chính.\n"
-        "6. ĐỊNH DẠNG & TRÍCH DẪN:\n"
-        "   - Trả lời bằng tiếng Việt tự nhiên, chuẩn mực, định dạng Markdown rõ ràng (tiêu đề, danh sách, in đậm, bảng biểu nếu cần so sánh).\n"
-        "   - Công thức toán/khoa học hiển thị bằng KaTeX chuẩn: inline `$x$` hoặc display `$$x$$`.\n"
-        "   - Gắn nhãn trích dẫn [1], [2]... hoặc [Tài liệu 1], [Nguồn web 1]... ngay sau các ý có thông tin từ nguồn tương ứng.\n"
-        "7. NỐI TIẾP HỘI THOẠI: Sử dụng lịch sử hội thoại để hiểu câu hỏi nối tiếp (ví dụ: 'các bước tiếp theo', 'chi tiết hơn', 'giải thích thêm').\n"
-        "8. GỢI Ý CÂU HỎI TIẾP THEO (CHUẨN NOTEBOOKLM):\n"
-        "   - Ở CUỐI CÙNG của câu trả lời, hãy LUÔN LUÔN tạo đúng 3 gợi ý câu hỏi tiếp theo sâu sắc, kích thích tìm hiểu hoặc thực hành dựa trên nội dung vừa trả lời.\n"
-        "   - Định dạng bắt buộc ở cuối câu trả lời:\n"
-        "---GỢI Ý TIẾP THEO---\n"
-        "- [Gợi ý câu hỏi hoặc bước đào sâu 1]\n"
-        "- [Gợi ý câu hỏi hoặc bước đào sâu 2]\n"
-        "- [Gợi ý câu hỏi hoặc bước đào sâu 3]\n"
-    )
+    system_prompt = _build_dynamic_system_prompt(query, has_local, has_web, image_base64)
 
     if not has_local and not has_web:
         user_prompt = (
@@ -185,19 +375,19 @@ def _prepare_rag_prompts_and_citations(
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, chi tiết từng bước, có chiều sâu (tuyệt đối KHÔNG tóm tắt riêng rẽ từng nguồn), gắn nhãn trích dẫn [1], [2] tương ứng, và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, gắn nhãn trích dẫn [1], [2] tương ứng và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     elif has_local and not has_web:
         user_prompt = (
             f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy kiểm tra độ phù hợp của tài liệu và trả lời đầy đủ, chi tiết từng bước (nếu là bài thực hành/lab), gắn nhãn trích dẫn [1], [2]..., và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            "\nHãy đối chiếu tài liệu và trả lời trực diện, đầy đủ, gắn nhãn trích dẫn [1], [2]... và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     else:
         user_prompt = (
             f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ từng bước, gắn nhãn trích dẫn tương ứng [1], [2]..., và kết thúc bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            "\nHãy trả lời trực tiếp, đầy đủ, gắn nhãn trích dẫn tương ứng [1], [2]... và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
         )
     if image_base64:
         user_prompt += (
@@ -206,6 +396,28 @@ def _prepare_rag_prompts_and_citations(
         )
 
     return system_prompt, user_prompt, citations
+
+
+def _resolve_model_for_chat(
+    requested_model: str,
+    ollama_status: Dict[str, Any],
+    image_base64: Optional[str],
+) -> tuple[str, bool]:
+    """Xác định model Ollama khả dụng (kể cả fallback vision hoặc chat model đã cài)."""
+    available = ollama_status.get("available_models") or []
+    if not ollama_status.get("running"):
+        return requested_model, False
+    if image_base64:
+        if requested_model in available:
+            return requested_model, True
+        for candidate in (VISION_MODEL_FALLBACK, "qwen2.5vl:3b"):
+            if candidate in available:
+                return candidate, True
+        return requested_model, False
+    resolved = resolve_available_chat_model(requested_model, available)
+    if resolved:
+        return resolved, True
+    return requested_model, False
 
 
 async def generate_rag_answer(
@@ -220,20 +432,9 @@ async def generate_rag_answer(
     Tạo câu trả lời thông minh đồng bộ: trò chuyện tự nhiên, tổng hợp ý nghĩa sâu sắc, kèm trích dẫn
     """
     ollama_status = await check_ollama_status()
-    model_available = model_name in ollama_status["available_models"]
-    if image_base64 and ollama_status["running"] and not model_available:
-        for candidate in (VISION_MODEL_FALLBACK, "qwen2.5vl:3b"):
-            if candidate in ollama_status["available_models"]:
-                model_name = candidate
-                model_available = True
-                break
-    history_messages = []
-    for turn in (history or [])[-8:]:
-        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
-            content = turn["content"]
-            if "---GỢI Ý TIẾP THEO---" in content:
-                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
-            history_messages.append({"role": turn["role"], "content": content[:2000]})
+    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64)
+    _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
+    history_messages = _build_bounded_history_messages(history)
 
     # 1. Chitchat
     if is_conversational_query(query) and not image_base64:
@@ -256,7 +457,7 @@ async def generate_rag_answer(
                         ],
                         "stream": False,
                         "keep_alive": "30m",
-                        "options": {"num_predict": 256}
+                        "options": {"num_predict": 256, "num_ctx": min(num_ctx, 2048)},
                     })
                     if resp.status_code == 200:
                         ans = resp.json().get("message", {}).get("content", "")
@@ -315,11 +516,11 @@ async def generate_rag_answer(
                     "stream": False,
                     "keep_alive": "30m",
                     "options": {
-                        "num_predict": 512 if image_base64 else 2048,
+                        "num_predict": 512 if image_base64 else max_predict,
                         "temperature": 0.50,
                         "top_p": 0.9,
                         "repeat_penalty": 1.15,
-                        "num_ctx": 4096,
+                        "num_ctx": num_ctx,
                     },
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
@@ -363,6 +564,52 @@ async def generate_rag_answer(
     }
 
 
+async def _stream_ollama_chat(
+    payload: Dict[str, Any],
+    citations: List[Dict[str, Any]],
+    model_name: str,
+    engine_name: str,
+    collector: Optional[Dict[str, Any]] = None,
+    is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> AsyncGenerator[str, None]:
+    """Stream phản hồi từ Ollama /api/chat và ngắt ngay nếu client đóng kết nối."""
+    full_answer = ""
+    timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
+            if resp.status_code != 200:
+                raise RuntimeError(f"Ollama stream status {resp.status_code}")
+
+            yield f"data: {json.dumps({'stage': 'generating', 'stage_label': 'AI đang viết câu trả lời...'}, ensure_ascii=False)}\n\n"
+            async for line in resp.aiter_lines():
+                if is_disconnected and await is_disconnected():
+                    logger.info("Client disconnected during Ollama stream; cancelling generation")
+                    if collector is not None and full_answer:
+                        collector["full_answer"] = full_answer
+                        collector["citations"] = citations
+                        collector["model_used"] = model_name
+                        collector["engine"] = engine_name
+                    return
+                if not line:
+                    continue
+                try:
+                    chunk_data = json.loads(line)
+                    delta = chunk_data.get("message", {}).get("content", "")
+                    if delta:
+                        full_answer += delta
+                        yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                except Exception:
+                    continue
+
+            if collector is not None:
+                collector["full_answer"] = full_answer
+                collector["citations"] = citations
+                collector["model_used"] = model_name
+                collector["engine"] = engine_name
+            yield f"data: {json.dumps({'answer': full_answer, 'done': True}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+
 async def stream_rag_answer(
     query: str,
     context_chunks: List[Dict[str, Any]],
@@ -371,26 +618,15 @@ async def stream_rag_answer(
     history: Optional[List[Dict[str, str]]] = None,
     image_base64: Optional[str] = None,
     collector: Optional[Dict[str, Any]] = None,
+    is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Sinh câu trả lời RAG dạng luồng (Server-Sent Events) theo thời gian thực từ Ollama cục bộ.
     """
     ollama_status = await check_ollama_status()
-    model_available = model_name in ollama_status["available_models"]
-    if image_base64 and ollama_status["running"] and not model_available:
-        for candidate in (VISION_MODEL_FALLBACK, "qwen2.5vl:3b"):
-            if candidate in ollama_status["available_models"]:
-                model_name = candidate
-                model_available = True
-                break
-
-    history_messages = []
-    for turn in (history or [])[-8:]:
-        if turn.get("role") in {"user", "assistant"} and turn.get("content"):
-            content = turn["content"]
-            if "---GỢI Ý TIẾP THEO---" in content:
-                content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
-            history_messages.append({"role": turn["role"], "content": content[:2000]})
+    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64)
+    _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
+    history_messages = _build_bounded_history_messages(history)
 
     # 1. Chitchat stream
     if is_conversational_query(query) and not image_base64:
@@ -405,47 +641,31 @@ async def stream_rag_answer(
                 "citations": [],
                 "model_used": model_name,
                 "engine": "conversational_llm",
+                "stage": "generating",
+                "stage_label": "Đang phản hồi...",
             }
             yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
-            full_text = ""
             try:
-                timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{OLLAMA_BASE_URL}/api/chat",
-                        json={
-                            "model": model_name,
-                            "messages": [
-                                {"role": "system", "content": chitchat_prompt},
-                                *history_messages,
-                                {"role": "user", "content": query},
-                            ],
-                            "stream": True,
-                            "keep_alive": "30m",
-                            "options": {"num_predict": 256},
-                        },
-                    ) as resp:
-                        if resp.status_code == 200:
-                            async for line in resp.aiter_lines():
-                                if not line:
-                                    continue
-                                try:
-                                    chunk_data = json.loads(line)
-                                    delta = chunk_data.get("message", {}).get("content", "")
-                                    if delta:
-                                        full_text += delta
-                                        yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                                except Exception:
-                                    continue
-                            if collector is not None:
-                                collector["full_answer"] = full_text
-                                collector["citations"] = []
-                                collector["model_used"] = model_name
-                                collector["engine"] = "conversational_llm"
-                            yield f"data: {json.dumps({'answer': full_text, 'done': True}, ensure_ascii=False)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
+                async for sse_line in _stream_ollama_chat(
+                    payload={
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": chitchat_prompt},
+                            *history_messages,
+                            {"role": "user", "content": query},
+                        ],
+                        "stream": True,
+                        "keep_alive": "30m",
+                        "options": {"num_predict": 256, "num_ctx": min(num_ctx, 2048)},
+                    },
+                    citations=[],
+                    model_name=model_name,
+                    engine_name="conversational_llm",
+                    collector=collector,
+                    is_disconnected=is_disconnected,
+                ):
+                    yield sse_line
+                return
             except Exception:
                 logger.exception("Stream chitchat failed")
 
@@ -470,10 +690,17 @@ async def stream_rag_answer(
     )
 
     engine_name = "ollama_local" if (ollama_status["running"] and model_available) else "fallback_pipeline"
+    stage_label = (
+        f"Đã tìm thấy {len(citations)} nguồn liên quan — Đang chuẩn bị câu trả lời..."
+        if citations
+        else "Đang phân tích và tạo câu trả lời..."
+    )
     initial_meta = {
         "citations": citations,
         "model_used": model_name if (ollama_status["running"] and model_available) else "direct_context_extractor",
         "engine": engine_name,
+        "stage": "found_sources" if citations else "preparing",
+        "stage_label": stage_label,
     }
     yield f"data: {json.dumps(initial_meta, ensure_ascii=False)}\n\n"
 
@@ -493,52 +720,38 @@ async def stream_rag_answer(
         yield "data: [DONE]\n\n"
         return
 
-    full_answer = ""
     if ollama_status["running"] and model_available:
         try:
-            timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                user_message: Dict[str, Any] = {"role": "user", "content": user_prompt}
-                if image_base64:
-                    user_message["images"] = [image_base64]
-                payload = {
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        *history_messages,
-                        user_message
-                    ],
-                    "stream": True,
-                    "keep_alive": "30m",
-                    "options": {
-                        "num_predict": 512 if image_base64 else 2048,
-                        "temperature": 0.50,
-                        "top_p": 0.9,
-                        "repeat_penalty": 1.15,
-                        "num_ctx": 4096,
-                    },
-                }
-                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
-                    if resp.status_code == 200:
-                        async for line in resp.aiter_lines():
-                            if not line:
-                                continue
-                            try:
-                                chunk_data = json.loads(line)
-                                delta = chunk_data.get("message", {}).get("content", "")
-                                if delta:
-                                    full_answer += delta
-                                    yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                            except Exception:
-                                continue
-                        if collector is not None:
-                            collector["full_answer"] = full_answer
-                            collector["citations"] = citations
-                            collector["model_used"] = model_name
-                            collector["engine"] = "ollama_local"
-                        yield f"data: {json.dumps({'answer': full_answer, 'done': True}, ensure_ascii=False)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
+            user_message: Dict[str, Any] = {"role": "user", "content": user_prompt}
+            if image_base64:
+                user_message["images"] = [image_base64]
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    *history_messages,
+                    user_message,
+                ],
+                "stream": True,
+                "keep_alive": "30m",
+                "options": {
+                    "num_predict": 512 if image_base64 else max_predict,
+                    "temperature": 0.50,
+                    "top_p": 0.9,
+                    "repeat_penalty": 1.15,
+                    "num_ctx": num_ctx,
+                },
+            }
+            async for sse_line in _stream_ollama_chat(
+                payload=payload,
+                citations=citations,
+                model_name=model_name,
+                engine_name="ollama_local",
+                collector=collector,
+                is_disconnected=is_disconnected,
+            ):
+                yield sse_line
+            return
         except Exception:
             logger.exception("Stream RAG generation failed")
 

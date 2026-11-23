@@ -31,7 +31,13 @@ def _resolve_document_ids(
         return list(dict.fromkeys([doc for doc in document_ids if doc]))
 
     rows = cursor.execute(
-        "SELECT DISTINCT document_id FROM document_chunks WHERE workspace_id = ? ORDER BY document_id",
+        """
+        SELECT DISTINCT c.document_id
+        FROM document_chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.workspace_id = ? AND COALESCE(d.is_latest, 1) = 1
+        ORDER BY c.document_id
+        """,
         (workspace_id,),
     ).fetchall()
     return [row["document_id"] for row in rows]
@@ -177,7 +183,7 @@ def _get_document_context_items(
         )
         return total_len < max_chars and len(source_refs) < max_chunks
 
-    # 1. Nếu có yêu cầu trọng tâm thực sự, ưu tiên truy vấn nhanh qua chỉ mục FTS5 (BM25 < 5ms) trước để tránh trễ CPU
+    # 1. Nếu có yêu cầu trọng tâm thực sự, ưu tiên Positional (đầu/cuối) hoặc FTS5 (BM25 < 5ms) để tránh trễ CPU
     semantic_focus = (
         focus_prompt.strip()
         if focus_prompt and not _is_generic_focus_prompt(focus_prompt)
@@ -185,6 +191,35 @@ def _get_document_context_items(
     )
     if semantic_focus:
         try:
+            from app.services.retrieval_service import (
+                detect_positional_intent,
+                search_positional_chunks,
+            )
+
+            pos_intent = detect_positional_intent(semantic_focus)
+            if pos_intent:
+                pos_type, letter_filter = pos_intent
+                pos_chunks = search_positional_chunks(
+                    workspace_id=workspace_id,
+                    position=pos_type,
+                    letter_filter=letter_filter,
+                    max_chunks=min(max_chunks, 6),
+                    document_id=document_id,
+                    document_ids=document_ids,
+                )
+                for r in pos_chunks:
+                    ok = _append_chunk(
+                        str(r.get("content") or ""),
+                        r.get("document_id"),
+                        str(r.get("document_name") or "Tài liệu"),
+                        int(r.get("page_number") or 1),
+                        r.get("chunk_index"),
+                    )
+                    if not ok:
+                        break
+                if source_refs:
+                    return "\n\n".join(parts), source_refs
+
             tokens = [
                 t
                 for t in re.findall(r"[\w]{2,}", semantic_focus, flags=re.UNICODE)

@@ -2,6 +2,7 @@ import { useRef } from "react"
 import {
   ArrowUp,
   BookOpen,
+  Brain,
   Check,
   ChevronDown,
   Cpu,
@@ -10,6 +11,7 @@ import {
   Paperclip,
   Square,
   X,
+  Zap,
 } from "lucide-react"
 import {
   Button,
@@ -19,7 +21,7 @@ import {
   DropdownMenuSeparator,
   Tooltip,
 } from "@/components/ui"
-import type { AIMode, KnowledgeDocument, Notebook, Workspace } from "@/types"
+import type { AIMode, KnowledgeDocument, Notebook, ReasoningMode, Workspace } from "@/types"
 import { AI_MODEL_OPTIONS, getModeDescriptor } from "@/services/chat-service"
 import { formatBytes } from "@/utils/format"
 import { cn } from "@/utils/cn"
@@ -32,6 +34,8 @@ export function ChatComposer({
   busy,
   aiMode = "auto",
   onModeChange,
+  reasoningMode = "auto",
+  onReasoningModeChange,
   modelId,
   onModelChange,
   notebooks,
@@ -49,6 +53,8 @@ export function ChatComposer({
   busy: boolean
   aiMode?: AIMode
   onModeChange?: (mode: AIMode) => void
+  reasoningMode?: ReasoningMode
+  onReasoningModeChange?: (mode: ReasoningMode) => void
   modelId: string
   onModelChange: (modelId: string) => void
   currentWorkspace?: Workspace
@@ -352,6 +358,78 @@ export function ChatComposer({
                   </DropdownMenuItem>
                 ))}
               </DropdownMenu>
+
+              {onReasoningModeChange ? (
+                <DropdownMenu
+                  align="start"
+                  side="top"
+                  trigger={
+                    <button
+                      type="button"
+                      aria-label="Chế độ suy luận"
+                      title="Chọn mức độ suy luận của AI (Tự động / Nhanh / Suy luận sâu)"
+                      className={cn(
+                        "inline-flex h-6.5 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                        reasoningMode === "deep"
+                          ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
+                          : reasoningMode === "fast"
+                            ? "border-amber-300 bg-amber-50 text-amber-800"
+                            : "border-[#DCE7E4] bg-[#F1F6F5] text-[#647C79] hover:border-[#087F73] hover:text-[#172B29]",
+                      )}
+                    >
+                      {reasoningMode === "deep" ? (
+                        <Brain className="h-3 w-3" />
+                      ) : reasoningMode === "fast" ? (
+                        <Zap className="h-3 w-3" />
+                      ) : (
+                        <Brain className="h-3 w-3 opacity-75" />
+                      )}
+                      <span className="hidden sm:inline">
+                        {reasoningMode === "deep"
+                          ? "Suy luận sâu"
+                          : reasoningMode === "fast"
+                            ? "Siêu nhanh"
+                            : "Tự động"}
+                      </span>
+                    </button>
+                  }
+                >
+                  <DropdownMenuLabel>Chế độ Suy luận AI</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "auto" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("auto")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Tự động (Khuyên dùng)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Hỏi thường trả lời nhanh; tự kích hoạt suy luận sâu khi gặp bài toán/tình huống phức tạp.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "fast" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("fast")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Siêu nhanh (Tối ưu máy yếu)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Chỉ chạy 1 lượt RAG gọn nhẹ để đạt tốc độ phản hồi nhanh nhất.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "deep" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("deep")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Suy luận sâu (Đa bước + Sandbox)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Tự phân tách vấn đề, truy xuất nhiều vòng, kiểm chứng Python Sandbox & đối chiếu chéo.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenu>
+              ) : null}
 
               {onModeChange ? (
                 <DropdownMenu

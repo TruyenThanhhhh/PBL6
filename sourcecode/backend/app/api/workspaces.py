@@ -300,6 +300,9 @@ async def upload_document(
     file: UploadFile = File(...),
     notebook_id: Optional[str] = Form(default=None),
     defer_metadata: bool = Form(default=False),
+    replace_document_id: Optional[str] = Form(default=None),
+    effective_date: Optional[str] = Form(default=None),
+    auto_version: bool = Form(default=False),
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     conn = get_db_connection()
@@ -315,7 +318,14 @@ async def upload_document(
     try:
         clean_notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
         result = await run_in_threadpool(
-            process_and_index_document, workspace_id, file.filename, content, clean_notebook_id
+            process_and_index_document,
+            workspace_id,
+            file.filename,
+            content,
+            clean_notebook_id,
+            replace_document_id,
+            effective_date,
+            auto_version,
         )
     except ValueError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
@@ -351,7 +361,8 @@ async def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_c
     cursor = conn.cursor()
 
     row = cursor.execute(
-        """SELECT d.file_path, d.file_name, d.workspace_id
+        """SELECT d.file_path, d.file_name, d.workspace_id,
+                  d.version_group_id, COALESCE(d.is_latest, 1) AS is_latest
            FROM documents d JOIN workspaces w ON w.id = d.workspace_id
            WHERE d.id = ? AND w.owner_user_id = ?""",
         (document_id, user["id"]),
@@ -361,6 +372,8 @@ async def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_c
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     file_path = row["file_path"]
     ws_id = row["workspace_id"]
+    vg_id = row["version_group_id"]
+    was_latest = bool(row["is_latest"])
 
     cursor.execute("DELETE FROM chunks_fts WHERE document_id = ?", (document_id,))
     cursor.execute(
@@ -371,11 +384,71 @@ async def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_c
     cursor.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
     cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
+    if was_latest and vg_id:
+        prev_row = cursor.execute(
+            """
+            SELECT id FROM documents
+            WHERE workspace_id = ? AND version_group_id = ?
+            ORDER BY COALESCE(version_number, 1) DESC, created_at DESC
+            LIMIT 1
+            """,
+            (ws_id, vg_id),
+        ).fetchone()
+        if prev_row:
+            cursor.execute(
+                "UPDATE documents SET is_latest = 1, superseded_by = NULL WHERE id = ?",
+                (prev_row["id"],),
+            )
+
     conn.commit()
     conn.close()
     Path(file_path).unlink(missing_ok=True)
+    try:
+        from app.services.retrieval_service import invalidate_workspace_vector_cache
+        invalidate_workspace_vector_cache(ws_id)
+    except Exception:
+        pass
     await run_in_threadpool(upsert_workspace_embedding, ws_id)
     return {"message": "Đã xóa tài liệu thành công"}
+
+
+class DocumentDiffRequest(BaseModel):
+    old_document_id: Optional[str] = None
+    new_document_id: Optional[str] = None
+    include_ai_summary: bool = True
+
+
+@router.post("/workspaces/{workspace_id}/documents/diff")
+async def diff_workspace_documents(
+    workspace_id: str,
+    req: DocumentDiffRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Đối chiếu điểm khác biệt giữa 2 phiên bản tài liệu (hoặc 2 bản gần nhất trong cùng nhóm)."""
+    conn = get_db_connection()
+    _assert_workspace_owner(conn, workspace_id, user["id"])
+    conn.close()
+
+    from app.services.document_diff_service import (
+        compute_document_diff,
+        format_diff_markdown,
+        summarize_diff_with_llm,
+    )
+
+    diff_res = compute_document_diff(
+        workspace_id=workspace_id,
+        old_document_id=req.old_document_id,
+        new_document_id=req.new_document_id,
+    )
+    if not diff_res.get("ok"):
+        raise HTTPException(status_code=400, detail=diff_res.get("error") or "Không thể đối chiếu tài liệu")
+
+    markdown = (
+        await summarize_diff_with_llm(diff_res)
+        if req.include_ai_summary
+        else format_diff_markdown(diff_res)
+    )
+    return {**diff_res, "markdown": markdown}
 
 
 @router.get("/documents/{document_id}/chunks/{chunk_index}")

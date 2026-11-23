@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 import {
   Activity,
   Bot,
+  Cpu,
   Database,
   KeyRound,
   Palette,
@@ -13,6 +14,7 @@ import {
   Moon,
   Trash2,
   User,
+  Zap,
 } from "lucide-react"
 import { ConfirmDialog } from "@/components/common/NameDialog"
 import { PageHeader } from "@/components/common/PageHeader"
@@ -22,9 +24,9 @@ import { FormField, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
-import { fetchSystemStatus } from "@/services/api"
+import { fetchSystemStatus, updateHardwareProfileApi } from "@/services/api"
 import { changePassword, logout, updateProfile } from "@/services/auth-service"
-import type { AIMode } from "@/types"
+import type { AIMode, HardwareProfileMode } from "@/types"
 
 type SettingsSection =
   | "account"
@@ -103,6 +105,7 @@ export function SettingsPage() {
   const toast = useAppStore((s) => s.toast)
 
   const [checking, setChecking] = useState(false)
+  const [savingHwProfile, setSavingHwProfile] = useState(false)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
 
   const readyDocs = documents.filter((d) => d.status === "ready").length
@@ -131,6 +134,40 @@ export function SettingsPage() {
       toast({ title: "Không kết nối được Backend", tone: "error" })
     } finally {
       setChecking(false)
+    }
+  }
+
+  const handleChangeHardwareProfile = async (mode: HardwareProfileMode) => {
+    if (!currentStatus.backendOnline) {
+      toast({
+        title: "Cần kết nối Backend",
+        description: "Hãy khởi động máy chủ Backend để lưu cấu hình hiệu năng.",
+        tone: "warning",
+      })
+      return
+    }
+    setSavingHwProfile(true)
+    try {
+      const res = await updateHardwareProfileApi(mode)
+      if (res.hardwareProfile) {
+        setStatus({
+          ...currentStatus,
+          hardwareProfile: res.hardwareProfile,
+        })
+      }
+      toast({
+        title: "Đã cập nhật hồ sơ hiệu năng",
+        description: res.message,
+        tone: "success",
+      })
+    } catch (err) {
+      toast({
+        title: "Không thể cập nhật hồ sơ hiệu năng",
+        description: err instanceof Error ? err.message : String(err),
+        tone: "error",
+      })
+    } finally {
+      setSavingHwProfile(false)
     }
   }
 
@@ -572,6 +609,105 @@ export function SettingsPage() {
                 <p className="text-[11px] text-muted">
                   Lưu ý: Thay đổi tại đây được lưu vào cấu hình client. Để thực thi suy luận thật, dịch vụ Backend và Ollama cần đang chạy với model tương ứng.
                 </p>
+              </div>
+
+              <div className="space-y-3 border-t border-line pt-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                      <Zap className="h-4 w-4 text-[#087F73]" />
+                      <span>Hồ sơ Hiệu năng & Tối ưu Máy yếu</span>
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted">
+                      Điều chỉnh tự động bộ nhớ đệm Vector, Reranker và ngân sách ngữ cảnh phù hợp phần cứng máy.
+                    </p>
+                  </div>
+                  {currentStatus.hardwareProfile ? (
+                    <Badge tone="success">
+                      Đang áp dụng: {currentStatus.hardwareProfile.activeLabel}
+                    </Badge>
+                  ) : null}
+                </div>
+
+                {currentStatus.hardwareProfile ? (
+                  <>
+                    <div className="grid gap-2.5 sm:grid-cols-3">
+                      <div className="rounded-md border border-line bg-bg-secondary/40 p-2.5 text-xs">
+                        <div className="text-[11px] text-muted">CPU</div>
+                        <div className="mt-0.5 font-medium text-ink">
+                          {currentStatus.hardwareProfile.specs.cpuCount} luồng xử lý
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-line bg-bg-secondary/40 p-2.5 text-xs">
+                        <div className="text-[11px] text-muted">RAM hệ thống</div>
+                        <div className="mt-0.5 font-medium text-ink">
+                          {currentStatus.hardwareProfile.specs.totalRamGb} GB (trống{" "}
+                          {currentStatus.hardwareProfile.specs.availableRamGb} GB)
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-line bg-bg-secondary/40 p-2.5 text-xs">
+                        <div className="text-[11px] text-muted">GPU VRAM</div>
+                        <div className="mt-0.5 font-medium text-ink">
+                          {currentStatus.hardwareProfile.specs.gpuName
+                            ? `${currentStatus.hardwareProfile.specs.gpuName} (${currentStatus.hardwareProfile.specs.gpuVramMb} MiB)`
+                            : "Chỉ CPU / iGPU"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      {(
+                        [
+                          {
+                            id: "auto",
+                            title: "Tự động",
+                            desc: `Khuyên dùng (${currentStatus.hardwareProfile.recommendedId})`,
+                          },
+                          {
+                            id: "eco",
+                            title: "Eco · Máy yếu",
+                            desc: "FTS5 nhanh, tắt Rerank nặng",
+                          },
+                          {
+                            id: "balanced",
+                            title: "Cân bằng",
+                            desc: "Hybrid + Vector Cache",
+                          },
+                          {
+                            id: "performance",
+                            title: "Hiệu năng cao",
+                            desc: "Rerank tối đa & Suy luận sâu",
+                          },
+                        ] as { id: HardwareProfileMode; title: string; desc: string }[]
+                      ).map((opt) => {
+                        const selected = currentStatus.hardwareProfile?.selectedMode === opt.id
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            disabled={savingHwProfile}
+                            onClick={() => void handleChangeHardwareProfile(opt.id)}
+                            className={`rounded-lg border p-2.5 text-left text-xs transition ${
+                              selected
+                                ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
+                                : "border-line bg-white hover:border-[#087F73]/60 hover:bg-bg-hover"
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 font-semibold">
+                              <Cpu className="h-3.5 w-3.5 shrink-0" />
+                              <span>{opt.title}</span>
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted">{opt.desc}</div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-md border border-line bg-bg-secondary/40 p-3 text-xs text-muted">
+                    Kết nối Backend để xem thông số phần cứng đo được và cấu hình chế độ Eco / Balanced / Performance.
+                  </div>
+                )}
               </div>
             </div>
           )}
