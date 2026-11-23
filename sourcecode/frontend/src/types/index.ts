@@ -62,6 +62,11 @@ export interface KnowledgeDocument {
   totalChunks: number
   pageCount: number
   extractedText: string
+  versionGroupId?: string
+  versionNumber?: number
+  isLatest?: boolean
+  supersededBy?: string | null
+  effectiveDate?: string | null
   mock?: boolean
 }
 
@@ -125,6 +130,46 @@ export interface EvidenceItem {
   hasExactOffset: boolean
 }
 
+export type ReasoningMode = "auto" | "fast" | "deep"
+
+export interface ReasoningStepTrace {
+  step: number
+  title: string
+  detail: string
+  status: string
+}
+
+export interface ChatActionArtifact {
+  action_type:
+    | "create_quiz"
+    | "create_flashcards"
+    | "create_mindmap"
+    | "create_plan"
+    | "compose_document"
+    | "version_diff"
+    | "reasoning_result"
+  artifact_id?: string | null
+  title?: string
+  summary?: string
+  study_tab?: string
+  preview_items?: string[]
+  markdown?: string
+  default_format?: "docx" | "pdf" | "md"
+  export_formats?: Array<"docx" | "pdf" | "md">
+  goal?: string
+  reasoning_steps?: ReasoningStepTrace[]
+  sandbox?: {
+    ok: boolean
+    steps: Array<{ expr: string; value: unknown }>
+    final_result: unknown
+  } | null
+  quiz?: Record<string, unknown>
+  deck?: Record<string, unknown>
+  similarity_percent?: number
+  total_changes?: number
+  changes?: Array<{ kind: string; before: string; after: string }>
+}
+
 export interface ChatMessage {
   id: string
   role: "user" | "assistant"
@@ -133,10 +178,15 @@ export interface ChatMessage {
   citations: Citation[]
   modeRequested?: AIMode
   modeUsed?: AIMode
+  reasoningMode?: ReasoningMode
   modelId?: string
   engine?: string
   fallbackReason?: string
   streaming?: boolean
+  progressStage?: string
+  progressLabel?: string
+  reasoningSteps?: ReasoningStepTrace[]
+  actionArtifact?: ChatActionArtifact | null
   isMock?: boolean
   error?: string
   attachedDocumentIds?: string[]
@@ -273,6 +323,38 @@ export interface Activity {
   kind: "workspace" | "document" | "chat" | "study" | "research"
 }
 
+export type HardwareProfileMode = "auto" | "eco" | "balanced" | "performance"
+
+export interface HardwareSpecs {
+  cpuCount: number
+  totalRamGb: number
+  availableRamGb: number
+  gpuName: string | null
+  gpuVramMb: number
+  hasDedicatedGpu: boolean
+}
+
+export interface HardwareProfileOption {
+  id: "eco" | "balanced" | "performance"
+  label: string
+  description: string
+  topK: number
+  numCtx: number
+  rerankEnabled: boolean
+  ftsFirstShortcut: boolean
+  maxReasoningSteps: number
+  preferredModels: string[]
+}
+
+export interface HardwareProfileSummary {
+  activeId: "eco" | "balanced" | "performance"
+  activeLabel: string
+  selectedMode: HardwareProfileMode
+  recommendedId: "eco" | "balanced" | "performance"
+  specs: HardwareSpecs
+  profiles: HardwareProfileOption[]
+}
+
 export interface SystemStatus {
   backendOnline: boolean
   ollamaRunning: boolean
@@ -280,6 +362,7 @@ export interface SystemStatus {
   internetOnline: boolean
   usingMock: boolean
   message: string
+  hardwareProfile?: HardwareProfileSummary
 }
 
 export interface Toast {

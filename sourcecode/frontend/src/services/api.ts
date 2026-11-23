@@ -1,7 +1,10 @@
 import type {
   AIMode,
+  ChatActionArtifact,
   ChatMessage,
   Conversation,
+  HardwareProfileMode,
+  HardwareProfileSummary,
   KnowledgeDocument,
   SearchHit,
   SystemStatus,
@@ -30,10 +33,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+function mapHardwareProfile(raw: Record<string, unknown> | undefined): HardwareProfileSummary | undefined {
+  if (!raw) return undefined
+  const specsRaw = (raw.specs ?? {}) as Record<string, unknown>
+  const profilesRaw = Array.isArray(raw.profiles) ? (raw.profiles as Array<Record<string, unknown>>) : []
+  return {
+    activeId: (String(raw.active_id ?? "balanced") as HardwareProfileSummary["activeId"]),
+    activeLabel: String(raw.active_label ?? "Cân bằng"),
+    selectedMode: (String(raw.selected_mode ?? "auto") as HardwareProfileMode),
+    recommendedId: (String(raw.recommended_id ?? "balanced") as HardwareProfileSummary["recommendedId"]),
+    specs: {
+      cpuCount: Number(specsRaw.cpu_count ?? 4),
+      totalRamGb: Number(specsRaw.total_ram_gb ?? 8),
+      availableRamGb: Number(specsRaw.available_ram_gb ?? 4),
+      gpuName: specsRaw.gpu_name ? String(specsRaw.gpu_name) : null,
+      gpuVramMb: Number(specsRaw.gpu_vram_mb ?? 0),
+      hasDedicatedGpu: Boolean(specsRaw.has_dedicated_gpu),
+    },
+    profiles: profilesRaw.map((p) => ({
+      id: String(p.id ?? "balanced") as HardwareProfileSummary["activeId"],
+      label: String(p.label ?? ""),
+      description: String(p.description ?? ""),
+      topK: Number(p.top_k ?? 4),
+      numCtx: Number(p.num_ctx ?? 4096),
+      rerankEnabled: Boolean(p.rerank_enabled),
+      ftsFirstShortcut: Boolean(p.fts_first_shortcut),
+      maxReasoningSteps: Number(p.max_reasoning_steps ?? 3),
+      preferredModels: Array.isArray(p.preferred_models) ? p.preferred_models.map(String) : [],
+    })),
+  }
+}
+
 export async function fetchSystemStatus(): Promise<SystemStatus> {
   const data = await request<{
     status: string
     ollama?: { running?: boolean; available_models?: string[]; message?: string }
+    hardware_profile?: Record<string, unknown>
   }>("/api/v1/status")
   return {
     backendOnline: true,
@@ -42,6 +77,25 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
     internetOnline: navigator.onLine,
     usingMock: false,
     message: data.ollama?.message ?? "Backend đang phản hồi.",
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+  }
+}
+
+export async function updateHardwareProfileApi(mode: HardwareProfileMode): Promise<{
+  hardwareProfile?: HardwareProfileSummary
+  message: string
+}> {
+  const data = await request<{
+    hardware_profile?: Record<string, unknown>
+    message?: string
+  }>("/api/v1/system/hardware-profile", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  })
+  return {
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+    message: String(data.message ?? "Đã cập nhật hồ sơ hiệu năng."),
   }
 }
 
@@ -183,8 +237,36 @@ export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocu
       totalChunks: Number(d.total_chunks ?? 0),
       pageCount: Number(d.total_chunks ?? 0) > 0 ? Math.max(1, Math.ceil(Number(d.total_chunks) / 4)) : 0,
       extractedText: "",
+      versionGroupId: d.version_group_id ? String(d.version_group_id) : undefined,
+      versionNumber: d.version_number != null ? Number(d.version_number) : 1,
+      isLatest: d.is_latest != null ? Boolean(d.is_latest) : true,
+      supersededBy: d.superseded_by ? String(d.superseded_by) : null,
+      effectiveDate: d.effective_date ? String(d.effective_date) : null,
       mock: false,
     } satisfies KnowledgeDocument
+  })
+}
+
+export async function diffWorkspaceDocumentsApi(
+  workspaceId: string,
+  payload: { oldDocumentId?: string | null; newDocumentId?: string | null; includeAiSummary?: boolean },
+): Promise<{
+  ok: boolean
+  similarity_percent: number
+  total_changes: number
+  changes: Array<{ kind: string; before: string; after: string }>
+  markdown: string
+  old_document: Record<string, unknown>
+  new_document: Record<string, unknown>
+}> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/diff`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      old_document_id: payload.oldDocumentId ?? undefined,
+      new_document_id: payload.newDocumentId ?? undefined,
+      include_ai_summary: payload.includeAiSummary ?? true,
+    }),
   })
 }
 
@@ -203,6 +285,9 @@ export function uploadDocumentWithProgress(
   options?: {
     notebookId?: string | null
     deferMetadata?: boolean
+    replaceDocumentId?: string | null
+    effectiveDate?: string | null
+    autoVersion?: boolean
     onProgress?: (percent: number) => void
     signal?: AbortSignal
   },
@@ -256,6 +341,15 @@ export function uploadDocumentWithProgress(
     }
     if (options?.deferMetadata) {
       form.append("defer_metadata", "true")
+    }
+    if (options?.replaceDocumentId) {
+      form.append("replace_document_id", options.replaceDocumentId)
+    }
+    if (options?.effectiveDate) {
+      form.append("effective_date", options.effectiveDate)
+    }
+    if (options?.autoVersion) {
+      form.append("auto_version", "true")
     }
     xhr.send(form)
   })
@@ -313,6 +407,7 @@ export async function fetchConversationMessages(conversationId: string): Promise
     content: String(m.content ?? ""),
     createdAt: String(m.createdAt ?? nowIso()),
     citations: (m.citations as any[]) ?? [],
+    actionArtifact: (m.actionArtifact as ChatActionArtifact | undefined) ?? undefined,
     modeUsed: m.modeUsed as AIMode | undefined,
     streaming: false,
     isMock: false,

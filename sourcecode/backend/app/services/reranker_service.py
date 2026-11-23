@@ -38,7 +38,24 @@ def rerank_documents(
     if len(documents) <= 1:
         return documents[:top_k]
 
-    candidates = documents[:max_candidates] if max_candidates else documents
+    profile_cap: int | None = None
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+
+        profile = get_active_profile_config()
+        if not profile.get("rerank_enabled", True):
+            return documents[:top_k]
+        raw_cap = int(profile.get("rerank_max_candidates") or 0)
+        if raw_cap > 0:
+            profile_cap = raw_cap
+    except Exception:
+        pass
+
+    effective_max = max_candidates
+    if profile_cap is not None:
+        effective_max = min(effective_max, profile_cap) if effective_max else profile_cap
+
+    candidates = documents[:effective_max] if effective_max else documents
     try:
         model = _get_model()
         # Truncate văn bản xuống tối đa 1200 ký tự để reranking chạy nhanh hơn gấp 3-4 lần trên CPU

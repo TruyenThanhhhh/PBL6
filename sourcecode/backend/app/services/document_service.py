@@ -292,11 +292,20 @@ def _is_mocked_callable(fn: Any) -> bool:
     )
 
 
+def _invalidate_vector_cache_safe(workspace_id: Optional[str] = None) -> None:
+    try:
+        from app.services.retrieval_service import invalidate_workspace_vector_cache
+        invalidate_workspace_vector_cache(workspace_id)
+    except Exception:
+        pass
+
+
 def _index_chunk_vectors_in_batches(chunks: List[Dict[str, Any]], batch_size: int = 24) -> int:
     """Tính vector BGE-M3 theo từng lô và lưu ngay vào SQLite để không chặn luồng tải lên."""
     if not chunks:
         return 0
     indexed_count = 0
+    workspace_ids = {c.get("workspace_id") for c in chunks if c.get("workspace_id")}
     with _BG_EMBED_LOCK:
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
@@ -322,15 +331,23 @@ def _index_chunk_vectors_in_batches(chunks: List[Dict[str, Any]], batch_size: in
                 logger.exception("Lỗi khi lưu lô vector embedding chạy nền")
             finally:
                 conn.close()
+    for ws_id in workspace_ids:
+        _invalidate_vector_cache_safe(ws_id)
     return indexed_count
 
 
 def _schedule_background_chunk_embeddings(chunks: List[Dict[str, Any]]) -> None:
     if not chunks:
         return
+    batch_size = 24
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+        batch_size = int(get_active_profile_config().get("embed_batch_size") or 24)
+    except Exception:
+        pass
     worker = threading.Thread(
         target=_index_chunk_vectors_in_batches,
-        args=(list(chunks), 24),
+        args=(list(chunks), max(4, batch_size)),
         daemon=True,
     )
     worker.start()
@@ -341,10 +358,13 @@ def process_and_index_document(
     file_name: str,
     file_bytes: bytes,
     notebook_id: Optional[str] = None,
+    replace_document_id: Optional[str] = None,
+    effective_date: Optional[str] = None,
+    auto_version: bool = False,
 ) -> Dict[str, Any]:
     """
-    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, lập chỉ mục FTS5 tức thì
-    và sinh vector BGE-M3 (đồng bộ cho tệp nhỏ / bất đồng bộ theo lô cho tệp lớn).
+    Xử lý file tải lên: lưu trữ, trích xuất text, chunking, lập chỉ mục FTS5 tức thì,
+    sinh vector BGE-M3 và quản lý chuỗi phiên bản tài liệu (v1 -> v2).
     """
     # Chuẩn hóa notebook_id để tránh vi phạm FOREIGN KEY constraint
     notebook_id = notebook_id.strip() if notebook_id and notebook_id.strip() else None
@@ -368,22 +388,68 @@ def process_and_index_document(
     file_size = len(file_bytes)
     content_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Khử trùng lặp: Nếu tài liệu đã được tải lên trong không gian này, tái sử dụng để tránh nhân bản dữ liệu
+    # Khử trùng lặp trên các bản đang có hiệu lực mới nhất (is_latest = 1)
     conn_dedup = get_db_connection()
     try:
         cur_dedup = conn_dedup.cursor()
         existing = cur_dedup.execute(
-            "SELECT id, file_name, file_type, file_size, total_pages, total_chunks, status "
-            "FROM documents WHERE workspace_id = ? AND content_hash = ?",
+            """
+            SELECT id, file_name, file_type, file_size, total_pages, total_chunks, status,
+                   version_group_id, COALESCE(version_number, 1) AS version_number,
+                   COALESCE(is_latest, 1) AS is_latest, effective_date
+            FROM documents
+            WHERE workspace_id = ? AND content_hash = ? AND COALESCE(is_latest, 1) = 1
+            """,
             (workspace_id, content_hash),
         ).fetchone()
-        if existing:
+        if existing and not replace_document_id:
             saved_path.unlink(missing_ok=True)
             existing_dict = dict(existing)
             existing_dict.setdefault("document_id", existing_dict.get("id"))
             return existing_dict
+
+        # Xác định tài liệu cũ cần nâng cấp phiên bản (nếu có)
+        prev_doc = None
+        target_prev_id = (replace_document_id or "").strip()
+        if target_prev_id:
+            prev_doc = cur_dedup.execute(
+                """
+                SELECT id, version_group_id, COALESCE(version_number, 1) AS version_number
+                FROM documents WHERE id = ? AND workspace_id = ?
+                """,
+                (target_prev_id, workspace_id),
+            ).fetchone()
+        elif auto_version:
+            prev_doc = cur_dedup.execute(
+                """
+                SELECT id, version_group_id, COALESCE(version_number, 1) AS version_number
+                FROM documents
+                WHERE workspace_id = ? AND LOWER(file_name) = LOWER(?) AND COALESCE(is_latest, 1) = 1
+                ORDER BY COALESCE(version_number, 1) DESC, created_at DESC
+                LIMIT 1
+                """,
+                (workspace_id, safe_name),
+            ).fetchone()
     finally:
         conn_dedup.close()
+
+    if prev_doc:
+        version_group_id = prev_doc["version_group_id"] or prev_doc["id"]
+        max_ver_conn = get_db_connection()
+        try:
+            row_max = max_ver_conn.execute(
+                "SELECT MAX(COALESCE(version_number, 1)) AS max_v FROM documents WHERE workspace_id = ? AND (version_group_id = ? OR id = ?)",
+                (workspace_id, version_group_id, prev_doc["id"]),
+            ).fetchone()
+            base_v = int(row_max["max_v"] or prev_doc["version_number"] or 1) if row_max else int(prev_doc["version_number"] or 1)
+        finally:
+            max_ver_conn.close()
+        version_number = base_v + 1
+    else:
+        version_group_id = doc_id
+        version_number = 1
+
+    clean_effective_date = (effective_date or "").strip() or None
 
     # 1. Trích xuất text sạch
     try:
@@ -430,17 +496,31 @@ def process_and_index_document(
     cursor = conn.cursor()
 
     try:
+        if prev_doc:
+            cursor.execute(
+                """
+                UPDATE documents
+                SET version_group_id = COALESCE(version_group_id, ?),
+                    is_latest = 0,
+                    superseded_by = ?
+                WHERE workspace_id = ? AND (id = ? OR version_group_id = ?)
+                """,
+                (version_group_id, doc_id, workspace_id, prev_doc["id"], version_group_id),
+            )
+
         cursor.execute(
             """
             INSERT INTO documents (
                 id, workspace_id, notebook_id, file_name, file_type,
-                file_size, file_path, content_hash, total_pages, total_chunks, status
+                file_size, file_path, content_hash, total_pages, total_chunks, status,
+                version_group_id, version_number, is_latest, superseded_by, effective_date
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id, workspace_id, notebook_id, safe_name, ext,
                 file_size, str(saved_path), content_hash, total_pages, len(all_chunks), "indexed",
+                version_group_id, version_number, 1, None, clean_effective_date,
             ),
         )
 
@@ -501,6 +581,7 @@ def process_and_index_document(
             conn.close()
         raise
     conn.close()
+    _invalidate_vector_cache_safe(workspace_id)
 
     if not run_sync_embed and all_chunks:
         _schedule_background_chunk_embeddings(all_chunks)
@@ -513,6 +594,10 @@ def process_and_index_document(
         "total_chunks": len(all_chunks),
         "dense_indexed": bool(vectors) or not run_sync_embed,
         "status": "indexed",
+        "version_group_id": version_group_id,
+        "version_number": version_number,
+        "is_latest": 1,
+        "effective_date": clean_effective_date,
     }
 
 
@@ -520,14 +605,14 @@ def reindex_document_embeddings(document_id: str) -> Dict[str, Any]:
     """Build or refresh BGE-M3 vectors for a document that was indexed FTS-only."""
     conn = get_db_connection()
     try:
+        doc_row = conn.execute("SELECT workspace_id FROM documents WHERE id = ?", (document_id,)).fetchone()
+        if not doc_row:
+            raise ValueError("Không tìm thấy tài liệu")
+        workspace_id = doc_row["workspace_id"]
         rows = conn.execute(
             "SELECT id, content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index",
             (document_id,),
         ).fetchall()
-        if not rows:
-            exists = conn.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
-            if not exists:
-                raise ValueError("Không tìm thấy tài liệu")
         vectors = embed_texts([row["content"] for row in rows])
         if vectors is None:
             raise RuntimeError("BGE-M3 chưa sẵn sàng; hãy kiểm tra fastembed và kết nối tải model")
@@ -542,6 +627,7 @@ def reindex_document_embeddings(document_id: str) -> Dict[str, Any]:
                 (row["id"], EMBEDDING_MODEL, len(vector), pack_vector(vector)),
             )
         conn.commit()
+        _invalidate_vector_cache_safe(workspace_id)
         return {"document_id": document_id, "dense_indexed": len(vectors), "total_chunks": len(rows)}
     except Exception:
         conn.rollback()

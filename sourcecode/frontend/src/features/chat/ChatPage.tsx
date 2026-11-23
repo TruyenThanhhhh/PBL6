@@ -3,11 +3,15 @@ import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowUpRight,
   BookOpen,
+  Brain,
   Check,
+  CheckCircle2,
+  ChevronDown,
   Compass,
   Copy,
   FileQuestion,
   FileText,
+  GitCompare,
   GraduationCap,
   Layers,
   MoreHorizontal,
@@ -25,6 +29,7 @@ import {
   Calendar,
 } from "lucide-react"
 import { InlineEdit } from "@/components/common/InlineEdit"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
 import {
   Alert,
@@ -57,7 +62,15 @@ import {
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
 import { formatDate, nowIso, uid } from "@/utils/format"
-import type { AIMode, ChatMessage, Conversation } from "@/types"
+import type {
+  AIMode,
+  ChatMessage,
+  Conversation,
+  Flashcard,
+  QuizQuestion,
+  ReasoningMode,
+  ReasoningStepTrace,
+} from "@/types"
 import { cn } from "@/utils/cn"
 import { ModeSelector } from "./ModeSelector"
 import { CitationPanel } from "./CitationPanel"
@@ -128,6 +141,7 @@ export function ChatPage() {
 
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([])
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("auto")
 
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
@@ -466,6 +480,7 @@ export function ChatPage() {
     setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
+    const collectedSteps: ReasoningStepTrace[] = []
 
     try {
       const { message } = await sendChatMessageService({
@@ -475,10 +490,24 @@ export function ChatPage() {
         attachedDocumentIds: attachedDocIds,
         query: trimmed,
         mode,
+        reasoningMode,
         modelId: localLlmModel,
         backendOnline: status.backendOnline,
         contextDocuments: workspaceDocuments,
         signal: controller.signal,
+        onStreamProgress: ({ stage, stageLabel, citations: earlyCitations, reasoningStep, actionArtifact }) => {
+          if (reasoningStep) {
+            collectedSteps.push(reasoningStep)
+          }
+          updateMessage(convId, assistantId, {
+            ...(earlyCitations ? { citations: earlyCitations } : {}),
+            ...(stage ? { progressStage: stage } : {}),
+            ...(stageLabel ? { progressLabel: stageLabel } : {}),
+            ...(reasoningStep ? { reasoningSteps: [...collectedSteps] } : {}),
+            ...(actionArtifact ? { actionArtifact } : {}),
+            streaming: true,
+          })
+        },
         onStreamChunk: (partial) => {
           updateMessage(convId, assistantId, {
             content: partial,
@@ -487,9 +516,45 @@ export function ChatPage() {
         },
       })
 
+      if (message.actionArtifact?.action_type === "create_quiz" && message.actionArtifact.quiz) {
+        const qData = message.actionArtifact.quiz
+        upsertQuiz({
+          id: String(qData.id ?? message.actionArtifact.artifact_id ?? uid("quiz")),
+          workspaceId: currentWsId,
+          documentId: (qData.documentId as string | null) ?? null,
+          documentName: (qData.documentName as string | null) ?? null,
+          title: String(qData.title ?? message.actionArtifact.title ?? "Quiz AI"),
+          difficulty: (qData.difficulty as "easy" | "medium" | "hard") || "medium",
+          questions: (qData.questions as QuizQuestion[]) || [],
+          answers: {},
+          submitted: false,
+          createdAt: nowIso(),
+          attempts: [],
+        })
+      } else if (
+        message.actionArtifact?.action_type === "create_flashcards" &&
+        message.actionArtifact.deck
+      ) {
+        const dData = message.actionArtifact.deck
+        const nowTime = nowIso()
+        upsertFlashcardDeck({
+          id: String(dData.id ?? message.actionArtifact.artifact_id ?? uid("deck")),
+          workspaceId: currentWsId,
+          documentId: (dData.documentId as string | null) ?? null,
+          documentName: (dData.documentName as string | null) ?? null,
+          title: String(dData.title ?? message.actionArtifact.title ?? "Flashcards AI"),
+          cardStyle: (dData.cardStyle as Flashcard["cardStyle"]) || "term_definition",
+          cards: (dData.cards as Flashcard[]) || [],
+          createdAt: nowTime,
+          updatedAt: nowTime,
+        })
+      }
+
       updateMessage(convId, assistantId, {
         ...message,
         id: assistantId,
+        reasoningSteps:
+          message.reasoningSteps?.length ? message.reasoningSteps : collectedSteps.length ? collectedSteps : undefined,
         streaming: false,
         error: undefined,
       })
@@ -940,16 +1005,191 @@ export function ChatPage() {
                           </Button>
                         </div>
                       ) : m.streaming && !m.content ? (
-                        <div className="space-y-1.5 py-1.5" aria-live="polite">
+                        <div className="space-y-2 py-1.5" aria-live="polite">
                           <div className="flex items-center gap-2 text-xs text-[#647C79]">
                             <span className="h-1.5 w-1.5 animate-ping rounded-full bg-[#087F73]" />
-                            <span>Đang truy xuất tài liệu...</span>
+                            <span>{m.progressLabel || "Đang tìm thông tin trong tài liệu..."}</span>
                           </div>
-                          <div className="h-2.5 w-1/2 animate-pulse rounded bg-[#F1F6F5]" />
+                          {m.reasoningSteps && m.reasoningSteps.length > 0 ? (
+                            <div className="space-y-1 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5]/70 px-3 py-2 text-[11px] text-[#172B29]">
+                              {m.reasoningSteps.map((st) => (
+                                <div key={st.step} className="flex items-start gap-1.5">
+                                  <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-[#087F73]" />
+                                  <span>
+                                    <strong>Bước {st.step} ({st.title}):</strong> {st.detail}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {m.citations.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {m.citations.slice(0, 4).map((c) => (
+                                <button
+                                  key={c.refId}
+                                  type="button"
+                                  onClick={() => setActiveCitation(c.refId)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-[#DCE7E4] bg-[#F1F6F5] px-2 py-0.5 text-[11px] text-[#172B29] hover:border-[#087F73] hover:text-[#087F73]"
+                                >
+                                  <span className="font-semibold text-[#087F73]">[{c.refId}]</span>
+                                  <span className="max-w-[160px] truncate">{c.documentName}</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="h-2.5 w-1/2 animate-pulse rounded bg-[#F1F6F5]" />
+                          )}
                         </div>
                       ) : (
-                        <div className="text-[#172B29]">
+                        <div className="space-y-3 text-[#172B29]">
+                          {/* Hiển thị luồng suy luận & kết quả kiểm chứng nếu có */}
+                          {!isUser &&
+                          ((m.reasoningSteps && m.reasoningSteps.length > 0) ||
+                            (m.actionArtifact?.reasoning_steps &&
+                              m.actionArtifact.reasoning_steps.length > 0)) ? (
+                            <details className="rounded-lg border border-[#DCE7E4] bg-[#F1F6F5]/60 px-3 py-2 text-xs">
+                              <summary className="flex cursor-pointer items-center justify-between font-medium text-[#087F73] select-none">
+                                <span className="flex items-center gap-1.5">
+                                  <Brain className="h-3.5 w-3.5" />
+                                  <span>
+                                    Quá trình AI tự suy luận (
+                                    {(m.actionArtifact?.reasoning_steps ?? m.reasoningSteps ?? []).length} bước)
+                                  </span>
+                                  {m.actionArtifact?.sandbox?.ok ? (
+                                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                      Đã kiểm chứng Python Sandbox
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <ChevronDown className="h-3.5 w-3.5 text-[#647C79]" />
+                              </summary>
+                              <div className="mt-2 space-y-1.5 border-t border-[#DCE7E4]/70 pt-2 text-[11.5px] text-[#172B29]">
+                                {(m.actionArtifact?.reasoning_steps ?? m.reasoningSteps ?? []).map((st) => (
+                                  <div key={st.step} className="flex items-start gap-1.5">
+                                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#087F73]" />
+                                    <div>
+                                      <span className="font-semibold">
+                                        Bước {st.step} — {st.title}:
+                                      </span>{" "}
+                                      {st.detail}
+                                    </div>
+                                  </div>
+                                ))}
+                                {m.actionArtifact?.sandbox?.ok ? (
+                                  <div className="mt-1.5 rounded border border-emerald-200 bg-white px-2.5 py-1.5 font-mono text-[11px]">
+                                    <div className="font-sans text-[10.5px] font-semibold text-emerald-700">
+                                      Chi tiết kiểm chứng tính toán / điều kiện:
+                                    </div>
+                                    {m.actionArtifact.sandbox.steps.map((sb, sIdx) => (
+                                      <div key={sIdx}>
+                                        {sb.expr} → <strong>{String(sb.value)}</strong>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </details>
+                          ) : null}
+
                           <CitationMarkdown content={mainContent} />
+
+                          {/* Action Card thực thi trực tiếp cho Học liệu / Văn bản / Đối chiếu */}
+                          {!isUser && m.actionArtifact && !m.streaming ? (
+                            <>
+                              {["create_quiz", "create_flashcards", "create_mindmap", "create_plan"].includes(
+                                m.actionArtifact.action_type,
+                              ) ? (
+                                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#087F73]/30 bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#087F73]">
+                                      <GraduationCap className="h-4 w-4 shrink-0" />
+                                      <span className="truncate">{m.actionArtifact.title || "Học liệu AI"}</span>
+                                    </div>
+                                    {m.actionArtifact.summary ? (
+                                      <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                        {m.actionArtifact.summary}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    leftIcon={<ArrowUpRight className="h-3.5 w-3.5" />}
+                                    onClick={() =>
+                                      navigate(`/study?tab=${m.actionArtifact?.study_tab ?? "quiz"}`)
+                                    }
+                                  >
+                                    Mở Học liệu ngay
+                                  </Button>
+                                </div>
+                              ) : null}
+
+                              {m.actionArtifact.action_type === "compose_document" &&
+                              m.actionArtifact.markdown ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#087F73]/30 bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#172B29]">
+                                      <FileText className="h-4 w-4 shrink-0 text-[#087F73]" />
+                                      <span className="truncate">
+                                        {m.actionArtifact.title || "Văn bản đã soạn thảo"}
+                                      </span>
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                      {m.actionArtifact.summary || "Xuất trực tiếp ra Word (.docx), PDF hoặc Markdown."}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        saveNote({
+                                          id: uid("note"),
+                                          workspaceId: currentWsId,
+                                          notebookId: selectedNotebookId,
+                                          documentId: attachedDocIds[0] ?? null,
+                                          title: m.actionArtifact?.title || "Văn bản từ Chat AI",
+                                          content: m.actionArtifact?.markdown || mainContent,
+                                          updatedAt: nowIso(),
+                                        })
+                                        toast({ title: "Đã lưu văn bản vào Ghi chú Học liệu", tone: "success" })
+                                      }}
+                                    >
+                                      Lưu vào Ghi chú
+                                    </Button>
+                                    <ExportFormatMenu
+                                      title={m.actionArtifact.title || "Van_ban_AI"}
+                                      content={m.actionArtifact.markdown}
+                                      label="Xuất tệp"
+                                      size="sm"
+                                      variant="default"
+                                    />
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {m.actionArtifact.action_type === "version_diff" &&
+                              m.actionArtifact.markdown ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#172B29]">
+                                      <GitCompare className="h-4 w-4 shrink-0 text-[#087F73]" />
+                                      <span className="truncate">{m.actionArtifact.title}</span>
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                      Tương đồng: {m.actionArtifact.similarity_percent ?? 100}% · Phát hiện{" "}
+                                      {m.actionArtifact.total_changes ?? 0} điểm khác biệt
+                                    </div>
+                                  </div>
+                                  <ExportFormatMenu
+                                    title={m.actionArtifact.title || "Doi_chieu_phien_ban"}
+                                    content={m.actionArtifact.markdown}
+                                    label="Xuất báo cáo đối chiếu"
+                                    size="sm"
+                                  />
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
                         </div>
                       )}
 
@@ -1109,6 +1349,8 @@ export function ChatPage() {
             busy={busy}
             aiMode={aiMode}
             onModeChange={handleModeChange}
+            reasoningMode={reasoningMode}
+            onReasoningModeChange={setReasoningMode}
             modelId={localLlmModel}
             onModelChange={handleModelChange}
             currentWorkspace={currentWorkspace}

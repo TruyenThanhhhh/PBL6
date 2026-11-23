@@ -107,6 +107,7 @@ export function DocumentUploadPanel({
           const uploadPromise = uploadDocumentWithProgress(targetWorkspaceId, item.file, {
             notebookId: targetNotebookId || null,
             deferMetadata: true,
+            replaceDocumentId: item.updateAsNewVersion ? item.replaceDocumentId : undefined,
             signal: controller.signal,
             onProgress: (pct) => {
               // Mạng upload chiếm 5% - 25%
@@ -445,6 +446,26 @@ export function DocumentUploadPanel({
                           </Badge>
                         )}
                       </div>
+
+                      {/* Tùy chọn nâng cấp phiên bản mới nếu trùng tên tài liệu đã có */}
+                      {item.replaceDocumentId && item.uploadState === "staged" ? (
+                        <label className="mt-1.5 flex cursor-pointer items-center gap-2 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-2 py-1 text-[11px] text-[#172B29]">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(item.updateAsNewVersion)}
+                            onChange={(e) =>
+                              setQueue((prev) =>
+                                prev.map((q) =>
+                                  q.id === item.id ? { ...q, updateAsNewVersion: e.target.checked } : q,
+                                ),
+                              )
+                            }
+                          />
+                          <span>
+                            Cập nhật thành <strong>Phiên bản v{item.nextVersionNumber ?? 2}</strong> (ưu tiên bản mới khi hỏi đáp AI)
+                          </span>
+                        </label>
+                      ) : null}
 
                       {/* Thông báo lỗi nếu có */}
                       {isError ? (
