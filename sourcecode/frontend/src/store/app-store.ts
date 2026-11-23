@@ -162,6 +162,7 @@ interface AppState {
   upsertResearch: (project: ResearchProject) => void
   renameResearch: (id: string, title: string) => void
   deleteResearch: (id: string) => void
+  replaceResearchFromBackend: (workspaceId: string, rows: ResearchProject[]) => void
 
   upsertQuiz: (quiz: Quiz) => void
   deleteQuiz: (id: string) => void
@@ -464,6 +465,15 @@ export const useAppStore = create<AppState>()(
         set({
           researchProjects: get().researchProjects.filter((p) => p.id !== id),
         }),
+      replaceResearchFromBackend: (workspaceId, rows) =>
+        set({
+          researchProjects: [
+            ...rows,
+            ...get().researchProjects.filter(
+              (p) => p.workspaceId !== workspaceId && !p.isMock,
+            ),
+          ],
+        }),
 
       upsertQuiz: (quiz) =>
         set({
@@ -573,7 +583,14 @@ export const useAppStore = create<AppState>()(
         documents: s.documents,
         notes: s.notes,
         savedSummaries: s.savedSummaries,
-        conversations: s.conversations,
+        conversations: s.conversations.map((conv) => ({
+          ...conv,
+          messages: conv.messages.map((msg) =>
+            msg.imageDataUrl && msg.imageDataUrl.length > 120000
+              ? { ...msg, imageDataUrl: undefined }
+              : msg,
+          ),
+        })),
         researchProjects: s.researchProjects,
         quizzes: s.quizzes,
         flashcards: s.flashcards,

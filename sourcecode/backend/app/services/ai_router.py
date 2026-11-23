@@ -157,6 +157,17 @@ async def _retrieve_local_sources(
     )
 
 
+_STREAM_DELEGATED_INTENTS = frozenset({
+    "create_quiz",
+    "create_flashcards",
+    "create_mindmap",
+    "create_plan",
+    "compose_document",
+    "version_diff",
+    "deep_reasoning",
+})
+
+
 async def answer_query(
     workspace_id: str,
     query: str,
@@ -168,10 +179,85 @@ async def answer_query(
     selected_document_id: Optional[str] = None,
     document_ids: Optional[list[str]] = None,
     mode: str = "auto",
+    reasoning_mode: Optional[str] = "auto",
 ) -> Dict[str, Any]:
     history = (history or [])[-8:]
-    is_chitchat = is_conversational_query(query) and not image_base64
+    intent = classify_chat_intent(
+        query,
+        reasoning_mode=reasoning_mode,
+        has_image=bool(image_base64),
+    )
     should_web, should_local = _resolve_routing_modes(mode, query, include_web)
+
+    if intent.kind in _STREAM_DELEGATED_INTENTS:
+        selected_model = (VISION_MODEL if image_base64 else (model or DEFAULT_LLM_MODEL))
+        collector: Dict[str, Any] = {
+            "full_answer": "",
+            "citations": [],
+            "model_used": selected_model,
+            "engine": "ollama_local",
+        }
+        reasoning_steps: List[Dict[str, str]] = []
+        async for event_line in stream_query(
+            workspace_id=workspace_id,
+            query=query,
+            model=model,
+            mode=mode,
+            include_web=include_web,
+            top_k=top_k,
+            history=history,
+            image_base64=image_base64,
+            selected_document_id=selected_document_id,
+            document_ids=document_ids,
+            collector=collector,
+            reasoning_mode=reasoning_mode or "auto",
+        ):
+            if not event_line.startswith("data:"):
+                continue
+            try:
+                evt = json.loads(event_line[5:].strip())
+            except Exception:
+                continue
+            if evt.get("stage") and evt.get("stage_label"):
+                reasoning_steps.append({
+                    "stage": str(evt["stage"]),
+                    "label": str(evt["stage_label"]),
+                })
+            elif evt.get("error") and not collector.get("full_answer"):
+                collector["full_answer"] = str(evt["error"])
+
+        citations = collector.get("citations") or []
+        has_web_citations = any(c.get("sourceType") == "web" or c.get("url") for c in citations)
+        is_action = intent.kind != "deep_reasoning"
+        return {
+            "answer": collector.get("full_answer", ""),
+            "citations": citations,
+            "model_used": collector.get("model_used", selected_model),
+            "engine": collector.get("engine", "ollama_local"),
+            "workspace_id": workspace_id,
+            "mode_requested": mode,
+            "intent": intent.kind,
+            "retrieval": (
+                "action"
+                if is_action
+                else (
+                    "hybrid"
+                    if (citations and has_web_citations)
+                    else ("local" if citations else "reasoning")
+                )
+            ),
+            "selected_document_id": selected_document_id,
+            "web_search": (
+                "online"
+                if has_web_citations
+                else ("unavailable_or_no_results" if (should_web and not is_action) else "not_requested")
+            ),
+            "network_fallback": bool(should_web and not is_action and not has_web_citations),
+            "action_result": collector.get("action_result"),
+            "reasoning_steps": reasoning_steps,
+        }
+
+    is_chitchat = intent.kind == "chitchat"
 
     local_sources: List[Dict[str, Any]] = []
     if should_local and not is_chitchat:
@@ -205,6 +291,7 @@ async def answer_query(
     result.update({
         "workspace_id": workspace_id,
         "mode_requested": mode,
+        "intent": intent.kind,
         "retrieval": (
             "conversational"
             if is_chitchat

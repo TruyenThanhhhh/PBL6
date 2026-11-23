@@ -14,6 +14,7 @@ except ImportError:
 from app.config import DEFAULT_LLM_MODEL, EMBEDDING_MODEL
 from app.database import get_db_connection
 from app.services.embedding_service import embed_texts, pack_vector, unpack_vector
+from app.services.hardware_profile_service import get_active_profile_config
 from app.services.llm_service import call_ollama_json
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ def _collect_workspace_context(
         """
         SELECT id, file_name, file_type, created_at
         FROM documents
-        WHERE workspace_id = ?
+        WHERE workspace_id = ? AND COALESCE(is_latest, 1) = 1
         ORDER BY created_at ASC, rowid ASC
         """,
         (workspace_id,),
@@ -318,7 +319,7 @@ def build_workspace_profile_text(conn: Any, workspace_id: str) -> Optional[str]:
         return None
 
     doc_rows = conn.execute(
-        "SELECT file_name FROM documents WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 30",
+        "SELECT file_name FROM documents WHERE workspace_id = ? AND COALESCE(is_latest, 1) = 1 ORDER BY created_at DESC LIMIT 30",
         (workspace_id,),
     ).fetchall()
     note_rows = conn.execute(
@@ -762,7 +763,7 @@ def _query_fts_hits_for_user(
             JOIN document_chunks c ON c.id = f.chunk_id
             JOIN documents d ON d.id = c.document_id
             JOIN workspaces w ON w.id = c.workspace_id
-            WHERE chunks_fts MATCH ? AND w.owner_user_id = ?
+            WHERE chunks_fts MATCH ? AND w.owner_user_id = ? AND COALESCE(d.is_latest, 1) = 1
             ORDER BY raw_bm25 ASC
             LIMIT ?
             """,
@@ -798,6 +799,7 @@ def semantic_search_workspaces(
     query: str,
     limit: int = 30,
     precomputed_query_vec: Optional[List[float]] = None,
+    allow_dense: bool = True,
 ) -> Dict[str, Any]:
     """Tìm kiếm Workspace đa tầng bằng BGE-M3 + FTS5 + chuẩn hóa từ khóa tiếng Việt."""
     q_clean = (query or "").strip()
@@ -829,7 +831,7 @@ def semantic_search_workspaces(
             SELECT d.workspace_id, d.file_name
             FROM documents d
             JOIN workspaces w ON w.id = d.workspace_id
-            WHERE w.owner_user_id = ?
+            WHERE w.owner_user_id = ? AND COALESCE(d.is_latest, 1) = 1
             """,
             (user_id,),
         ).fetchall():
@@ -850,9 +852,58 @@ def semantic_search_workspaces(
             if ws_id in note_text_by_ws:
                 note_text_by_ws[ws_id] += f" {n['title']} {(n['content'] or '')[:400]}"
 
-        q_vecs = [precomputed_query_vec] if precomputed_query_vec else embed_texts([q_clean])
-        q_vec = q_vecs[0] if q_vecs else None
-        search_mode = "semantic" if q_vec is not None else "keyword"
+        q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
+        min_kw_ratio = 0.66 if len(q_tokens) >= 2 else 0.99
+
+        fts_hits = _query_fts_hits_for_user(
+            conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+        )
+        fts_by_ws: Dict[str, float] = {ws_id: 0.0 for ws_id in ws_ids}
+        for hit in fts_hits.values():
+            _, ws_id, _, _, _, _ = hit
+            if ws_id in fts_by_ws:
+                fts_by_ws[ws_id] = max(fts_by_ws[ws_id], hit[0])
+
+        kw_by_ws: Dict[str, Tuple[float, float]] = {}
+        has_any_lexical_hit = bool(fts_hits)
+        for ws_id, ws in workspaces_by_id.items():
+            name_kw = _keyword_match_score(q_norm, q_tokens, ws.get("name", ""), raw_tokens)
+            desc_kw = _keyword_match_score(
+                q_norm,
+                q_tokens,
+                f"{ws.get('description', '')} {ws.get('category', '')}",
+                raw_tokens,
+            )
+            files_kw = _keyword_match_score(
+                q_norm,
+                q_tokens,
+                " ".join(f"{fn} {_humanize_filename_stem(fn)}" for fn in doc_names_by_ws.get(ws_id, [])),
+                raw_tokens,
+            )
+            note_kw = _keyword_match_score(q_norm, q_tokens, note_text_by_ws.get(ws_id, ""), raw_tokens)
+            best_kw_ratio = max(name_kw, desc_kw, files_kw, note_kw)
+            meta_kw = max(name_kw * 0.45, desc_kw * 0.30, files_kw * 0.28, note_kw * 0.22)
+            kw_by_ws[ws_id] = (best_kw_ratio, meta_kw)
+            if best_kw_ratio >= min_kw_ratio:
+                has_any_lexical_hit = True
+
+        profile_cfg = get_active_profile_config()
+        use_dense = allow_dense and bool(profile_cfg.get("enable_dense_retrieval", True))
+        fts_first = bool(profile_cfg.get("fts_first_shortcut", False))
+
+        if not use_dense:
+            q_vec = None
+            search_mode = "keyword"
+        elif precomputed_query_vec is not None:
+            q_vec = precomputed_query_vec
+            search_mode = "semantic"
+        elif fts_first and has_any_lexical_hit:
+            q_vec = None
+            search_mode = "fts_shortcut"
+        else:
+            q_vecs = embed_texts([q_clean])
+            q_vec = q_vecs[0] if q_vecs else None
+            search_mode = "semantic" if q_vec is not None else "keyword"
 
         if q_vec is not None:
             _ensure_user_workspace_embeddings(conn, user_id, ws_ids)
@@ -881,8 +932,9 @@ def semantic_search_workspaces(
                 SELECT c.workspace_id, c.content, e.vector, e.dimensions
                 FROM chunk_embeddings e
                 JOIN document_chunks c ON c.id = e.chunk_id
+                JOIN documents d ON d.id = c.document_id
                 JOIN workspaces w ON w.id = c.workspace_id
-                WHERE w.owner_user_id = ? AND e.model = ?
+                WHERE w.owner_user_id = ? AND e.model = ? AND COALESCE(d.is_latest, 1) = 1
                 """,
                 (user_id, EMBEDDING_MODEL),
             ).fetchall()
@@ -899,37 +951,9 @@ def semantic_search_workspaces(
                 top3_avg = sum(scs[:3]) / min(len(scs), 3)
                 content_dense_by_ws[ws_id] = 0.75 * best + 0.25 * top3_avg
 
-        q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
-
-        fts_hits = _query_fts_hits_for_user(
-            conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
-        )
-        fts_by_ws: Dict[str, float] = {ws_id: 0.0 for ws_id in ws_ids}
-        for hit in fts_hits.values():
-            _, ws_id, _, _, _, _ = hit
-            if ws_id in fts_by_ws:
-                fts_by_ws[ws_id] = max(fts_by_ws[ws_id], hit[0])
-
-        min_kw_ratio = 0.66 if len(q_tokens) >= 2 else 0.99
         scored: List[Tuple[float, bool, Dict[str, Any]]] = []
         for ws_id, ws in workspaces_by_id.items():
-            name_kw = _keyword_match_score(q_norm, q_tokens, ws.get("name", ""), raw_tokens)
-            desc_kw = _keyword_match_score(
-                q_norm,
-                q_tokens,
-                f"{ws.get('description', '')} {ws.get('category', '')}",
-                raw_tokens,
-            )
-            files_kw = _keyword_match_score(
-                q_norm,
-                q_tokens,
-                " ".join(f"{fn} {_humanize_filename_stem(fn)}" for fn in doc_names_by_ws.get(ws_id, [])),
-                raw_tokens,
-            )
-            note_kw = _keyword_match_score(q_norm, q_tokens, note_text_by_ws.get(ws_id, ""), raw_tokens)
-
-            best_kw_ratio = max(name_kw, desc_kw, files_kw, note_kw)
-            meta_kw = max(name_kw * 0.45, desc_kw * 0.30, files_kw * 0.28, note_kw * 0.22)
+            best_kw_ratio, meta_kw = kw_by_ws[ws_id]
             m_dense = meta_dense_by_ws.get(ws_id, 0.0)
             c_dense = content_dense_by_ws.get(ws_id, 0.0)
             fts_sc = fts_by_ws.get(ws_id, 0.0)
@@ -1013,11 +1037,32 @@ def semantic_global_search(
     if not q_clean:
         return {"hits": [], "search_mode": "empty"}
 
-    q_vecs = embed_texts([q_clean])
-    q_vec = q_vecs[0] if q_vecs else None
-    search_mode = "semantic" if q_vec is not None else "keyword"
-
     q_norm, q_tokens, raw_tokens = _extract_query_tokens(q_clean)
+    profile_cfg = get_active_profile_config()
+    use_dense = bool(profile_cfg.get("enable_dense_retrieval", True))
+    fts_first = bool(profile_cfg.get("fts_first_shortcut", False))
+
+    precomputed_fts_hits: Optional[Dict[str, Tuple[float, str, str, str, int, str]]] = None
+    if fts_first or not use_dense:
+        probe_conn = get_db_connection()
+        try:
+            precomputed_fts_hits = _query_fts_hits_for_user(
+                probe_conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+            )
+        finally:
+            probe_conn.close()
+
+    if not use_dense:
+        q_vec = None
+        search_mode = "keyword"
+    elif fts_first and precomputed_fts_hits and (kind == "document" or len(precomputed_fts_hits) >= 2):
+        # Eco profile shortcut: FTS5 đã khớp rõ ràng -> tránh đánh thức BGE-M3 & quét toàn bộ chunk_embeddings
+        q_vec = None
+        search_mode = "fts_shortcut"
+    else:
+        q_vecs = embed_texts([q_clean])
+        q_vec = q_vecs[0] if q_vecs else None
+        search_mode = "semantic" if q_vec is not None else "keyword"
 
     hits: List[Dict[str, Any]] = []
     per_group_cap = limit if kind != "all" else max(3, limit // 5)
@@ -1029,6 +1074,7 @@ def semantic_global_search(
             query=q_clean,
             limit=per_group_cap,
             precomputed_query_vec=q_vec,
+            allow_dense=(q_vec is not None),
         )
         for w in ws_result["workspaces"]:
             hits.append({
@@ -1054,14 +1100,14 @@ def semantic_global_search(
         if not ws_name_map:
             return {"hits": hits[:limit], "search_mode": search_mode}
 
-        # 2. Documents (tìm cả theo nội dung chunk BGE-M3 + FTS5 + tên file)
+        # 2. Documents (tìm cả theo nội dung chunk BGE-M3 + FTS5 + tên file, chỉ lấy phiên bản mới nhất)
         if kind in ("all", "document"):
             doc_rows = conn.execute(
                 """
                 SELECT d.id, d.workspace_id, d.file_name, d.file_type, d.total_chunks
                 FROM documents d
                 JOIN workspaces w ON w.id = d.workspace_id
-                WHERE w.owner_user_id = ?
+                WHERE w.owner_user_id = ? AND COALESCE(d.is_latest, 1) = 1
                 """,
                 (user_id,),
             ).fetchall()
@@ -1075,8 +1121,9 @@ def semantic_global_search(
                            e.vector, e.dimensions
                     FROM chunk_embeddings e
                     JOIN document_chunks c ON c.id = e.chunk_id
+                    JOIN documents d ON d.id = c.document_id
                     JOIN workspaces w ON w.id = c.workspace_id
-                    WHERE w.owner_user_id = ? AND e.model = ?
+                    WHERE w.owner_user_id = ? AND e.model = ? AND COALESCE(d.is_latest, 1) = 1
                     """,
                     (user_id, EMBEDDING_MODEL),
                 ).fetchall()
@@ -1094,8 +1141,12 @@ def semantic_global_search(
                             "page": int(row["page_number"] or 1),
                         }
 
-            fts_hits = _query_fts_hits_for_user(
-                conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+            fts_hits = (
+                precomputed_fts_hits
+                if precomputed_fts_hits is not None
+                else _query_fts_hits_for_user(
+                    conn, user_id, raw_tokens, q_norm=q_norm, q_tokens=q_tokens, limit=60
+                )
             )
             for fts_sc, _, doc_id, _, page_no, content in fts_hits.values():
                 entry = best_by_doc.setdefault(

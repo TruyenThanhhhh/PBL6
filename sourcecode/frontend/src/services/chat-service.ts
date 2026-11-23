@@ -163,6 +163,8 @@ export interface SendChatRequest {
   backendOnline: boolean
   contextDocuments?: KnowledgeDocument[]
   selectedDocumentId?: string
+  imageBase64?: string
+  imageMimeType?: "image/png" | "image/jpeg" | "image/webp"
   signal?: AbortSignal
   onStreamChunk?: (partialContent: string) => void
   onStreamProgress?: (progress: StreamProgressPayload) => void
@@ -247,6 +249,8 @@ async function tryStreamOrQueryBackend(
         mode: req.mode,
         reasoning_mode: req.reasoningMode ?? "auto",
         selected_document_id: req.selectedDocumentId ?? undefined,
+        image_base64: req.imageBase64 ?? undefined,
+        image_mime_type: req.imageMimeType ?? undefined,
       }),
       signal: req.signal,
     })
@@ -373,6 +377,9 @@ async function tryStreamOrQueryBackend(
       query: req.query,
       model: req.modelId,
       mode: req.mode,
+      reasoning_mode: req.reasoningMode ?? "auto",
+      image_base64: req.imageBase64 ?? undefined,
+      image_mime_type: req.imageMimeType ?? undefined,
     }),
     signal: req.signal,
   })

@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import io
 import uuid
 import re
 import logging
@@ -6,12 +8,231 @@ import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from app.config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOAD_DIR, EMBEDDING_MODEL
+import httpx
+
+from app.config import (
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    UPLOAD_DIR,
+    EMBEDDING_MODEL,
+    OLLAMA_BASE_URL,
+    VISION_MODEL,
+)
 from app.database import get_db_connection
 from app.services.embedding_service import embed_texts, pack_vector
+from app.services.llm_service import resolve_available_vision_model
 
 logger = logging.getLogger(__name__)
 SUPPORTED_TYPES = {"pdf", "docx", "pptx", "txt", "md", "py", "json", "csv", "xlsx", "xls"}
+
+
+def _extract_docx_table_lines(table: Any) -> List[str]:
+    """Trích xuất từng hàng bảng Word theo định dạng '| col1 | col2 |' để chunker bảo toàn bảng."""
+    rows_out: List[str] = []
+    for row in getattr(table, "rows", ()):
+        seen_tcs = set()
+        cells_text: List[str] = []
+        nested_lines: List[str] = []
+        for cell in getattr(row, "cells", ()):
+            tc = getattr(cell, "_tc", cell)
+            tc_id = id(tc)
+            if tc_id in seen_tcs:
+                continue
+            seen_tcs.add(tc_id)
+            cell_val = " ".join(part.strip() for part in (cell.text or "").splitlines() if part.strip())
+            if cell_val:
+                cells_text.append(cell_val)
+            for nested_tbl in getattr(cell, "tables", ()):
+                nested_lines.extend(_extract_docx_table_lines(nested_tbl))
+        if len(cells_text) >= 2:
+            rows_out.append(f"| {' | '.join(cells_text)} |")
+        elif cells_text:
+            rows_out.append(cells_text[0])
+        rows_out.extend(nested_lines)
+    return rows_out
+
+
+def _extract_docx_blocks(doc: Any) -> List[str]:
+    """Đọc đoạn văn và bảng biểu DOCX theo đúng thứ tự xuất hiện trong tài liệu."""
+    body = getattr(getattr(doc, "element", None), "body", None)
+    if body is None:
+        return []
+
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    blocks: List[str] = []
+    for child in body.iterchildren():
+        if isinstance(child, CT_P):
+            text = Paragraph(child, doc).text.strip()
+            if text:
+                blocks.append(text)
+        elif isinstance(child, CT_Tbl):
+            table_lines = _extract_docx_table_lines(Table(child, doc))
+            if table_lines:
+                blocks.append("\n".join(table_lines))
+    return blocks
+
+
+_RAPIDOCR_ENGINE: Any = None
+_RAPIDOCR_CHECKED = False
+
+
+def _get_pdf_ocr_page_limit() -> int:
+    """Giới hạn số trang OCR theo hồ sơ phần cứng để không làm treo máy yếu."""
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+        profile_id = str(get_active_profile_config().get("id") or "balanced").lower()
+    except Exception:
+        profile_id = "balanced"
+    if profile_id == "eco":
+        return 5
+    if profile_id == "performance":
+        return 25
+    return 12
+
+
+def _get_rapidocr_engine() -> Any:
+    global _RAPIDOCR_ENGINE, _RAPIDOCR_CHECKED
+    if _RAPIDOCR_CHECKED:
+        return _RAPIDOCR_ENGINE
+    _RAPIDOCR_CHECKED = True
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # type: ignore
+        _RAPIDOCR_ENGINE = RapidOCR()
+    except Exception:
+        _RAPIDOCR_ENGINE = None
+    return _RAPIDOCR_ENGINE
+
+
+def _resolve_sync_ollama_vision_model() -> Optional[str]:
+    try:
+        resp = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=1.5)
+        if resp.status_code != 200:
+            return None
+        models = [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
+        return resolve_available_vision_model(VISION_MODEL, models)
+    except Exception:
+        return None
+
+
+def _ocr_via_ollama_vision(png_bytes: bytes, vision_model: Optional[str]) -> str:
+    if not vision_model or not png_bytes:
+        return ""
+    try:
+        b64_img = base64.b64encode(png_bytes).decode("ascii")
+        resp = httpx.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": vision_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Hãy đọc và chép lại nguyên văn toàn bộ chữ, số và bảng biểu có trong trang tài liệu này. "
+                            "Giữ nguyên cấu trúc dòng/bảng, không thêm nhận xét."
+                        ),
+                        "images": [b64_img],
+                    }
+                ],
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 1200, "num_ctx": 2048},
+            },
+            timeout=45.0,
+        )
+        if resp.status_code == 200:
+            return str(resp.json().get("message", {}).get("content") or "").strip()
+    except Exception:
+        logger.debug("Ollama Vision OCR failed on scanned page", exc_info=True)
+    return ""
+
+
+def _ocr_png_bytes(png_bytes: bytes, vision_model: Optional[str] = None) -> str:
+    """Trích xuất chữ từ ảnh trang PDF bằng RapidOCR, Tesseract hoặc Ollama Vision cục bộ."""
+    if not png_bytes:
+        return ""
+
+    rapid_engine = _get_rapidocr_engine()
+    if rapid_engine is not None:
+        try:
+            res, _ = rapid_engine(png_bytes)
+            if res:
+                lines = [str(item[1]).strip() for item in res if len(item) >= 2 and str(item[1]).strip()]
+                if lines:
+                    return "\n".join(lines)
+        except Exception:
+            logger.debug("RapidOCR failed on scanned page", exc_info=True)
+
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image
+
+        with Image.open(io.BytesIO(png_bytes)) as img:
+            for lang in ("vie+eng", "eng"):
+                try:
+                    txt = pytesseract.image_to_string(img, lang=lang).strip()
+                    if txt:
+                        return txt
+                except Exception:
+                    continue
+    except ImportError:
+        pass
+    except Exception:
+        logger.debug("Tesseract OCR failed on scanned page", exc_info=True)
+
+    return _ocr_via_ollama_vision(png_bytes, vision_model)
+
+
+def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
+    """Đọc text layer PDF trước, tự động fallback sang OCR cho các trang ảnh scan."""
+    page_texts: Dict[int, str] = {}
+    scanned_indices: List[int] = []
+    total_pages = len(doc)
+
+    for i, page in enumerate(doc):
+        extracted = (page.get_text("text") or "").strip()
+        if extracted:
+            page_texts[i + 1] = extracted
+        if len(extracted) < 20:
+            has_images = bool(page.get_images(full=False))
+            if not extracted or has_images:
+                scanned_indices.append(i)
+
+    if scanned_indices:
+        max_ocr_pages = _get_pdf_ocr_page_limit()
+        vision_checked = False
+        vision_model: Optional[str] = None
+
+        for page_idx in scanned_indices[:max_ocr_pages]:
+            try:
+                pix = doc[page_idx].get_pixmap(dpi=150)
+                png_bytes = pix.tobytes("png")
+                ocr_text = _ocr_png_bytes(png_bytes).strip()
+                if not ocr_text:
+                    if not vision_checked:
+                        vision_model = _resolve_sync_ollama_vision_model()
+                        vision_checked = True
+                    if vision_model:
+                        ocr_text = _ocr_via_ollama_vision(png_bytes, vision_model).strip()
+                if ocr_text:
+                    existing = page_texts.get(page_idx + 1, "").strip()
+                    page_texts[page_idx + 1] = f"{existing}\n{ocr_text}".strip() if existing else ocr_text
+            except Exception:
+                logger.debug("PDF page pixmap/OCR error at page %s", page_idx + 1, exc_info=True)
+
+    ordered_results = [
+        {"page": page_no, "text": page_texts[page_no]}
+        for page_no in sorted(page_texts.keys())
+        if page_texts[page_no].strip()
+    ]
+    if total_pages > 0 and not ordered_results:
+        raise ValueError(
+            "PDF dạng ảnh scan chưa có lớp văn bản và chưa có công cụ OCR cục bộ khả dụng. "
+            "Hãy kéo model Vision (vd: `ollama pull qwen3-vl:2b-instruct`) hoặc cài `rapidocr-onnxruntime` / `pytesseract`."
+        )
+    return ordered_results
 
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
@@ -27,10 +248,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
 
                 doc = pymupdf.open(str(file_path))
                 try:
-                    for i, page in enumerate(doc):
-                        extracted = page.get_text("text") or ""
-                        if extracted.strip():
-                            results.append({"page": i + 1, "text": extracted})
+                    results.extend(_extract_pdf_pages_with_ocr_fallback(doc))
                 finally:
                     doc.close()
             except ImportError:
@@ -41,6 +259,8 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                     extracted = page.extract_text() or ""
                     if extracted.strip():
                         results.append({"page": i + 1, "text": extracted})
+        except ValueError:
+            raise
         except Exception as e:
             logger.exception("PDF extraction failed")
             raise ValueError("Không thể trích xuất nội dung PDF") from e
@@ -49,7 +269,16 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
         try:
             import docx
             doc = docx.Document(str(file_path))
-            full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            blocks = _extract_docx_blocks(doc)
+            full_text = "\n\n".join(blocks)
+            if not full_text.strip():
+                para_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                table_lines: List[str] = []
+                for tbl in getattr(doc, "tables", ()):
+                    table_lines.extend(_extract_docx_table_lines(tbl))
+                full_text = "\n\n".join(
+                    part for part in (para_text, "\n".join(table_lines)) if part.strip()
+                )
             if full_text.strip():
                 results.append({"page": 1, "text": full_text})
         except Exception as e:

@@ -287,11 +287,22 @@ def init_db() -> None:
         status TEXT DEFAULT 'draft',
         selected_doc_ids TEXT,
         report_markdown TEXT DEFAULT '',
+        mode TEXT DEFAULT 'local',
+        allow_web INTEGER DEFAULT 0,
+        step INTEGER DEFAULT 0,
+        citations_json TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
     );
     """)
+
+    _ensure_columns(cursor, "research_projects", {
+        "mode": "TEXT DEFAULT 'local'",
+        "allow_web": "INTEGER DEFAULT 0",
+        "step": "INTEGER DEFAULT 0",
+        "citations_json": "TEXT",
+    })
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS user_activities (

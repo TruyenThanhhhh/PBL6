@@ -398,6 +398,44 @@ def _prepare_rag_prompts_and_citations(
     return system_prompt, user_prompt, citations
 
 
+VISION_MODEL_PREFIXES = (
+    "qwen3-vl",
+    "qwen2.5vl",
+    "qwen2-vl",
+    "llama3.2-vision",
+    "minicpm-v",
+    "llava",
+    "moondream",
+)
+
+
+def is_vision_model_tag(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    return low in {VISION_MODEL.lower(), VISION_MODEL_FALLBACK.lower()} or any(
+        low.startswith(prefix) for prefix in VISION_MODEL_PREFIXES
+    )
+
+
+def resolve_available_vision_model(
+    requested_model: str,
+    available_models: List[str],
+) -> Optional[str]:
+    """Chọn model Vision thực sự hỗ trợ hình ảnh trong danh sách Ollama hiện có."""
+    if not available_models:
+        return None
+    if requested_model and is_vision_model_tag(requested_model) and requested_model in available_models:
+        return requested_model
+    for candidate in (VISION_MODEL, VISION_MODEL_FALLBACK, "qwen2.5vl:3b", "llama3.2-vision:11b"):
+        if candidate in available_models:
+            return candidate
+    for installed in available_models:
+        if is_vision_model_tag(str(installed)):
+            return str(installed)
+    return None
+
+
 def _resolve_model_for_chat(
     requested_model: str,
     ollama_status: Dict[str, Any],
@@ -408,11 +446,9 @@ def _resolve_model_for_chat(
     if not ollama_status.get("running"):
         return requested_model, False
     if image_base64:
-        if requested_model in available:
-            return requested_model, True
-        for candidate in (VISION_MODEL_FALLBACK, "qwen2.5vl:3b"):
-            if candidate in available:
-                return candidate, True
+        vision_chosen = resolve_available_vision_model(requested_model, available)
+        if vision_chosen:
+            return vision_chosen, True
         return requested_model, False
     resolved = resolve_available_chat_model(requested_model, available)
     if resolved:

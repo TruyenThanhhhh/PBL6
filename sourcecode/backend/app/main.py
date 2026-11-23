@@ -14,6 +14,7 @@ from app.api.workspaces import router as workspaces_router
 from app.api.chat import router as chat_router
 from app.api.auth import router as auth_router
 from app.api.study import router as study_router
+from app.api.research import router as research_router
 from app.config import APP_SECRET_KEY, SESSION_HTTPS_ONLY
 from app.services.hardware_profile_service import get_active_profile_config
 from app.services.llm_service import warmup_ollama_model
@@ -81,6 +82,7 @@ app.include_router(workspaces_router)
 app.include_router(chat_router)
 app.include_router(auth_router)
 app.include_router(study_router)
+app.include_router(research_router)
 
 # Phục vụ Giao diện Web tĩnh nếu có
 STATIC_DIR = Path(__file__).resolve().parent / "static"

@@ -170,6 +170,14 @@ export interface ChatActionArtifact {
   changes?: Array<{ kind: string; before: string; after: string }>
 }
 
+export interface ChatImageAttachment {
+  base64: string
+  mimeType: "image/png" | "image/jpeg" | "image/webp"
+  dataUrl: string
+  name: string
+  sizeBytes: number
+}
+
 export interface ChatMessage {
   id: string
   role: "user" | "assistant"
@@ -187,6 +195,7 @@ export interface ChatMessage {
   progressLabel?: string
   reasoningSteps?: ReasoningStepTrace[]
   actionArtifact?: ChatActionArtifact | null
+  imageDataUrl?: string
   isMock?: boolean
   error?: string
   attachedDocumentIds?: string[]
@@ -214,6 +223,7 @@ export interface ResearchProject {
   status: "draft" | "running" | "completed"
   step: number
   report: string
+  citations?: Citation[]
   isMock?: boolean
   createdAt: string
   updatedAt: string
@@ -359,6 +369,7 @@ export interface SystemStatus {
   backendOnline: boolean
   ollamaRunning: boolean
   ollamaModels: string[]
+  visionAvailable?: boolean
   internetOnline: boolean
   usingMock: boolean
   message: string

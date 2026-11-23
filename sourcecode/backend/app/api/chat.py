@@ -24,7 +24,7 @@ from app.services.hardware_profile_service import (
     get_hardware_profile_summary,
     set_selected_profile_mode,
 )
-from app.services.llm_service import check_ollama_status
+from app.services.llm_service import check_ollama_status, is_vision_model_tag
 from app.services.web_search_service import search_web
 
 router = APIRouter(prefix="/api/v1", tags=["Chat, Streaming & Conversations"])
@@ -36,12 +36,27 @@ class ChatTurn(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
 
 
+def _validate_image_fields(image_base64: Optional[str], image_mime_type: Optional[str]) -> None:
+    if image_base64:
+        if not image_mime_type:
+            raise ValueError("Thiếu loại ảnh")
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Ảnh gửi lên không hợp lệ") from exc
+        if len(raw) > 5 * 1024 * 1024:
+            raise ValueError("Ảnh tối đa 5 MB")
+    elif image_mime_type:
+        raise ValueError("Thiếu dữ liệu ảnh")
+
+
 class ChatQueryRequest(BaseModel):
     workspace_id: str = "default"
     conversation_id: Optional[str] = None
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
+    reasoning_mode: Optional[Literal["auto", "fast", "deep"]] = "auto"
     web_search: bool = False
     top_k: int = Field(default=8, ge=1, le=30)
     selected_document_id: Optional[str] = Field(default=None, max_length=100)
@@ -52,17 +67,7 @@ class ChatQueryRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_image_payload(self):
-        if self.image_base64:
-            if not self.image_mime_type:
-                raise ValueError("Thiếu loại ảnh")
-            try:
-                raw = base64.b64decode(self.image_base64, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise ValueError("Ảnh gửi lên không hợp lệ") from exc
-            if len(raw) > 5 * 1024 * 1024:
-                raise ValueError("Ảnh tối đa 5 MB")
-        elif self.image_mime_type:
-            raise ValueError("Thiếu dữ liệu ảnh")
+        _validate_image_fields(self.image_base64, self.image_mime_type)
         return self
 
 
@@ -78,8 +83,13 @@ class ChatStreamRequest(BaseModel):
     reasoning_mode: Optional[Literal["auto", "fast", "deep"]] = "auto"
     top_k: int = Field(default=8, ge=1, le=30)
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
-    image_base64: Optional[str] = None
+    image_base64: Optional[str] = Field(default=None, max_length=7_000_000)
     image_mime_type: Optional[Literal["image/png", "image/jpeg", "image/webp"]] = None
+
+    @model_validator(mode="after")
+    def validate_image_payload(self):
+        _validate_image_fields(self.image_base64, self.image_mime_type)
+        return self
 
 
 class ConversationCreateRequest(BaseModel):
@@ -139,10 +149,14 @@ class HardwareProfileUpdateRequest(BaseModel):
 async def get_system_status():
     ollama_info = await check_ollama_status()
     hardware_profile = get_hardware_profile_summary()
+    available_models = ollama_info.get("available_models") or []
     return {
         "status": "online",
         "database": "SQLite FTS5 Local",
-        "ollama": ollama_info,
+        "ollama": {
+            **ollama_info,
+            "vision_available": any(is_vision_model_tag(str(m)) for m in available_models),
+        },
         "dense_retrieval": {
             "enabled": ENABLE_DENSE_RETRIEVAL,
             "model": EMBEDDING_MODEL,
@@ -320,22 +334,26 @@ async def query_knowledge_base(
         selected_document_id=req.selected_document_id,
         document_ids=req.document_ids,
         mode=req.mode or "auto",
+        reasoning_mode=req.reasoning_mode or "auto",
     )
 
     if req.conversation_id and result.get("answer"):
         conn = get_db_connection()
         try:
             asst_msg_id = str(uuid.uuid4())
+            action_res = result.get("action_result")
+            action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
             conn.execute(
                 """
-                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, mode_used)
-                VALUES (?, ?, 'assistant', ?, ?, ?)
+                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used)
+                VALUES (?, ?, 'assistant', ?, ?, ?, ?)
                 """,
                 (
                     asst_msg_id,
                     req.conversation_id,
                     result["answer"],
                     json.dumps(result.get("citations", []), ensure_ascii=False),
+                    action_json,
                     req.mode or "auto",
                 ),
             )

@@ -64,6 +64,7 @@ import { useAppStore } from "@/store/app-store"
 import { formatDate, nowIso, uid } from "@/utils/format"
 import type {
   AIMode,
+  ChatImageAttachment,
   ChatMessage,
   Conversation,
   Flashcard,
@@ -141,6 +142,7 @@ export function ChatPage() {
 
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([])
+  const [attachedImage, setAttachedImage] = useState<ChatImageAttachment | null>(null)
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("auto")
 
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
@@ -408,21 +410,24 @@ export function ChatPage() {
 
   const sendQuery = async (queryText: string, regenerateAssistantId?: string) => {
     const trimmed = queryText.trim()
-    if (!trimmed || busy) return
+    const currentImage = regenerateAssistantId ? null : attachedImage
+    if ((!trimmed && !currentImage) || busy) return
+    const effectiveQuery =
+      trimmed || "Hãy đọc, mô tả và phân tích nội dung trong hình ảnh đính kèm."
 
     let activeConv = conversation
     if (!activeConv) {
       if (getAuthToken()) {
         try {
-          activeConv = await createConversationApi(currentWsId, trimmed.slice(0, 68))
+          activeConv = await createConversationApi(currentWsId, effectiveQuery.slice(0, 68))
           useAppStore.setState((s) => ({
             conversations: [activeConv!, ...s.conversations],
           }))
         } catch {
-          activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+          activeConv = createConversation(currentWsId, effectiveQuery.slice(0, 68))
         }
       } else {
-        activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+        activeConv = createConversation(currentWsId, effectiveQuery.slice(0, 68))
       }
       navigate(`/chat/${activeConv.id}`, { replace: true })
     }
@@ -441,17 +446,19 @@ export function ChatPage() {
       appendMessage(convId, {
         id: uid("msg"),
         role: "user",
-        content: trimmed,
+        content: effectiveQuery,
         createdAt: nowIso(),
         citations: [],
         modeRequested: mode,
+        imageDataUrl: currentImage?.dataUrl,
         attachedDocumentIds: scopedAttachedDocIds.length ? [...scopedAttachedDocIds] : undefined,
         notebookScopeId: selectedNotebookId,
       })
       if (activeConv.title === "Cuộc trò chuyện mới") {
-        void handleRenameConversation(convId, trimmed.slice(0, 68))
+        void handleRenameConversation(convId, effectiveQuery.slice(0, 68))
       }
       setInput("")
+      setAttachedImage(null)
     }
 
     const assistantId = regenerateAssistantId ?? uid("msg")
@@ -488,12 +495,14 @@ export function ChatPage() {
         workspaceId: currentWsId,
         notebookScopeId: selectedNotebookId,
         attachedDocumentIds: attachedDocIds,
-        query: trimmed,
+        query: effectiveQuery,
         mode,
         reasoningMode,
         modelId: localLlmModel,
         backendOnline: status.backendOnline,
         contextDocuments: workspaceDocuments,
+        imageBase64: currentImage?.base64,
+        imageMimeType: currentImage?.mimeType,
         signal: controller.signal,
         onStreamProgress: ({ stage, stageLabel, citations: earlyCitations, reasoningStep, actionArtifact }) => {
           if (reasoningStep) {
@@ -981,9 +990,18 @@ export function ChatPage() {
                       ) : null}
 
                       {isUser ? (
-                        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
-                          {m.content}
-                        </p>
+                        <div className="space-y-1.5">
+                          {m.imageDataUrl ? (
+                            <img
+                              src={m.imageDataUrl}
+                              alt="Ảnh đính kèm"
+                              className="max-h-56 w-auto rounded-lg border border-[#DCE7E4] bg-white object-contain"
+                            />
+                          ) : null}
+                          <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
+                            {m.content}
+                          </p>
+                        </div>
                       ) : m.error ? (
                         <div className="space-y-2.5">
                           <Alert
@@ -1361,6 +1379,9 @@ export function ChatPage() {
             attachedDocIds={scopedAttachedDocIds}
             onToggleAttachDoc={toggleAttachDoc}
             onClearAttachedDocs={() => setAttachedDocIds([])}
+            attachedImage={attachedImage}
+            onAttachImage={setAttachedImage}
+            visionAvailable={status.visionAvailable}
             backendOnline={status.backendOnline}
           />
         </div>

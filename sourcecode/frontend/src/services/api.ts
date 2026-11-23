@@ -2,10 +2,12 @@ import type {
   AIMode,
   ChatActionArtifact,
   ChatMessage,
+  Citation,
   Conversation,
   HardwareProfileMode,
   HardwareProfileSummary,
   KnowledgeDocument,
+  ResearchProject,
   SearchHit,
   SystemStatus,
   Workspace,
@@ -67,13 +69,19 @@ function mapHardwareProfile(raw: Record<string, unknown> | undefined): HardwareP
 export async function fetchSystemStatus(): Promise<SystemStatus> {
   const data = await request<{
     status: string
-    ollama?: { running?: boolean; available_models?: string[]; message?: string }
+    ollama?: {
+      running?: boolean
+      available_models?: string[]
+      vision_available?: boolean
+      message?: string
+    }
     hardware_profile?: Record<string, unknown>
   }>("/api/v1/status")
   return {
     backendOnline: true,
     ollamaRunning: Boolean(data.ollama?.running),
     ollamaModels: data.ollama?.available_models ?? [],
+    visionAvailable: Boolean(data.ollama?.vision_available),
     internetOnline: navigator.onLine,
     usingMock: false,
     message: data.ollama?.message ?? "Backend đang phản hồi.",
@@ -932,4 +940,135 @@ export async function exportStudyDocumentApi(payload: {
     body: JSON.stringify(payload),
   })
   return res.blob()
+}
+
+function mapResearchProjectRecord(raw: Record<string, unknown>): ResearchProject {
+  const rawCitations = Array.isArray(raw.citations) ? (raw.citations as Citation[]) : undefined
+  return {
+    id: String(raw.id ?? ""),
+    workspaceId: String(raw.workspaceId ?? raw.workspace_id ?? ""),
+    notebookId: raw.notebookId ? String(raw.notebookId) : null,
+    title: String(raw.title ?? "Nghiên cứu mới"),
+    question: String(raw.question ?? ""),
+    documentIds: Array.isArray(raw.documentIds) ? raw.documentIds.map(String) : [],
+    allowWeb: Boolean(raw.allowWeb),
+    mode: (String(raw.mode ?? "local") as AIMode),
+    status: (String(raw.status ?? "completed") as ResearchProject["status"]),
+    step: Number(raw.step ?? 5),
+    report: String(raw.report ?? ""),
+    citations: rawCitations,
+    isMock: Boolean(raw.isMock ?? false),
+    createdAt: String(raw.createdAt ?? nowIso()),
+    updatedAt: String(raw.updatedAt ?? nowIso()),
+  }
+}
+
+export async function fetchResearchProjectsApi(workspaceId: string): Promise<ResearchProject[]> {
+  const data = await request<{ projects?: Array<Record<string, unknown>> }>(
+    `/api/v1/workspaces/${workspaceId}/research`,
+  )
+  return (data.projects ?? []).map(mapResearchProjectRecord)
+}
+
+export async function streamResearchProjectApi(
+  workspaceId: string,
+  payload: {
+    project_id?: string
+    notebook_id?: string | null
+    title?: string
+    question: string
+    document_ids?: string[]
+    allow_web?: boolean
+    mode?: AIMode
+    model?: string
+  },
+  callbacks: {
+    onMeta?: (project: ResearchProject) => void
+    onStep?: (step: number, label: string, detail?: string) => void
+    onCitations?: (citations: Citation[]) => void
+    onDelta?: (deltaText: string) => void
+    onDone?: (project: ResearchProject) => void
+  },
+  signal?: AbortSignal,
+): Promise<ResearchProject | null> {
+  const res = await authorizedFetch(`/api/v1/workspaces/${workspaceId}/research/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!res.body) {
+    throw new Error("Không nhận được luồng phản hồi từ dịch vụ Research.")
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finalProject: ResearchProject | null = null
+
+  const processLine = (rawLine: string) => {
+    const trimmed = rawLine.trim()
+    if (!trimmed.startsWith("data:")) return
+    const cleaned = trimmed.slice(5).trim()
+    if (!cleaned || cleaned === "[DONE]") return
+    try {
+      const evt = JSON.parse(cleaned) as {
+        type?: string
+        project?: Record<string, unknown>
+        step?: number
+        label?: string
+        detail?: string
+        citations?: Citation[]
+        content?: string
+      }
+      if (evt.type === "meta" && evt.project) {
+        callbacks.onMeta?.(mapResearchProjectRecord(evt.project))
+      } else if (evt.type === "step" && typeof evt.step === "number") {
+        callbacks.onStep?.(evt.step, String(evt.label ?? ""), evt.detail)
+      } else if (evt.type === "citations" && Array.isArray(evt.citations)) {
+        callbacks.onCitations?.(evt.citations)
+      } else if (evt.type === "delta" && typeof evt.content === "string") {
+        callbacks.onDelta?.(evt.content)
+      } else if (evt.type === "done" && evt.project) {
+        finalProject = mapResearchProjectRecord(evt.project)
+        callbacks.onDone?.(finalProject)
+      }
+    } catch {
+      // ignore malformed SSE heartbeat
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() ?? ""
+    for (const line of lines) {
+      processLine(line)
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) {
+    processLine(buffer)
+  }
+  return finalProject
+}
+
+export async function updateResearchProjectApi(
+  projectId: string,
+  payload: { title?: string; report?: string },
+): Promise<ResearchProject> {
+  const data = await request<{ project: Record<string, unknown> }>(`/api/v1/research/${projectId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return mapResearchProjectRecord(data.project)
+}
+
+export async function deleteResearchProjectApi(projectId: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/api/v1/research/${projectId}`, {
+    method: "DELETE",
+  })
 }
