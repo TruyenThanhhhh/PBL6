@@ -268,7 +268,14 @@ def _fast_local_reasoning_planner(
             # 2) So sánh số lượng từ vựng giữa 2 Bài trong bảng Workbook Excel trực tiếp từ CSDL (không bao giờ lấy nhầm số trong tên file!)
             lesson_nums = re.findall(r"\bbài\s+(\d{1,2})\b", q_low, re.IGNORECASE | re.UNICODE)
             if not expressions and len(lesson_nums) >= 2 and any(k in q_low for k in ("nhiều từ", "bao nhiêu từ", "chênh lệch", "so sánh", "nhieu tu", "chenh lech")) and initial_chunks:
-                doc_id_wb = initial_chunks[0].get("document_id")
+                wb_chunk = next(
+                    (
+                        c for c in initial_chunks
+                        if str(c.get("document_name") or "").lower().endswith((".xlsx", ".xls", ".csv"))
+                    ),
+                    initial_chunks[0],
+                )
+                doc_id_wb = wb_chunk.get("document_id")
                 if doc_id_wb:
                     try:
                         from app.database import get_db_connection
@@ -280,7 +287,7 @@ def _fast_local_reasoning_planner(
                             ).fetchall()
                         finally:
                             conn_wb.close()
-                        counts_by_num: Dict[int, int] = {}
+                        seen_stt_by_num: Dict[int, set[int]] = {}
                         cur_lnum: Optional[int] = None
                         l_hdr_re = re.compile(r"^\s*\[?Bài\s+(\d{1,2})\s*[-–:]", re.IGNORECASE)
                         for r_wb in wb_rows:
@@ -292,12 +299,13 @@ def _fast_local_reasoning_planner(
                                 ml = l_hdr_re.match(s_wb)
                                 if ml:
                                     cur_lnum = int(ml.group(1))
-                                    counts_by_num.setdefault(cur_lnum, 0)
+                                    seen_stt_by_num.setdefault(cur_lnum, set())
                                     continue
                                 if cur_lnum is not None and "|" in s_wb:
                                     cells_wb = [c.strip() for c in s_wb.strip("|").split("|") if c.strip()]
                                     if len(cells_wb) >= 3 and cells_wb[0].isdigit():
-                                        counts_by_num[cur_lnum] = counts_by_num.get(cur_lnum, 0) + 1
+                                        seen_stt_by_num[cur_lnum].add(int(cells_wb[0]))
+                        counts_by_num: Dict[int, int] = {k: len(v) for k, v in seen_stt_by_num.items()}
                         n1, n2 = int(lesson_nums[0]), int(lesson_nums[1])
                         if counts_by_num.get(n1, 0) > 0 and counts_by_num.get(n2, 0) > 0:
                             variables[f"so_tu_bai_{n1}"] = counts_by_num[n1]
@@ -387,8 +395,8 @@ def _fast_local_reasoning_planner(
             if "V_non_cut" in str(expressions) and "V_tru" in str(expressions):
                 expressions.append("chenh_lech_V = round(V_non_cut - V_tru, 4)")
                 expressions.append("chenh_lech_phan_tram = round(abs(V_non_cut - V_tru) / min(V_non_cut, V_tru) * 100, 2)")
-            elif has_cone:
-                cone_r = re.search(r"bán\s+kính\s*(?:đáy\s*)?(?:R\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+            if has_cone:
+                cone_r = re.search(r"bán\s+kính\s*(?:đáy\s*)?(?:r\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 cone_h = re.search(r"chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 if cone_r and cone_h:
                     variables["R_non"] = float(cone_r.group(1).replace(",", "."))
@@ -399,6 +407,8 @@ def _fast_local_reasoning_planner(
                         "V_non = round((pi * (R_non ** 2) * h_non) / 3, 4)",
                         "S_tp_non = round(pi * R_non * (R_non + l_non), 4)",
                     ])
+            if "V_tru" in str(expressions) and "V_non" in str(expressions):
+                expressions.append("ty_le_V_tru_non = round(V_tru / V_non, 4)")
             elif has_sphere:
                 sph_r = re.search(r"bán\s+kính\s*(?:R\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 if sph_r:
@@ -838,13 +848,25 @@ async def stream_autonomous_reasoning(
         "S_xq_non_cut": "Diện tích xung quanh hình nón cụt (π(R + r)l, cm²)",
         "S_tp_non_cut": "Diện tích toàn phần hình nón cụt (Sxq + πR^2 + πr^2, cm²)",
         "V_tru": "Thể tích hình trụ (πR^2h, cm³)",
+        "C_day_tru": "Chu vi đáy hình trụ (2πR, cm)",
+        "S_xq_tru": "Diện tích xung quanh hình trụ (2πRh, cm²)",
         "S_tp_tru": "Diện tích toàn phần hình trụ (2πR(h + R), cm²)",
         "l_non": "Đường sinh hình nón",
-        "V_non": "Thể tích hình nón",
+        "S_xq_non": "Diện tích xung quanh hình nón (πRl, cm²)",
+        "V_non": "Thể tích hình nón (⅓πR^2h, cm³)",
         "S_tp_non": "Diện tích toàn phần hình nón",
+        "ty_le_V_tru_non": "Tỷ lệ thể tích hình trụ / hình nón",
         "S_cau": "Diện tích mặt cầu",
         "V_cau": "Thể tích khối cầu",
         "chenh_lech_V": "Độ chênh lệch thể tích (cm³)",
+        "chenh_lech_phan_tram": "Mức chênh lệch phần trăm (%)",
+        "chenh_lech_tu": "Chênh lệch số từ giữa 2 bài",
+        "nghiem_x": "Nghiệm phương trình x",
+        "x2_cong_y2": "Giá trị x² + y²",
+        "x3_tru_y3": "Giá trị x³ - y³",
+        "x3_cong_y3": "Giá trị x³ + y³",
+        "gia_tri_B": "Giá trị biểu thức B",
+        "gia_tri_A": "Giá trị biểu thức A",
         "loi_nhuan": "Lợi nhuận ròng",
         "roi_pct": "Tỷ suất lợi nhuận ROI (%)",
         "ket_qua": "Kết quả tính toán",
@@ -856,7 +878,12 @@ async def stream_autonomous_reasoning(
         step_lines = []
         for st in sandbox_res.get("steps", []):
             key = st.get("target") or "Bước"
-            label = _SANDBOX_HUMAN_LABELS.get(key, key)
+            if key in _SANDBOX_HUMAN_LABELS:
+                label = _SANDBOX_HUMAN_LABELS[key]
+            elif re.match(r"^so_tu_bai_(\d+)$", key):
+                label = f"Số từ Bài {key.split('_')[-1]}"
+            else:
+                label = key
             val_fmt = _format_human_number(st["value"])
             if key == "V_tru" and "R_tru" in variables and "h_tru" in variables:
                 r_fmt = _format_human_number(variables["R_tru"])
@@ -865,11 +892,17 @@ async def stream_autonomous_reasoning(
             else:
                 step_lines.append(f"- {label}: {val_fmt}")
         raw_suffix = f" ({final_raw})" if str(final_raw) != final_human else ""
+        extra_concise = (
+            "\n- ĐÂY LÀ CÂU HỎI ĐẾM & SO SÁNH SỐ LƯỢNG TỪ: Trả lời ngắn gọn thành 3 gạch đầu dòng (Số từ Bài thứ nhất, Số từ Bài thứ hai, Chênh lệch) kèm trích dẫn [1], [2]; TUYỆT ĐỐI KHÔNG chép lại danh sách các dòng từ vựng trong bảng."
+            if any((st.get("target") or "") == "chenh_lech_tu" for st in sandbox_res.get("steps", []))
+            else ""
+        )
         sandbox_block = (
             "\n\n[SỐ LIỆU ĐỐI CHIẾU ĐÃ TÍNH ĐÚNG]:\n"
             + "\n".join(step_lines)
             + f"\n- Kết quả chính cuối cùng: {final_human}{raw_suffix}.\n"
             "(TUYỆT ĐỐI KHÔNG chép lại danh sách hay dòng tiêu đề trên vào câu trả lời; hãy lồng từng con số đúng vị trí tương ứng vào các bước giải sạch sẽ, không viết tên biến gạch dưới kiểu Python)."
+            + extra_concise
         )
 
     verify_directive = (

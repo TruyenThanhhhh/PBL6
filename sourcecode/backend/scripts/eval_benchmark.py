@@ -37,7 +37,7 @@ INTENT_CASES = [
     ("I2_INFO_GUARD", "Bài kiểm tra trắc nghiệm trong tài liệu nói về nội dung gì?", "rag_qa"),
     ("I3_EXPORT_PREV", "Xuất câu trả lời vừa rồi ra file PDF giúp tôi", "export_previous"),
     ("I4_FLASHCARDS", "Làm flashcard ôn 10 từ vựng Bài 1 Mimikara N3", "create_flashcards"),
-    ("I5_MATH_QA", "Giải phương trình bậc 2 x^2 - 5x + 6 = 0", "rag_qa"),
+    ("I5_MATH_QA", "Giải phương trình bậc 2 x^2 - 5x + 6 = 0", "deep_reasoning"),
     ("I6_COMPOSE_DOCX", "Viết bảng tổng hợp công thức Toán 9 ra file Word docx", "compose_document"),
 ]
 
