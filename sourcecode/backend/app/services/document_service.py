@@ -497,7 +497,45 @@ def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
             "PDF dạng ảnh scan chưa có lớp văn bản và chưa có công cụ OCR cục bộ khả dụng. "
             "Hãy kéo model Vision (vd: `ollama pull qwen3-vl:2b-instruct`) hoặc cài `rapidocr-onnxruntime` / `pytesseract`."
         )
-    return ordered_results
+    return _strip_repeated_pdf_headers_footers(ordered_results)
+
+
+def _strip_repeated_pdf_headers_footers(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Loại bỏ dòng header/footer lặp lại ở mép trên/dưới nhiều trang PDF (vd tên tác giả, số trang, tên sách)."""
+    if len(pages) < 4:
+        return pages
+
+    edge_counts: Dict[str, int] = {}
+    for p in pages:
+        lines = [ln.strip() for ln in (p.get("text") or "").splitlines() if ln.strip()]
+        if not lines:
+            continue
+        edge_candidates = lines[:2] + (lines[-2:] if len(lines) > 2 else [])
+        seen_on_page: set[str] = set()
+        for ln in edge_candidates:
+            norm = re.sub(r"\d+", "#", ln).strip()
+            if len(norm) >= 10 and norm not in seen_on_page:
+                seen_on_page.add(norm)
+                edge_counts[norm] = edge_counts.get(norm, 0) + 1
+
+    min_repeats = max(3, int(len(pages) * 0.35))
+    repeated_norms = {norm for norm, cnt in edge_counts.items() if cnt >= min_repeats}
+    standalone_page_re = re.compile(r"^(?:page|trang)\s*\d+(?:\s*/\s*\d+)?$", re.IGNORECASE)
+
+    if not repeated_norms:
+        return pages
+
+    cleaned_pages: List[Dict[str, Any]] = []
+    for p in pages:
+        out_lines = []
+        for ln in (p.get("text") or "").splitlines():
+            s = ln.strip()
+            norm = re.sub(r"\d+", "#", s).strip()
+            if s and (norm in repeated_norms or standalone_page_re.match(s)):
+                continue
+            out_lines.append(ln)
+        cleaned_pages.append({**p, "text": "\n".join(out_lines)})
+    return cleaned_pages
 
 
 def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, Any]]:
@@ -703,10 +741,15 @@ def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int =
             current_block = []
             current_type = None
 
-        # 3. Tiêu đề phân cấp (Header & Section titles)
+        # 3. Tiêu đề phân cấp (Header & Section titles - hỗ trợ sách toán, giáo trình, văn bản pháp luật)
         is_heading = bool(
             re.match(r'^#{1,6}\s+', stripped) or
-            re.match(r'^(?:chương|bài|phần|mục|lab|chapter|section)\s+\d+[:.]?', stripped, re.IGNORECASE)
+            re.match(
+                r'^(?:chương|bài|phần|mục|vấn\s*đề|chuyên\s*đề|điều|khoản|lab|chapter|section)\s+(?:[IVXLCDM]{1,6}|\d{1,3})[:.]?',
+                stripped,
+                re.IGNORECASE,
+            ) or
+            re.match(r'^\d{1,2}\.\s+[A-ZÀ-Ỹ0-9][A-ZÀ-Ỹ0-9\s,–\-()]{3,}$', stripped)
         )
         if is_heading:
             if current_block:
@@ -740,7 +783,19 @@ def recursive_chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int =
 
     for b_type, b_text in blocks:
         if b_type == 'heading':
+            # Xả sạch chunk của mục trước bằng active_heading CŨ trước khi chuyển sang tiêu đề mới
+            if current_chunk:
+                c_content = '\n\n'.join(current_chunk).strip()
+                if active_heading and not c_content.startswith(f'[{active_heading}]') and not c_content.startswith(f'# {active_heading}'):
+                    c_content = f'[{active_heading}]\n{c_content}'
+                if c_content:
+                    chunks.append(c_content)
+                current_chunk = []
+                current_len = 0
             active_heading = re.sub(r'^#{1,6}\s*', '', b_text).strip()
+            current_chunk = [b_text]
+            current_len = len(b_text)
+            continue
 
         b_len = len(b_text)
 
@@ -834,6 +889,15 @@ def _index_chunk_vectors_in_batches(chunks: List[Dict[str, Any]], batch_size: in
         return 0
     indexed_count = 0
     workspace_ids = {c.get("workspace_id") for c in chunks if c.get("workspace_id")}
+    import time as _time
+
+    eco_mode = False
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+        eco_mode = str(get_active_profile_config().get("id") or "").lower() == "eco"
+    except Exception:
+        pass
+
     with _BG_EMBED_LOCK:
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
@@ -859,6 +923,8 @@ def _index_chunk_vectors_in_batches(chunks: List[Dict[str, Any]], batch_size: in
                 logger.exception("Lỗi khi lưu lô vector embedding chạy nền")
             finally:
                 conn.close()
+            if eco_mode and start + batch_size < len(chunks):
+                _time.sleep(0.03)
     for ws_id in workspace_ids:
         _invalidate_vector_cache_safe(ws_id)
     return indexed_count
@@ -1133,7 +1199,8 @@ def process_and_index_document(
         "file_type": ext,
         "total_pages": total_pages,
         "total_chunks": len(all_chunks),
-        "dense_indexed": bool(vectors) or not run_sync_embed,
+        "dense_indexed": bool(vectors),
+        "vector_pending": not run_sync_embed and bool(all_chunks),
         "status": "indexed",
         "version_group_id": version_group_id,
         "version_number": version_number,
@@ -1175,3 +1242,243 @@ def reindex_document_embeddings(document_id: str) -> Dict[str, Any]:
         raise
     finally:
         conn.close()
+
+
+def rebuild_document_from_source(
+    document_id: str,
+    sync_vectors: bool = True,
+    schedule_background: bool = True,
+) -> Dict[str, Any]:
+    """
+    Trích xuất lại tài liệu gốc bằng bộ trích xuất hiện đại (PDF sort=True + giải mã PUA MS Word),
+    chia đoạn theo tiêu đề mục sạch và cập nhật lại toàn bộ chunks + FTS5 + vectors.
+    """
+    conn = get_db_connection()
+    try:
+        doc_row = conn.execute(
+            "SELECT id, workspace_id, file_name, file_type, file_path FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        if not doc_row:
+            raise ValueError("Không tìm thấy tài liệu")
+        workspace_id = doc_row["workspace_id"]
+        file_name = doc_row["file_name"]
+        file_type = doc_row["file_type"]
+        saved_path = Path(doc_row["file_path"])
+    finally:
+        conn.close()
+
+    if not saved_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy tệp gốc trên đĩa: {saved_path}")
+
+    pages = extract_text_from_file(saved_path, file_type)
+    if not pages:
+        raise ValueError("Không trích xuất được nội dung văn bản từ tệp gốc")
+
+    total_pages = max(1, len(pages))
+    all_chunks: List[Dict[str, Any]] = []
+    chunk_index = 0
+    outline_summary = _build_document_outline_summary(pages, file_name)
+    if outline_summary:
+        all_chunks.append({
+            "id": str(uuid.uuid4()),
+            "document_id": document_id,
+            "workspace_id": workspace_id,
+            "chunk_index": chunk_index,
+            "page_number": 1,
+            "token_count": max(1, len(outline_summary.split())),
+            "content": outline_summary,
+        })
+        chunk_index += 1
+
+    for p in pages:
+        for c in recursive_chunk_text(p["text"]):
+            all_chunks.append({
+                "id": str(uuid.uuid4()),
+                "document_id": document_id,
+                "workspace_id": workspace_id,
+                "chunk_index": chunk_index,
+                "page_number": p["page"],
+                "token_count": max(1, len(c.split())),
+                "content": c,
+            })
+            chunk_index += 1
+
+    conn_w = get_db_connection()
+    try:
+        cur = conn_w.cursor()
+        cur.execute("DELETE FROM chunks_fts WHERE document_id = ?", (document_id,))
+        cur.execute(
+            "DELETE FROM chunk_embeddings WHERE chunk_id IN "
+            "(SELECT id FROM document_chunks WHERE document_id = ?)",
+            (document_id,),
+        )
+        cur.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
+        if all_chunks:
+            cur.executemany(
+                """
+                INSERT INTO document_chunks (
+                    id, document_id, workspace_id, chunk_index, page_number, token_count, content
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        c["id"], c["document_id"], c["workspace_id"],
+                        c["chunk_index"], c["page_number"], c["token_count"], c["content"],
+                    )
+                    for c in all_chunks
+                ],
+            )
+            cur.executemany(
+                "INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content) VALUES (?, ?, ?, ?)",
+                [
+                    (c["id"], c["document_id"], c["workspace_id"], re.sub(r'["\']', '', c["content"]))
+                    for c in all_chunks
+                ],
+            )
+        cur.execute(
+            "UPDATE documents SET total_pages = ?, total_chunks = ?, status = 'indexed' WHERE id = ?",
+            (total_pages, len(all_chunks), document_id),
+        )
+        conn_w.commit()
+    except Exception:
+        conn_w.rollback()
+        raise
+    finally:
+        conn_w.close()
+
+    _invalidate_vector_cache_safe(workspace_id)
+    indexed_vectors = 0
+    if all_chunks:
+        if sync_vectors or _is_mocked_callable(embed_texts):
+            indexed_vectors = _index_chunk_vectors_in_batches(all_chunks, batch_size=24)
+        elif schedule_background:
+            _schedule_background_chunk_embeddings(all_chunks)
+
+    return {
+        "document_id": document_id,
+        "file_name": file_name,
+        "total_pages": total_pages,
+        "total_chunks": len(all_chunks),
+        "dense_indexed": indexed_vectors if sync_vectors else len(all_chunks),
+        "rebuilt": True,
+    }
+
+
+def build_document_guide(document_id: str) -> Dict[str, Any]:
+    """
+    Tạo Source Guide chuẩn NotebookLM trong <15ms từ chỉ mục đoạn của tài liệu:
+    gồm chủ đề/mục lục nổi bật, tóm tắt cấu trúc, phân loại lĩnh vực và câu hỏi gợi ý sát nguồn.
+    """
+    from app.services.llm_service import decode_symbol_pua_text
+
+    conn = get_db_connection()
+    try:
+        doc_row = conn.execute(
+            "SELECT id, workspace_id, file_name, file_type, total_pages, total_chunks FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        if not doc_row:
+            raise ValueError("Không tìm thấy tài liệu")
+        rows = conn.execute(
+            "SELECT chunk_index, page_number, content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index ASC LIMIT 40",
+            (document_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    raw_contents = [str(r["content"] or "") for r in rows]
+    has_legacy_pua = any(bool(re.search(r"[\uf000-\uf0ff]", t)) for t in raw_contents)
+    decoded_chunks = [
+        {"chunk_index": r["chunk_index"], "page_number": r["page_number"], "text": decode_symbol_pua_text(str(r["content"] or ""))}
+        for r in rows
+    ]
+
+    outline_items: List[str] = []
+    seen_headings: set[str] = set()
+    heading_re = re.compile(
+        r"^(?:#{1,4}\s*)?((?:(?:Chương|Bài|Phần|Mục|Vấn\s*đề|Chuyên\s*đề|Điều|Khoản|Chapter|Section)\s+(?:[IVXLCDM]{1,6}|\d{1,3})[^\n]{0,75})|(?:\d{1,2}\.\s+[A-ZÀ-Ỹ0-9][^\n]{3,75}))",
+        re.IGNORECASE | re.UNICODE,
+    )
+    for item in decoded_chunks:
+        for raw_line in item["text"].splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip(" -–*•")
+            if not line or line.startswith("[CÂY MỤC LỤC") or "Trang " in line and line.startswith("Trang "):
+                continue
+            m = heading_re.match(line)
+            if m:
+                heading = m.group(1).strip()
+                heading_clean = re.sub(r"\.{3,}.*$", "", heading).strip(" .:-")
+                norm = heading_clean.lower()
+                if 5 <= len(heading_clean) <= 85 and norm not in seen_headings:
+                    seen_headings.add(norm)
+                    outline_items.append(heading_clean)
+                    if len(outline_items) >= 14:
+                        break
+        if len(outline_items) >= 14:
+            break
+
+    sample_text = "\n".join(c["text"][:500] for c in decoded_chunks[:4])
+    folded = f"{doc_row['file_name']} {sample_text}".lower()
+    if any(k in folded for k in ("toán", "hàm số", "phương trình", "hình học", "công thức", "tam giác", "đường thẳng")):
+        doc_category = "math_science"
+    elif any(k in folded for k in ("từ vựng", "vocabulary", "jlpt", "english", "kanji", "hiragana")):
+        doc_category = "vocab"
+    elif any(k in folded for k in ("quy định", "điều khoản", "nội quy", "luật", "nghị định", "chính sách")):
+        doc_category = "policy"
+    elif any(k in folded for k in ("api", "rag", "llm", "python", "sql", "server", "kiến trúc", "thuật toán")):
+        doc_category = "tech"
+    elif any(k in folded for k in ("doanh thu", "lợi nhuận", "chi phí", "tài chính", "ngân sách", "kpi")):
+        doc_category = "finance"
+    else:
+        doc_category = "general"
+
+    # Tạo tóm tắt súc tích từ outline hoặc đoạn mở đầu
+    summary_lines: List[str] = []
+    if outline_items:
+        top_list = ", ".join(outline_items[:5])
+        summary_lines.append(
+            f"Tài liệu **{doc_row['file_name']}** ({doc_row['total_pages']} trang, {doc_row['total_chunks']} phân đoạn) "
+            f"bao gồm các chủ đề chính như: {top_list}{'...' if len(outline_items) > 5 else '.'}"
+        )
+    else:
+        opening = ""
+        for c in decoded_chunks:
+            txt = c["text"].strip()
+            if txt and not txt.startswith("[CÂY MỤC LỤC"):
+                opening = re.sub(r"\s+", " ", txt)[:320].rstrip()
+                break
+        summary_lines.append(
+            f"Tài liệu **{doc_row['file_name']}** ({doc_row['total_pages']} trang, {doc_row['total_chunks']} phân đoạn). "
+            + (f"Nội dung mở đầu: {opening}..." if opening else "")
+        )
+
+    suggested_questions: List[str] = []
+    for sec in outline_items[:2]:
+        suggested_questions.append(f"Nội dung chi tiết của {sec} gồm những gì?")
+    if doc_category == "math_science":
+        suggested_questions.append(f"Tổng hợp tất cả công thức và định lý quan trọng trong {doc_row['file_name']}")
+        suggested_questions.append(f"Các dạng bài tập và phương pháp giải chính trong {doc_row['file_name']} là gì?")
+    elif doc_category == "vocab":
+        suggested_questions.append(f"Liệt kê 10 từ vựng tiêu biểu kèm phiên âm, nghĩa và ví dụ từ {doc_row['file_name']}")
+        suggested_questions.append(f"Tạo bài kiểm tra nhanh 5 câu từ nội dung {doc_row['file_name']}")
+    elif doc_category == "policy":
+        suggested_questions.append(f"Tóm tắt các quy định bắt buộc và trường hợp ngoại lệ trong {doc_row['file_name']}")
+        suggested_questions.append(f"Những mức phạt, điều kiện hoặc mốc thời gian quan trọng cần lưu ý là gì?")
+    else:
+        suggested_questions.append(f"Tóm tắt các luận điểm cốt lõi nhất của {doc_row['file_name']} kèm trích dẫn")
+        suggested_questions.append(f"Đề xuất 5 câu hỏi ôn tập trọng tâm từ tài liệu này")
+
+    return {
+        "document_id": doc_row["id"],
+        "file_name": doc_row["file_name"],
+        "file_type": doc_row["file_type"],
+        "total_pages": doc_row["total_pages"],
+        "total_chunks": doc_row["total_chunks"],
+        "doc_category": doc_category,
+        "has_legacy_pua": has_legacy_pua,
+        "summary": "\n\n".join(summary_lines),
+        "outline": outline_items,
+        "suggested_questions": suggested_questions[:4],
+    }

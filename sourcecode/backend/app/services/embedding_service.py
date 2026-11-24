@@ -100,26 +100,27 @@ def _load_sentence_transformer_instance() -> Any:
     except Exception:
         pass
 
-    bf16_kwargs = {"dtype": torch.bfloat16, "low_cpu_mem_usage": True}
+    # Trên CPU phổ thông (không có AVX512-BF16), float32 nhanh hơn ~6x so với bfloat16 giả lập (2.4s vs 14.8s / 8 chunks),
+    # đồng thời giữ low_cpu_mem_usage=True để không nhân đôi RAM lúc nạp trọng số.
+    load_kwargs = {"low_cpu_mem_usage": True}
     try:
-        # Ưu tiên nạp bfloat16 + low_cpu_mem_usage để giảm ~850MB RAM so với FP32 mà vẫn giữ ~99.9% độ chính xác vector
         model = SentenceTransformer(
             EMBEDDING_MODEL,
             device="cpu",
             local_files_only=True,
-            model_kwargs=bf16_kwargs,
+            model_kwargs=load_kwargs,
         )
     except Exception:
         try:
             model = SentenceTransformer(EMBEDDING_MODEL, device="cpu", local_files_only=True)
         except Exception:
             try:
-                model = SentenceTransformer(EMBEDDING_MODEL, device="cpu", model_kwargs=bf16_kwargs)
+                model = SentenceTransformer(EMBEDDING_MODEL, device="cpu", model_kwargs=load_kwargs)
             except Exception:
                 model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
-    # Giới hạn chiều dài token hợp lý với kích thước chunk (~1100-1500 ký tự) để tăng tốc CPU gấp nhiều lần
-    model.max_seq_length = 512
+    # Chunks tối đa ~1100 ký tự (~220-320 tokens); 384 đủ phủ trọn vẹn mà tăng tốc attention CPU rõ rệt
+    model.max_seq_length = 384
     return model
 
 

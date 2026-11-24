@@ -949,12 +949,20 @@ def _smart_rerank(
     if len(docs) <= 2 or (single_doc_scope and len(docs) <= limit):
         return docs[:limit]
 
-    # Fast-path: nếu ứng viên số 1 đã khớp >= 75% từ khóa câu hỏi hoặc là exact match thì không tốn 1.5s gọi Cross-Encoder CPU
+    # Fast-path: bỏ qua Cross-Encoder CPU nếu kết quả đã khớp exact/heading, không đủ ứng viên thừa để lọc,
+    # hoặc top-1 dẫn trước top-2 rõ rệt (tránh tốn 2-5s & 1.3GB ONNX trên máy yếu).
     q_tokens = [
         t for t in re.sub(r"[^\w\s]", " ", query or "", flags=re.UNICODE).split()
         if len(t) >= 2 or t.isdigit() or _contains_cjk(t)
     ]
-    if docs[0].get("_exact_match") or _fts_hit_is_high_confidence_fast_path(docs[:1], q_tokens):
+    rrf_lead = float(docs[0].get("rrf_score", 0.0)) - float(docs[min(len(docs) - 1, 1)].get("rrf_score", 0.0))
+    if (
+        len(docs) <= limit
+        or docs[0].get("_exact_match")
+        or docs[0].get("_heading_match")
+        or rrf_lead >= 0.025
+        or _fts_hit_is_high_confidence_fast_path(docs[:1], q_tokens)
+    ):
         return docs[:limit]
 
     profile_cap = int(profile.get("rerank_max_candidates") or RERANK_MAX_CANDIDATES)
@@ -1082,14 +1090,20 @@ def _run_hybrid_rrf_candidates(
         or hasattr(embed_texts, "assert_called")
         or getattr(embed_texts, "__module__", "").startswith("unittest.mock")
     )
+    avail_ram_gb = float((profile.get("specs") or {}).get("available_ram_gb") or 8.0)
     should_skip_dense_for_eco = (
         profile.get("fts_first_shortcut")
         and (bool(exact_matches) or _fts_hit_is_sufficient_for_eco(sparse, tokens, top_k))
     ) or (
         not embed_mocked
         and not is_embedding_model_loaded()
-        and str(profile.get("id") or "balanced").lower() != "performance"
-        and (bool(exact_matches) or _fts_hit_is_high_confidence_fast_path(sparse, tokens))
+        and (
+            (
+                str(profile.get("id") or "balanced").lower() != "performance"
+                and (bool(exact_matches) or _fts_hit_is_high_confidence_fast_path(sparse, tokens))
+            )
+            or (avail_ram_gb < 4.5 and len(sparse) >= 2)
+        )
     )
     dense: List[Dict[str, Any]] = []
     if profile.get("enable_dense_retrieval", True) and not should_skip_dense_for_eco:

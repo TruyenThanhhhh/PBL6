@@ -55,6 +55,7 @@ export function resolveCitationEvidence(
       pageNumber: null,
       chunkId: null,
       snippet: citation.snippet,
+      fullText: citation.fullText || citation.snippet,
       hasExactOffset: false,
     }
   }
@@ -92,6 +93,7 @@ export function resolveCitationEvidence(
     pageLabel: citation.pageLabel || (citation.pageNumber != null ? `Trang ${citation.pageNumber}` : null),
     chunkId,
     snippet: citation.snippet,
+    fullText: citation.fullText || citation.snippet,
     hasExactOffset: Boolean(citation.highlight && matchedDoc?.extractedText?.includes(citation.highlight)),
   }
 }

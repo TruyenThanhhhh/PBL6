@@ -2,6 +2,7 @@ import base64
 import binascii
 import json
 import logging
+import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
@@ -280,7 +281,9 @@ async def stream_chat_knowledge_base(
         "citations": [],
         "model_used": req.model or DEFAULT_LLM_MODEL,
         "engine": "ollama_local",
+        "latency_seconds": None,
     }
+    started_at = time.perf_counter()
 
     async def sse_event_stream():
         try:
@@ -299,12 +302,24 @@ async def stream_chat_knowledge_base(
                 is_disconnected=request.is_disconnected,
                 reasoning_mode=req.reasoning_mode or "auto",
             ):
+                if chunk.strip() == "data: [DONE]":
+                    elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
+                    collector["latency_seconds"] = elapsed
+                    tail_payload = {
+                        "latency_seconds": elapsed,
+                        "model_used": collector.get("model_used", req.model or DEFAULT_LLM_MODEL),
+                        "engine": collector.get("engine", "ollama_local"),
+                    }
+                    yield f"data: {json.dumps(tail_payload, ensure_ascii=False)}\n\n"
                 yield chunk
         finally:
             full_ans = collector.get("full_answer", "")
             citations = collector.get("citations", [])
             action_res = collector.get("action_result")
             asst_model = collector.get("model_used", req.model or DEFAULT_LLM_MODEL)
+            elapsed = collector.get("latency_seconds")
+            if elapsed is None:
+                elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
             if full_ans:
                 db = get_db_connection()
                 try:
@@ -312,10 +327,10 @@ async def stream_chat_knowledge_base(
                     action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
                     db.execute(
                         """
-                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used)
-                        VALUES (?, ?, 'assistant', ?, ?, ?, ?)
+                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used)
+                        VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
                         """,
-                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), action_json, req.mode or "auto"),
+                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), action_json, req.mode or "auto", elapsed, asst_model),
                     )
                     db.execute(
                         """
@@ -379,6 +394,7 @@ async def query_knowledge_base(
     finally:
         conn.close()
 
+    started_at = time.perf_counter()
     result = await answer_query(
         workspace_id=req.workspace_id,
         query=req.query,
@@ -392,6 +408,8 @@ async def query_knowledge_base(
         mode=req.mode or "auto",
         reasoning_mode=req.reasoning_mode or "auto",
     )
+    elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
+    result["latency_seconds"] = elapsed
 
     if req.conversation_id and result.get("answer"):
         conn = get_db_connection()
@@ -401,8 +419,8 @@ async def query_knowledge_base(
             action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
             conn.execute(
                 """
-                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used)
-                VALUES (?, ?, 'assistant', ?, ?, ?, ?)
+                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used)
+                VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asst_msg_id,
@@ -411,6 +429,8 @@ async def query_knowledge_base(
                     json.dumps(result.get("citations", []), ensure_ascii=False),
                     action_json,
                     req.mode or "auto",
+                    elapsed,
+                    result.get("model_used"),
                 ),
             )
             conn.execute(
@@ -583,7 +603,7 @@ def get_conversation_messages(
 
         rows = conn.execute(
             """
-            SELECT id, sender, content, citations_json, action_json, mode_used, latency_seconds, created_at
+            SELECT id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used, created_at
             FROM chat_messages
             WHERE session_id = ?
             ORDER BY created_at ASC
@@ -608,8 +628,10 @@ def get_conversation_messages(
                     "documentId": c.get("document_id"),
                     "documentName": c.get("document_name") or c.get("title") or "Tài liệu",
                     "pageNumber": c.get("page_number"),
+                    "pageLabel": c.get("page_label") or (f"Trang {c['page_number']}" if c.get("page_number") is not None else None),
                     "chunkIndex": c.get("chunk_index"),
                     "snippet": c.get("snippet", ""),
+                    "fullText": c.get("full_text") or c.get("snippet", ""),
                     "sourceKind": "local" if c.get("document_id") else "web",
                     "url": c.get("url"),
                 })
@@ -621,6 +643,8 @@ def get_conversation_messages(
                 "createdAt": r["created_at"],
                 "citations": formatted_citations,
                 **({"actionArtifact": action_result} if action_result else {}),
+                **({"latencySeconds": r["latency_seconds"]} if r["latency_seconds"] is not None else {}),
+                **({"modelId": r["model_used"]} if r["model_used"] else {}),
                 "modeUsed": r["mode_used"] or "auto",
                 "streaming": False,
             })

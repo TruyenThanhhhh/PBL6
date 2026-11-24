@@ -300,6 +300,7 @@ async def answer_query(
         network_status = "online" if web_sources else "unavailable_or_no_results"
 
     selected_model = (VISION_MODEL if image_base64 else (model or DEFAULT_LLM_MODEL))
+    task_tier = "fast" if reasoning_mode == "fast" else ("deep" if reasoning_mode == "deep" else "standard")
     result = await generate_rag_answer(
         query,
         local_sources,
@@ -307,6 +308,7 @@ async def answer_query(
         web_sources,
         history=history,
         image_base64=image_base64,
+        task_tier=task_tier,
     )
     result.update({
         "workspace_id": workspace_id,
@@ -454,6 +456,7 @@ async def stream_query(
             yield chunk
         return
 
+    task_tier = "fast" if reasoning_mode == "fast" else ("deep" if reasoning_mode == "deep" else "standard")
     async for chunk in stream_rag_answer(
         query,
         local_sources,
@@ -463,5 +466,6 @@ async def stream_query(
         image_base64=image_base64,
         collector=collector,
         is_disconnected=is_disconnected,
+        task_tier=task_tier,
     ):
         yield chunk

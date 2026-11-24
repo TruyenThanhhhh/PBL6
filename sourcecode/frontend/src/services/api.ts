@@ -438,6 +438,8 @@ export async function fetchConversationMessages(conversationId: string): Promise
     citations: (m.citations as any[]) ?? [],
     actionArtifact: (m.actionArtifact as ChatActionArtifact | undefined) ?? undefined,
     modeUsed: m.modeUsed as AIMode | undefined,
+    latencySeconds: m.latencySeconds != null ? Number(m.latencySeconds) : undefined,
+    modelId: m.modelId ? String(m.modelId) : undefined,
     streaming: false,
     isMock: false,
   }))
@@ -470,9 +472,11 @@ export interface ChatResult {
     page_label?: string
     chunk_index?: number
     snippet?: string
+    full_text?: string
   }>
   model_used?: string
   engine?: string
+  latency_seconds?: number
 }
 
 export async function queryChat(payload: {
@@ -562,8 +566,10 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
         documentId: c.document_id ?? null,
         documentName: docName,
         pageNumber: c.page_number ?? null,
+        pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
         chunkIndex: c.chunk_index ?? null,
         snippet: c.snippet ?? "",
+        fullText: c.full_text ?? c.snippet ?? "",
         sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
         url,
       }
@@ -571,6 +577,7 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
     modeRequested: mode,
     modeUsed: mode === "auto" ? "local" : mode,
     engine: result.engine,
+    latencySeconds: result.latency_seconds,
     fallbackReason: undefined as string | undefined,
   }
 }
@@ -618,6 +625,51 @@ export async function fetchDocumentDetail(
   documentId: string,
 ): Promise<{ document: DocumentChunksApiResponse["document"] }> {
   return request<{ document: DocumentChunksApiResponse["document"] }>(`/api/v1/documents/${documentId}`)
+}
+
+export interface DocumentGuideResponse {
+  document_id: string
+  file_name: string
+  file_type: string
+  total_pages: number
+  total_chunks: number
+  doc_category: string
+  has_legacy_pua?: boolean
+  summary: string
+  outline: string[]
+  suggested_questions: string[]
+}
+
+export async function fetchDocumentGuideApi(documentId: string): Promise<DocumentGuideResponse> {
+  return request<DocumentGuideResponse>(`/api/v1/documents/${documentId}/guide`)
+}
+
+export async function rebuildDocumentApi(documentId: string): Promise<{
+  document_id: string
+  file_name: string
+  total_pages: number
+  total_chunks: number
+  rebuilt: boolean
+}> {
+  return request(`/api/v1/documents/${documentId}/rebuild`, {
+    method: "POST",
+  })
+}
+
+export async function saveWorkspaceNoteApi(
+  workspaceId: string,
+  payload: {
+    title: string
+    content: string
+    notebook_id?: string | null
+    document_id?: string | null
+  },
+): Promise<{ note: Record<string, unknown> }> {
+  return request<{ note: Record<string, unknown> }>(`/api/v1/workspaces/${workspaceId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
 }
 
 // ==========================================

@@ -75,16 +75,22 @@ export interface AIModelOption {
 
 export const AI_MODEL_OPTIONS: AIModelOption[] = [
   {
-    id: "qwen2.5:3b",
-    label: "Nhanh & Nhẹ (Qwen 2.5)",
+    id: "auto",
+    label: "Tự động (Thông minh)",
     provider: "ollama-local",
-    description: "Phản hồi nhanh cho các câu hỏi tra cứu hàng ngày.",
+    description: "Tự chọn model tối ưu theo phần cứng và độ khó câu hỏi.",
+  },
+  {
+    id: "qwen2.5:3b",
+    label: "Nhanh & Nhẹ (Qwen 3B · Eco)",
+    provider: "ollama-local",
+    description: "Tối ưu cho máy yếu/4GB VRAM — phản hồi rất nhanh.",
   },
   {
     id: "qwen2.5:7b",
-    label: "Chi tiết & Sâu (Qwen 7B)",
+    label: "Chính xác sâu (Qwen 7B)",
     provider: "ollama-local",
-    description: "Độ chính xác cao hơn khi tổng hợp tài liệu dài.",
+    description: "Chất lượng ngôn ngữ & suy luận cao hơn cho tài liệu phức tạp.",
   },
   {
     id: "llama3.2:3b",
@@ -198,6 +204,7 @@ export function mapBackendCitations(rawCitations: ChatResult["citations"] = []):
       pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
       chunkIndex: c.chunk_index ?? null,
       snippet: c.snippet ?? "",
+      fullText: c.full_text ?? (c as any).fullText ?? c.snippet ?? "",
       sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
       url,
     }
@@ -272,6 +279,7 @@ async function tryStreamOrQueryBackend(
       const reasoningSteps: ReasoningStepTrace[] = []
       let engine = "backend_stream"
       let modelUsed = req.modelId
+      let latencySeconds: number | undefined
 
       const processSseLine = (rawLine: string) => {
         const trimmed = rawLine.trim()
@@ -285,6 +293,7 @@ async function tryStreamOrQueryBackend(
             citations?: ChatResult["citations"]
             engine?: string
             model_used?: string
+            latency_seconds?: number
             stage?: string
             stage_label?: string
             reasoning_step?: ReasoningStepTrace
@@ -324,6 +333,7 @@ async function tryStreamOrQueryBackend(
           }
           if (parsed.engine) engine = parsed.engine
           if (parsed.model_used) modelUsed = parsed.model_used
+          if (typeof parsed.latency_seconds === "number") latencySeconds = parsed.latency_seconds
         } catch {
           accumulated += cleaned
           req.onStreamChunk?.(accumulated)
@@ -351,6 +361,7 @@ async function tryStreamOrQueryBackend(
           citations,
           engine,
           model_used: modelUsed,
+          latency_seconds: latencySeconds,
           action_result: actionResult,
           reasoning_steps: reasoningSteps,
         },
@@ -639,9 +650,13 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
   }
 
   // Luôn thử gọi backend thật trước
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now()
   try {
     const { result } = await tryStreamOrQueryBackend(req)
     const citations: Citation[] = mapBackendCitations(result.citations ?? [])
+    const fallbackElapsed = Number(
+      (((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt) / 1000).toFixed(2),
+    )
 
     return {
       message: {
@@ -654,6 +669,7 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
         modeUsed: req.mode === "auto" ? "local" : req.mode,
         modelId: result.model_used ?? req.modelId,
         engine: result.engine ?? "backend_rag",
+        latencySeconds: result.latency_seconds ?? fallbackElapsed,
         isMock: false,
         streaming: false,
         reasoningSteps: result.reasoning_steps?.length ? result.reasoning_steps : undefined,

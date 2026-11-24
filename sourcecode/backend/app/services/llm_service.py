@@ -657,7 +657,7 @@ def _resolve_sampling_options(
     return {
         "num_predict": dyn_predict,
         "temperature": 0.20 if is_precise else 0.45,
-        "top_p": 0.85 if is_precise else 0.90,
+        "top_p": 0.80 if is_precise else 0.90,
         "repeat_penalty": 1.18,
         "num_ctx": dyn_ctx,
     }
@@ -677,14 +677,14 @@ def _build_dynamic_system_prompt(
         "Bạn là Motivo AI — trợ lý tri thức cá nhân thông minh, diễn đạt tiếng Việt tự nhiên, đầy đủ và chuẩn xác.\n\n"
         "NGUYÊN TẮC TRẢ LỜI:\n"
         "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên; TUYỆT ĐỐI KHÔNG lặp lại nguyên văn câu hỏi ('Câu hỏi của bạn là...', 'Bạn đã hỏi...').\n"
-        "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
-        "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa/định lý nhiều lần. Luôn tổng hợp các đoạn nguồn liên quan thành MỘT câu trả lời thống nhất duy nhất và chỉ gắn `[1]`, `[2]` ở cuối ý.\n"
-        "- CHỈ TRẢ LỜI ĐÚNG CHỦ ĐỀ ĐƯỢC HỎI: Nếu đoạn trích có lẫn sang mục khác không thuộc câu hỏi (ví dụ hỏi 'Hàm số đồng biến – nghịch biến' nhưng ngữ cảnh có thêm 'Hệ số góc' hoặc 'Vẽ đồ thị parabol'), BỎ QUA hoàn toàn các mục ngoài chủ đề đó, và KHÔNG lặp lại công thức ở cuối câu trả lời.\n"
-        "- KHI TRÌNH BÀY NỘI DUNG MỘT CHƯƠNG / MỤC TRONG TÀI LIỆU: Chỉ trình bày đầy đủ các bước, trường hợp (a, b, c...), công thức và ví dụ CÓ THẬT trong tài liệu; TUYỆT ĐỐI KHÔNG tự bịa thêm ví dụ minh họa hoặc tự giải hệ phương trình bên ngoài khi người dùng không yêu cầu cho ví dụ mới.\n"
-        "- KHÔNG chép chuỗi OCR lỗi kiểu `( ) 2 y ax a = ≠` hay `x∈` khi chưa rõ công thức; hãy diễn đạt thành công thức chuẩn (`y = ax² (a ≠ 0)`).\n"
+        "- VIẾT TIẾNG VIỆT CÓ DẤU ĐẦY ĐỦ, ĐÚNG CHÍNH TẢ 100%: Mọi tiêu đề và nội dung tiếng Việt đều phải viết đúng chính tả có dấu (tuyệt đối không bỏ dấu thành 'CHUONG', 'GOCAO', 'DUONG THAT', 'chung minh').\n"
+        "- CHỈ BÁM SÁT NGUỒN (GROUNDED - ZERO FABRICATION): Giữ nguyên số liệu, công thức và điều kiện đúng 100% theo `[Tài liệu n]` (ví dụ: nếu nguồn ghi `1/OH² = 1/OA² + 1/OB²`, giữ chính xác công thức nghịch đảo bình phương đó, không tự đổi sai). TUYỆT ĐỐI KHÔNG tự bịa thêm ví dụ minh họa, tên riêng lạ hay giải hệ phương trình giả nếu nguồn không có và người dùng không hỏi.\n"
+        "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế hoặc mục tài liệu có nhiều trường hợp (a, b, c, 1, 2, 3...), hãy trình bày đủ mọi mục dưới dạng đề mục rõ ràng, không bỏ sót hay cắt ngang giữa chừng.\n"
+        "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa nhiều lần. Luôn tổng hợp thành MỘT câu trả lời mạch lạc thống nhất và gắn nhãn `[1]`, `[2]` ở cuối ý.\n"
+        "- CHỈ TRẢ LỜI ĐÚNG CHỦ ĐỀ ĐƯỢC HỎI: Bỏ qua hoàn toàn các đoạn mục không liên quan nằm lẫn ở trang kế bên, và KHÔNG lặp lại công thức ở cuối câu trả lời.\n"
+        "- KHÔNG chép chuỗi OCR lỗi kiểu `( ) 2 y ax a = ≠` hay `tan{α}`; luôn chuẩn hóa sạch thành `y = ax² (a ≠ 0)` hoặc `a = tan(α)`.\n"
         "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
-        "- TUYỆT ĐỐI KHÔNG bịa kiến thức ngoài cấp học/tài liệu (ví dụ: không tự thêm 'đạo hàm' vào tài liệu Toán lớp 9 nếu tài liệu không hề nhắc đến) và KHÔNG mở đầu câu kiểu máy móc ('Tài liệu [1] mô tả...', 'Để đáp lại yêu cầu của bạn...').\n"
-        "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó giải đáp ngắn gọn bằng kiến thức chuẩn xác (không gắn [1], [2] giả) hoặc liệt kê nhanh vài mục tiêu biểu dưới dạng gạch đầu dòng sạch."
+        "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó giải đáp ngắn gọn bằng kiến thức chuẩn xác (không gắn [1], [2] giả)."
     ]
 
     if is_short_lookup and not has_web:
@@ -811,7 +811,16 @@ def decode_symbol_pua_text(text: str) -> str:
         out_lines.append(" ".join(short_buf))
     elif short_buf:
         out_lines.extend(short_buf)
-    return "\n".join(out_lines)
+    joined = "\n".join(out_lines)
+    # Gom hệ phương trình/điều kiện dấu ngoặc nhọn 3 dòng bị tách dọc do PDF sort=True:
+    # `{ x > 0 \n - Thuộc góc phần tư I: { và a1 ≠ a2 \n { y > 0` -> `- Thuộc góc phần tư I: { x > 0 ; y > 0 } và a1 ≠ a2`
+    joined = re.sub(
+        r"(?m)^\{\s*([^\n]{2,48})\n([^\n]*?)\{\s*([^\n]*)\n\{\s*([^\n]{2,48})\s*\.?$",
+        lambda m: f"{m.group(2).rstrip()} {{ {m.group(1).strip()} ; {m.group(4).strip()} }}"
+        + (f" {m.group(3).strip()}" if m.group(3).strip() else ""),
+        joined,
+    )
+    return joined
 
 
 def _strip_raw_latex_math(text: str) -> str:
@@ -857,6 +866,9 @@ def _strip_raw_latex_math(text: str) -> str:
         ("\\neq", "≠"),
         ("\\ne", "≠"),
         ("\\Delta", "Δ"),
+        ("\\triangle", "Δ"),
+        ("\\angle", "∠"),
+        ("\\parallel", "∥"),
         ("\\alpha", "α"),
         ("\\beta", "β"),
         ("\\gamma", "γ"),
@@ -874,11 +886,17 @@ def _strip_raw_latex_math(text: str) -> str:
         ("\\cot", "cot"),
         ("\\in", "∈"),
         ("\\perp", "⊥"),
+        ("\\quad", " "),
+        ("\\,", " "),
+        ("\\;", " "),
+        ("\\!", ""),
     )
     for k, v in latex_tokens:
         res = res.replace(k, v)
 
     res = res.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
+    res = res.replace("\\{", "{").replace("\\}", "}")
+    res = re.sub(r"\\overline\{([^{}]+)\}", r"\1", res)
     res = re.sub(r"\b(sin|cos|tan|cot|arcsin|arccos|arctan|log)\s*\{([^{}]+)\}", r"\1(\2)", res)
     res = re.sub(r"\{([A-Za-z0-9αβγθΔπ]{1,3})\}", r"\1", res)
     res = re.sub(r"\^\{2\}|\^2(?![0-9])", "²", res)
@@ -978,9 +996,15 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         text,
     )
     text = re.sub(
-        r"\(\s*[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*\)",
+        r"\(\s*(?:Trang\s*\d+\s*[-–,]?\s*)?[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*\)",
         r"[\1]",
         text,
+    )
+    text = re.sub(
+        r"\(\s*Trang\s*\d+\s*[-–,]?\s*Tài\s*liệu\s*\d+\s*\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
     )
     text = re.sub(
         r"\n*\s*Nếu\s+bạn\s+cần\s+thêm\s+thông\s+tin\s+cụ\s+thể[^.\n]{0,180}(?:chi\s+tiết\s+hơn|hỗ\s+trợ\s+thêm|cho\s+tôi\s+biết)[^.\n]*\.?\s*$",
@@ -1013,7 +1037,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
     text = re.sub(
-        r"\n*\s*(?:Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s*:|Hãy\s+đối\s+chiếu\s+tài\s+liệu\s+và\s+trả\s+lời\s+trực\s+diện|🎯\s*\[TRÍCH\s+ĐOẠN)[\s\S]*$",
+        r"\n*\s*(?:Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s*:|Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s+về[^\n]*đã\s+được\s+giải\s+đáp|Hãy\s+đối\s+chiếu\s+tài\s+liệu\s+và\s+trả\s+lời\s+trực\s+diện|🎯\s*\[TRÍCH\s+ĐOẠN)[\s\S]*$",
         "",
         text,
         flags=re.IGNORECASE | re.UNICODE,
@@ -1025,12 +1049,25 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         flags=re.IGNORECASE | re.UNICODE,
     )
 
-    # 3b. Khử lặp dòng/mục giống hệt hoặc gần trùng nhau do model nhỏ (3B) lặp lại theo từng tài liệu
+    # 3b. Khử lặp dòng/mục hoặc lặp cả đoạn tiêu đề `### ...` giống nhau do model nhỏ (3B) tự lặp lại ở cuối
     if "\n" in text:
         dedup_lines: List[str] = []
         seen_norm_lines: set[str] = set()
+        seen_md_headings: set[str] = set()
+        skip_dup_section = False
         for ln in text.splitlines():
             stripped_ln = ln.strip()
+            if stripped_ln.startswith("---GỢI Ý TIẾP THEO---"):
+                skip_dup_section = False
+            if re.match(r"^#{2,4}\s+", stripped_ln):
+                h_norm = re.sub(r"[\s#*:\-–.,;()]+", " ", stripped_ln.lower()).strip()
+                if len(h_norm) >= 12 and h_norm in seen_md_headings:
+                    skip_dup_section = True
+                    continue
+                skip_dup_section = False
+                seen_md_headings.add(h_norm)
+            elif skip_dup_section:
+                continue
             if not stripped_ln:
                 if dedup_lines and dedup_lines[-1] != "":
                     dedup_lines.append("")
@@ -1071,6 +1108,18 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     return text
 
 
+def _build_word_boundary_preview(text: str, max_len: int = 320) -> str:
+    """Rút gọn đoạn xem trước gọn gàng theo ranh giới từ/dòng mà không cắt ngang công thức hay chữ tiếng Việt."""
+    clean = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(clean) <= max_len:
+        return clean
+    sliced = clean[:max_len]
+    cut = max(sliced.rfind("\n"), sliced.rfind(" "))
+    if cut >= int(max_len * 0.55):
+        sliced = sliced[:cut]
+    return sliced.rstrip(" ,;:-") + "..."
+
+
 def _prepare_rag_prompts_and_citations(
     query: str,
     context_chunks: List[Dict[str, Any]],
@@ -1102,7 +1151,7 @@ def _prepare_rag_prompts_and_citations(
         page_suffix = f" ({' · '.join(meta_parts)})" if meta_parts else ""
         prompt_doc_name = re.sub(r"^\[[^\]]+\]_?", "", str(chunk.get("document_name") or "")).strip() or str(chunk.get("document_name") or "")
         header = f"\n--- [Tài liệu {ref_id}]: {prompt_doc_name}{page_suffix} ---\n"
-        raw_body = decode_symbol_pua_text(str(chunk.get("content", "")))
+        raw_body = _strip_raw_latex_math(decode_symbol_pua_text(str(chunk.get("content", ""))))
         doc_key = str(chunk.get("document_id") or "")
         deduped_body = (
             _deduplicate_chunk_overlap(seen_doc_tails[doc_key], raw_body)
@@ -1132,6 +1181,9 @@ def _prepare_rag_prompts_and_citations(
         context_text += block
         used_tokens += block_tokens
         snippet_src = focused_excerpt if focused_excerpt else raw_body
+        full_citation_text = (raw_body or deduped_body or "").strip()
+        if len(full_citation_text) > 2800:
+            full_citation_text = _build_word_boundary_preview(full_citation_text, 2800)
         citations.append({
             "ref_id": ref_id,
             "source_type": "document",
@@ -1140,7 +1192,8 @@ def _prepare_rag_prompts_and_citations(
             "page_number": chunk.get("page_number"),
             "page_label": page_label or None,
             "chunk_index": chunk.get("chunk_index"),
-            "snippet": snippet_src[:200] + "..." if len(snippet_src) > 200 else snippet_src,
+            "snippet": _build_word_boundary_preview(snippet_src, 320),
+            "full_text": full_citation_text,
         })
 
     for source in (web_sources or []):
@@ -1177,7 +1230,8 @@ def _prepare_rag_prompts_and_citations(
             "document_name": clean_title,
             "title": clean_title,
             "url": url,
-            "snippet": snippet_text,
+            "snippet": _build_word_boundary_preview(snippet_text, 320),
+            "full_text": snippet_text.strip(),
         })
 
     has_local = any(c["source_type"] == "document" for c in citations)
@@ -1324,20 +1378,31 @@ def select_optimal_chat_model(
         avail_ram = 8.0
         vram_mb = 0
 
-    fast_candidates = ("qwen2.5:3b", "llama3.2:3b", "qwen2.5:1.5b", "llama3.2:1b")
-    deep_candidates = ("qwen2.5:7b", "llama3.1:8b", "qwen2.5:14b")
+    fast_candidates = ("qwen2.5:3b", "qwen3:4b", "gemma3:4b", "llama3.2:3b", "qwen2.5:1.5b", "llama3.2:1b")
+    deep_candidates = ("qwen2.5:7b", "llama3.1:8b", "qwen2.5:14b", "qwen3:4b")
 
     is_4gb_vram_or_light_machine = (
         active_id == "eco"
-        or (vram_mb <= 4096 and avail_ram < 8.8)
+        or avail_ram < 5.5
+        or (vram_mb <= 4096 and avail_ram < 7.8)
     )
 
-    if task_tier == "fast" or is_4gb_vram_or_light_machine or task_tier == "standard":
+    # Nếu đang dùng 'auto' ở chế độ deep (hoặc Balanced máy có RAM/VRAM ổn cho suy luận sâu), chọn model lớn hơn để giảm lỗi chính tả & ảo giác;
+    # Ngược lại trên Eco/Fast hoặc máy yếu ưu tiên tuyệt đối 3B (<3s phản hồi).
+    if task_tier == "fast" or is_4gb_vram_or_light_machine:
         for cand in fast_candidates:
             if cand in available_models:
                 return cand
-    elif task_tier == "deep" and active_id != "eco" and (vram_mb >= 6144 or avail_ram >= 8.8):
+    elif task_tier == "deep" and active_id != "eco" and (vram_mb >= 4096 or avail_ram >= 7.5):
         for cand in deep_candidates:
+            if cand in available_models:
+                return cand
+    elif task_tier == "standard":
+        if req.lower() == "auto" and active_id == "performance" and (vram_mb >= 6144 or avail_ram >= 9.5):
+            for cand in deep_candidates:
+                if cand in available_models:
+                    return cand
+        for cand in fast_candidates:
             if cand in available_models:
                 return cand
 
@@ -1372,12 +1437,13 @@ async def generate_rag_answer(
     web_sources: Optional[List[Dict[str, Any]]] = None,
     history: Optional[List[Dict[str, str]]] = None,
     image_base64: Optional[str] = None,
+    task_tier: str = "standard",
 ) -> Dict[str, Any]:
     """
     Tạo câu trả lời thông minh đồng bộ: trò chuyện tự nhiên, tổng hợp ý nghĩa sâu sắc, kèm trích dẫn
     """
     ollama_status = await check_ollama_status()
-    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64)
+    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64, task_tier=task_tier)
     _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
     history_messages = _build_bounded_history_messages(history)
 
@@ -1604,12 +1670,13 @@ async def stream_rag_answer(
     image_base64: Optional[str] = None,
     collector: Optional[Dict[str, Any]] = None,
     is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+    task_tier: str = "standard",
 ) -> AsyncGenerator[str, None]:
     """
     Sinh câu trả lời RAG dạng luồng (Server-Sent Events) theo thời gian thực từ Ollama cục bộ.
     """
     ollama_status = await check_ollama_status()
-    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64)
+    model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64, task_tier=task_tier)
     _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
     history_messages = _build_bounded_history_messages(history)
 

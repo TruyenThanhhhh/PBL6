@@ -182,7 +182,7 @@ interface AppState {
   clearLocalData: () => void
 }
 
-const SEED_VERSION = 4
+const SEED_VERSION = 5
 
 const emptyStatus: SystemStatus = {
   backendOnline: false,
@@ -208,7 +208,7 @@ export const useAppStore = create<AppState>()(
       defaultAiMode: "auto",
       webSearchEnabled: false,
       confirmBeforeExternal: true,
-      localLlmModel: "qwen2.5:3b",
+      localLlmModel: "auto",
       embeddingModel: "BGE-M3 (dự kiến)",
       vectorDb: "SQLite FTS5 + Vector (dự kiến)",
       storagePath: "./sourcecode/backend/data",
@@ -551,7 +551,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "knowledge-ai-store",
-      version: 4,
+      version: 5,
       migrate: (persistedState: unknown, version: number) => {
         const state = (persistedState ?? {}) as Record<string, unknown>
         if (version < 4) {
@@ -560,7 +560,18 @@ export const useAppStore = create<AppState>()(
             workspaces: seedWorkspaces,
             documents: seedDocuments,
             currentWorkspaceId: (state.currentWorkspaceId as string) || "ws_default",
-            seedVersion: 4,
+            localLlmModel: "auto",
+            seedVersion: 5,
+          }
+        }
+        if (version < 5) {
+          return {
+            ...state,
+            localLlmModel:
+              !state.localLlmModel || state.localLlmModel === "qwen2.5:3b"
+                ? "auto"
+                : state.localLlmModel,
+            seedVersion: 5,
           }
         }
         return state

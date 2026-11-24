@@ -11,9 +11,12 @@ from starlette.concurrency import run_in_threadpool
 
 from app.database import get_db_connection
 from app.services.document_service import (
+    build_document_guide,
     process_and_index_document,
+    rebuild_document_from_source,
     reindex_document_embeddings,
 )
+from app.services.llm_service import decode_symbol_pua_text
 from app.services.workspace_ai_service import (
     generate_and_apply_workspace_metadata,
     generate_unique_default_workspace_name,
@@ -471,7 +474,9 @@ def get_document_chunk(
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Không tìm thấy đoạn trích dẫn")
-    return {"citation": dict(row)}
+    item = dict(row)
+    item["content"] = decode_symbol_pua_text(item.get("content") or "")
+    return {"citation": item}
 
 
 @router.get("/documents/{document_id}")
@@ -545,7 +550,11 @@ def get_document_chunks(
 
     cursor = conn.cursor()
     cursor.execute(query, tuple(params))
-    chunks = [dict(r) for r in cursor.fetchall()]
+    chunks = []
+    for r in cursor.fetchall():
+        item = dict(r)
+        item["content"] = decode_symbol_pua_text(item.get("content") or "")
+        chunks.append(item)
 
     count_row = conn.execute(
         "SELECT COUNT(*) AS total FROM document_chunks WHERE document_id = ?",
@@ -583,6 +592,50 @@ async def reindex_document_vectors(document_id: str, user: Dict[str, Any] = Depe
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/documents/{document_id}/rebuild")
+async def rebuild_document(document_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Trích xuất lại văn bản sạch (PDF sort=True + giải mã ký tự toán học) và tái tạo chỉ mục cho tài liệu cũ."""
+    conn = get_db_connection()
+    owned = conn.execute(
+        """SELECT 1 FROM documents d JOIN workspaces w ON w.id = d.workspace_id
+           WHERE d.id = ? AND w.owner_user_id = ?""",
+        (document_id, user["id"]),
+    ).fetchone()
+    conn.close()
+    if not owned:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    try:
+        return await run_in_threadpool(rebuild_document_from_source, document_id, False)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/documents/{document_id}/guide")
+async def get_document_guide(
+    document_id: str,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """Trả về Source Guide kiểu NotebookLM: tóm tắt cấu trúc, danh sách chủ đề và câu hỏi gợi ý."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """SELECT d.id, w.owner_user_id FROM documents d
+           JOIN workspaces w ON w.id = d.workspace_id
+           WHERE d.id = ?""",
+        (document_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    if user and row["owner_user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    try:
+        return await run_in_threadpool(build_document_guide, document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # --- Notes & Study Artifacts & Activities Endpoints ---

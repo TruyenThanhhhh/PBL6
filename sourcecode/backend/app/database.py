@@ -236,6 +236,7 @@ def init_db() -> None:
         "mode_used": "TEXT",
         "action_json": "TEXT",
         "latency_seconds": "REAL",
+        "model_used": "TEXT",
     })
 
     cursor.execute("""

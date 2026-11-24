@@ -102,6 +102,7 @@ export interface Citation {
   pageLabel?: string | null
   chunkIndex: number | null
   snippet: string
+  fullText?: string
   sourceKind: SourceKind
   url?: string
   highlight?: string
@@ -127,6 +128,7 @@ export interface EvidenceItem {
   pageLabel?: string | null
   chunkId: string | null
   snippet: string
+  fullText?: string
   hasExactOffset: boolean
 }
 
@@ -189,6 +191,7 @@ export interface ChatMessage {
   reasoningMode?: ReasoningMode
   modelId?: string
   engine?: string
+  latencySeconds?: number
   fallbackReason?: string
   streaming?: boolean
   progressStage?: string
