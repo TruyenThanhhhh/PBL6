@@ -261,7 +261,12 @@ def _audit_reasoning_grounding(
     """
     from app.services.llm_service import _sanitize_rag_output
 
-    cleaned = _sanitize_rag_output(answer or "", citations_count)
+    pre_norm = re.sub(
+        r"\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*(\d{1,3})\s*\]",
+        r"[\1]",
+        answer or "",
+        flags=re.IGNORECASE | re.UNICODE,
+    )
     dropped_refs = 0
 
     def _check_ref(match: re.Match) -> str:
@@ -272,7 +277,8 @@ def _audit_reasoning_grounding(
         dropped_refs += 1
         return ""
 
-    cleaned = re.sub(r"\[(\d{1,3})\]", _check_ref, cleaned)
+    cleaned = re.sub(r"\[(\d{1,3})\]", _check_ref, pre_norm)
+    cleaned = _sanitize_rag_output(cleaned, citations_count)
     cleaned = re.sub(r" +([,.;:])", r"\1", cleaned)
 
     extra_delta = ""
