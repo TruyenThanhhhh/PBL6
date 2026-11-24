@@ -13,6 +13,7 @@ from app.services.hardware_profile_service import get_memory_gb, trim_process_me
 
 logger = logging.getLogger(__name__)
 _RERANKER_FAILED = False
+_RERANKER_FAILED_UNTIL: float = 0.0
 _RERANK_LOCK = threading.Lock()
 _RERANK_MODEL: Any = None
 _RERANK_LAST_USED_AT: float = 0.0
@@ -77,9 +78,13 @@ def rerank_documents(
     Falls back to the incoming order if the model is disabled, unavailable, RAM is critically low,
     or the download fails.
     """
-    global _RERANKER_FAILED, _RERANK_LAST_USED_AT
-    if not RERANK_ENABLED or _RERANKER_FAILED or not documents:
+    global _RERANKER_FAILED, _RERANKER_FAILED_UNTIL, _RERANK_LAST_USED_AT
+    if not RERANK_ENABLED or not documents:
         return documents[:top_k]
+    if _RERANKER_FAILED and time.monotonic() < _RERANKER_FAILED_UNTIL:
+        return documents[:top_k]
+    if _RERANKER_FAILED and time.monotonic() >= _RERANKER_FAILED_UNTIL:
+        _RERANKER_FAILED = False
 
     if len(documents) <= 1:
         return documents[:top_k]
@@ -99,8 +104,8 @@ def rerank_documents(
     except Exception:
         pass
 
-    # Bảo vệ RAM: nếu chưa nạp Reranker và RAM khả dụng < 4.2 GB, giữ thứ tự Hybrid RRF thay vì nạp thêm ~1.35 GB ONNX
-    if _RERANK_MODEL is None and not _is_mocked(_get_model) and avail_ram < 4.2:
+    # Bảo vệ RAM: nếu chưa nạp Reranker và RAM khả dụng < 4.0 GB, giữ thứ tự Hybrid RRF thay vì nạp thêm ~1.35 GB ONNX
+    if _RERANK_MODEL is None and not _is_mocked(_get_model) and avail_ram < 4.0:
         logger.info("⚡ RAM khả dụng thấp (%.2f GB) -> bỏ qua nạp Cross-Encoder Reranker.", avail_ram)
         return documents[:top_k]
 
@@ -133,8 +138,10 @@ def rerank_documents(
         return result
     except Exception as exc:
         _RERANKER_FAILED = True
-        logger.warning("Reranker unavailable (%s); falling back to RRF order", exc)
+        _RERANKER_FAILED_UNTIL = time.monotonic() + 60.0
+        logger.warning("Reranker unavailable (%s); falling back to RRF order for 60s", exc)
         return documents[:top_k]
     finally:
-        if _RERANK_MODEL is not None and not _is_mocked(_get_model) and get_memory_gb()[1] < 4.2:
+        # Hysteresis chống nạp/xả liên tục: chỉ xả khẩn cấp khi RAM trống xuống mức nguy cấp (< 1.4 GB)
+        if _RERANK_MODEL is not None and not _is_mocked(_get_model) and get_memory_gb()[1] < 1.4:
             unload_reranker_model(trim_os=True)

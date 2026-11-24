@@ -410,6 +410,50 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
             "Bình phương của một tổng là (A + B)² = A² + 2AB + B² [1]",
         )
 
+    def test_p0_audit_remediations_local_only_intent_sandbox_cjk(self) -> None:
+        from app.services.ai_router import _detect_web_intent, _resolve_routing_modes
+        from app.services.intent_service import classify_chat_intent
+        from app.services.llm_service import _try_build_exact_cjk_vocab_answer
+        from app.services.python_sandbox_service import evaluate_python_sandbox
+
+        # 1. local_only KHÔNG BAO GIỜ kích hoạt web search
+        self.assertEqual(_resolve_routing_modes("local_only", "Trong kho tài liệu hiện tại có những tài liệu nào?"), (False, True))
+        self.assertFalse(_detect_web_intent("Trong kho tài liệu hiện tại có những tài liệu nào?"))
+
+        # 2. Intent: câu hỏi thông tin chứa 'trắc nghiệm' -> rag_qa; 'đề' nâng cao -> hard; viết ra Word -> compose_document
+        self.assertEqual(
+            classify_chat_intent("Bài kiểm tra trắc nghiệm trong tài liệu nói về nội dung gì?").kind,
+            "rag_qa",
+        )
+        quiz_dec = classify_chat_intent("Tạo đề trắc nghiệm nâng cao chương 3 gồm 8 câu")
+        self.assertEqual(quiz_dec.kind, "create_quiz")
+        self.assertEqual(quiz_dec.params["question_count"], 8)
+        self.assertEqual(quiz_dec.params["difficulty"], "hard")
+        doc_dec = classify_chat_intent("Viết bảng tổng hợp công thức Toán 9 ra file Word docx")
+        self.assertEqual(doc_dec.kind, "compose_document")
+        self.assertEqual(doc_dec.params["default_export_format"], "docx")
+        exp_dec = classify_chat_intent("Xuất câu trả lời vừa rồi ra file PDF giúp tôi")
+        self.assertEqual(exp_dec.kind, "export_previous")
+
+        # 3. Python Sandbox hỗ trợ ký hiệu Unicode π, ², ³, √ và chặn pow/int*list DoS
+        sb = evaluate_python_sandbox({"R": 7, "h": 10}, ["C = round(2*π*R, 4)", "Sxq = round(2*π*R*h, 4)", "V = round(π*R²*h, 4)"])
+        self.assertTrue(sb["ok"], sb.get("error"))
+        self.assertAlmostEqual(sb["steps"][0]["value"], 43.9823, places=3)
+        self.assertAlmostEqual(sb["steps"][1]["value"], 439.823, places=3)
+        self.assertAlmostEqual(sb["steps"][2]["value"], 1539.3804, places=3)
+        self.assertFalse(evaluate_python_sandbox({}, ["pow(10, 10000000)"])["ok"])
+        self.assertFalse(evaluate_python_sandbox({}, ["1000000 * [0]"])["ok"])
+
+        # 4. Tra cứu CJK ngắn trả về 100% tiếng Việt chuẩn xác, không rò tiếng Trung
+        cjk_ans = _try_build_exact_cjk_vocab_answer(
+            "後半 là gì",
+            [{"document_name": "Mimikara N3.xlsx", "content": "12 | 後半 | こうはん | phần cuối"}],
+        )
+        self.assertIsNotNone(cjk_ans)
+        self.assertIn("こうはん", cjk_ans or "")
+        self.assertIn("phần cuối", cjk_ans or "")
+        self.assertNotIn("是指", cjk_ans or "")
+
 
 if __name__ == "__main__":
     unittest.main()

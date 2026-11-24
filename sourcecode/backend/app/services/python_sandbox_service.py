@@ -2,7 +2,8 @@
 import ast
 import math
 import operator
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 _BIN_OPS = {
     ast.Add: operator.add,
@@ -31,6 +32,15 @@ _CMP_OPS = {
     ast.NotIn: lambda a, b: a not in b,
 }
 
+def _safe_pow(base: Any, exp: Any, mod: Any = None) -> Any:
+    if isinstance(exp, (int, float)) and abs(exp) > _MAX_EXPONENT:
+        raise ValueError("Số mũ quá lớn.")
+    res = pow(base, exp) if mod is None else pow(base, exp, mod)
+    if isinstance(res, (int, float)) and not isinstance(res, bool) and abs(res) > _MAX_FACTORS ** 4:
+        raise ValueError("Giá trị lũy thừa vượt giới hạn an toàn.")
+    return res
+
+
 _SAFE_FUNCTIONS: Dict[str, Any] = {
     "abs": abs,
     "round": round,
@@ -38,7 +48,7 @@ _SAFE_FUNCTIONS: Dict[str, Any] = {
     "max": max,
     "sum": sum,
     "len": len,
-    "pow": pow,
+    "pow": _safe_pow,
     "int": int,
     "float": float,
     "bool": bool,
@@ -131,8 +141,11 @@ def _eval_node(node: ast.AST, env: Dict[str, Any], depth: int = 0) -> Any:
         right = _eval_node(node.right, env, depth + 1)
         if isinstance(node.op, ast.Pow) and isinstance(right, (int, float)) and abs(right) > _MAX_EXPONENT:
             raise ValueError("Số mũ quá lớn.")
-        if isinstance(node.op, ast.Mult) and isinstance(left, (list, tuple, str)) and isinstance(right, int) and right > 1000:
-            raise ValueError("Phép nhân chuỗi/danh sách vượt giới hạn.")
+        if isinstance(node.op, ast.Mult):
+            if (isinstance(left, (list, tuple, str)) and isinstance(right, int) and right > 1000) or (
+                isinstance(right, (list, tuple, str)) and isinstance(left, int) and left > 1000
+            ):
+                raise ValueError("Phép nhân chuỗi/danh sách vượt giới hạn.")
         return op_fn(left, right)
 
     if isinstance(node, ast.BoolOp):
@@ -183,10 +196,27 @@ def _eval_node(node: ast.AST, env: Dict[str, Any], depth: int = 0) -> Any:
     raise ValueError(f"Cú pháp Python bị từ chối trong Sandbox: {type(node).__name__}")
 
 
+def _normalize_math_expression(expr: str) -> str:
+    """Chuẩn hóa ký hiệu toán học Unicode thường gặp của LLM (π, ×, ÷, ², ³, √) sang cú pháp Python hợp lệ."""
+    s = (expr or "").strip()
+    if not s:
+        return ""
+    s = s.replace("π", "pi").replace("×", "*").replace("÷", "/").replace("−", "-")
+    s = re.sub(r"\bmath\.(pi|e|sqrt|sin|cos|tan|log|log10|log2|exp|ceil|floor|factorial)\b", r"\1", s)
+    s = s.replace("²", "**2").replace("³", "**3").replace("⁴", "**4")
+    s = re.sub(r"√\s*\(", "sqrt(", s)
+    s = re.sub(r"√\s*(\d+(?:\.\d+)?|[A-Za-z_]\w*)", r"sqrt(\1)", s)
+    # Chèn dấu nhân ẩn kiểu 2pi -> 2*pi hoặc 3(a+b) không phá hàm
+    s = re.sub(r"(\d)\s*(pi)\b", r"\1*\2", s)
+    return s
+
+
 def _format_value(val: Any) -> Any:
     if isinstance(val, float):
         if math.isnan(val) or math.isinf(val):
             raise ValueError("Kết quả phép tính không xác định (NaN/Inf).")
+        if val != 0 and abs(val) < 1e-4:
+            return val
         rounded = round(val, 6)
         return int(rounded) if rounded == int(rounded) and abs(rounded) < 1e12 else rounded
     return val
@@ -217,7 +247,7 @@ def evaluate_python_sandbox(
 
     try:
         for raw_expr in expressions:
-            code = (raw_expr or "").strip()
+            code = _normalize_math_expression(raw_expr)
             if not code:
                 continue
             tree = ast.parse(code, mode="exec")
@@ -228,24 +258,29 @@ def evaluate_python_sandbox(
                     var_name = stmt.targets[0].id
                     if var_name.startswith("_") or var_name in _SAFE_FUNCTIONS or var_name in _SAFE_CONSTANTS:
                         raise ValueError(f"Tên biến không hợp lệ: '{var_name}'")
-                    val = _format_value(_eval_node(stmt.value, env))
-                    env[var_name] = val
-                    last_val = val
-                    steps.append({"expr": code, "target": var_name, "value": val})
+                    raw_val = _eval_node(stmt.value, env)
+                    if isinstance(raw_val, float) and (math.isnan(raw_val) or math.isinf(raw_val)):
+                        raise ValueError("Kết quả phép tính không xác định (NaN/Inf).")
+                    env[var_name] = raw_val
+                    disp_val = _format_value(raw_val)
+                    last_val = disp_val
+                    steps.append({"expr": code, "target": var_name, "value": disp_val})
                 elif isinstance(stmt, ast.Expr):
-                    val = _format_value(_eval_node(stmt.value, env))
-                    last_val = val
-                    steps.append({"expr": code, "target": None, "value": val})
+                    raw_val = _eval_node(stmt.value, env)
+                    disp_val = _format_value(raw_val)
+                    last_val = disp_val
+                    steps.append({"expr": code, "target": None, "value": disp_val})
                 else:
                     raise ValueError(f"Câu lệnh không được phép trong Sandbox: {type(stmt).__name__}")
 
         if not steps:
             return {"ok": False, "steps": [], "env": env, "final_result": None, "error": "Biểu thức rỗng."}
 
+        formatted_env = {k: _format_value(v) for k, v in env.items()}
         return {
             "ok": True,
             "steps": steps,
-            "env": env,
+            "env": formatted_env,
             "final_result": last_val,
             "error": None,
         }

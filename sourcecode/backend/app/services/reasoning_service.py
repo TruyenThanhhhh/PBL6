@@ -1,4 +1,5 @@
 """Bộ máy Suy luận Tự chủ Đa bước (Autonomous Multi-Step Reasoning + General Tool Registry)."""
+import asyncio
 import json
 import logging
 import re
@@ -182,9 +183,14 @@ def _fast_local_reasoning_planner(
         principal = _parse_vn_amount(amt_m.group(1), amt_m.group(2))
 
     rate_m = re.search(r"(\d+(?:[.,]\d+)?)\s*%", q_low)
-    if not rate_m and initial_chunks:
+    if not rate_m and principal is not None and initial_chunks:
         joined_ctx = " ".join(str(c.get("content") or "") for c in initial_chunks[:3])
-        rate_m = re.search(r"(\d+(?:[.,]\d+)?)\s*%", joined_ctx)
+        # Chỉ lấy % từ tài liệu khi đứng cạnh từ khóa tài chính (lãi suất, thuế, phạt, chiết khấu) để không nhặt nhầm % ngẫu nhiên
+        rate_m = re.search(
+            r"(?:lãi\s*suất|lai\s*suat|mức\s*lãi|thuế|phạt|chiết\s*khấu|tăng\s*trưởng)[^%\n]{0,40}?(\d+(?:[.,]\d+)?)\s*%",
+            joined_ctx,
+            re.IGNORECASE | re.UNICODE,
+        )
     rate_pct = float(rate_m.group(1).replace(",", ".")) if rate_m else None
 
     time_m = re.search(
@@ -212,13 +218,87 @@ def _fast_local_reasoning_planner(
             variables = {"gia_tri": principal, "ty_le": r_dec}
             expressions = ["ket_qua = round(gia_tri * ty_le, 2)"]
     else:
-        # Biểu thức số học thuần trong câu hỏi (vd: "1250 * 48 + 15000")
-        arith_m = re.search(r"\b(\d+(?:\.\d+)?(?:\s*[\+\-\*\/]\s*\d+(?:\.\d+)?)+)\b", q_low)
+        # Biểu thức số học thuần trong câu hỏi (vd: "1250 * 48 + 15000") — bỏ qua chuỗi ngày YYYY-MM-DD hoặc dãy số có chữ cái dính liền
+        q_no_dates = re.sub(r"\b\d{4}-\d{1,2}-\d{1,2}\b", " ", q_low)
+        arith_m = re.search(r"(?<![A-Za-z0-9_])(\d+(?:\.\d+)?(?:\s*[\+\*\/]\s*\d+(?:\.\d+)?)+)(?![A-Za-z0-9_])", q_no_dates)
         if arith_m:
             expr_clean = arith_m.group(1).strip()
             expressions = [f"ket_qua = round({expr_clean}, 4)"]
         else:
-            # Hình học không gian tức thì (<1ms): Hình nón cụt, Hình nón, Hình trụ (kể cả quay hình chữ nhật), Hình cầu
+            # 1) Đại số hằng đẳng thức: Cho x - y = d và xy = p (hoặc x + y = s và xy = p) -> tính B = x³ ± y³ + (x ± y)² ...
+            diff_m = re.search(r"\bx\s*-\s*y\s*=\s*(-?\d+(?:[.,]\d+)?)", q_low)
+            sum_m = re.search(r"\bx\s*\+\s*y\s*=\s*(-?\d+(?:[.,]\d+)?)", q_low)
+            prod_m = re.search(r"\bx\s*\*?\s*y\s*=\s*(-?\d+(?:[.,]\d+)?)", q_low)
+            if prod_m and (diff_m or sum_m):
+                xy_val = float(prod_m.group(1).replace(",", "."))
+                variables["xy"] = xy_val
+                if diff_m:
+                    d_val = float(diff_m.group(1).replace(",", "."))
+                    variables["hieu_x_y"] = d_val
+                    expressions.extend([
+                        "x2_cong_y2 = round(hieu_x_y ** 2 + 2 * xy, 6)",
+                        "x3_tru_y3 = round(hieu_x_y ** 3 + 3 * xy * hieu_x_y, 6)",
+                    ])
+                    if re.search(r"x\s*(?:³|\^3)\s*-\s*y\s*(?:³|\^3)\s*\+\s*\(\s*x\s*-\s*y\s*\)\s*(?:²|\^2)", q_low):
+                        expressions.append("gia_tri_B = round(x3_tru_y3 + hieu_x_y ** 2, 6)")
+                    elif re.search(r"x\s*(?:³|\^3)\s*-\s*y\s*(?:³|\^3)\s*-\s*\(\s*x\s*-\s*y\s*\)\s*(?:²|\^2)", q_low):
+                        expressions.append("gia_tri_B = round(x3_tru_y3 - hieu_x_y ** 2, 6)")
+                elif sum_m:
+                    s_val = float(sum_m.group(1).replace(",", "."))
+                    variables["tong_x_y"] = s_val
+                    expressions.extend([
+                        "x2_cong_y2 = round(tong_x_y ** 2 - 2 * xy, 6)",
+                        "x3_cong_y3 = round(tong_x_y ** 3 - 3 * xy * tong_x_y, 6)",
+                    ])
+                    if re.search(r"x\s*(?:³|\^3)\s*\+\s*y\s*(?:³|\^3)\s*\+\s*3\s*\*?\s*xy", q_low) or re.search(r"x\s*(?:³|\^3)\s*\+\s*3\s*\*?\s*xy\s*\+\s*y\s*(?:³|\^3)", q_low):
+                        expressions.append("gia_tri_A = round(x3_cong_y3 + 3 * xy, 6)")
+
+            # 2) So sánh số lượng từ vựng giữa 2 Bài trong bảng Workbook Excel trực tiếp từ CSDL (không bao giờ lấy nhầm số trong tên file!)
+            lesson_nums = re.findall(r"\bbài\s+(\d{1,2})\b", q_low, re.IGNORECASE | re.UNICODE)
+            if not expressions and len(lesson_nums) >= 2 and any(k in q_low for k in ("nhiều từ", "bao nhiêu từ", "chênh lệch", "so sánh", "nhieu tu", "chenh lech")) and initial_chunks:
+                doc_id_wb = initial_chunks[0].get("document_id")
+                if doc_id_wb:
+                    try:
+                        from app.database import get_db_connection
+                        conn_wb = get_db_connection()
+                        try:
+                            wb_rows = conn_wb.execute(
+                                "SELECT content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index ASC",
+                                (doc_id_wb,),
+                            ).fetchall()
+                        finally:
+                            conn_wb.close()
+                        counts_by_num: Dict[int, int] = {}
+                        cur_lnum: Optional[int] = None
+                        l_hdr_re = re.compile(r"^\s*\[?Bài\s+(\d{1,2})\s*[-–:]", re.IGNORECASE)
+                        for r_wb in wb_rows:
+                            txt_wb = str(r_wb["content"] or "")
+                            if txt_wb.startswith("[CÂY MỤC LỤC") or txt_wb.startswith("Sheet:"):
+                                continue
+                            for ln_wb in txt_wb.splitlines():
+                                s_wb = ln_wb.strip()
+                                ml = l_hdr_re.match(s_wb)
+                                if ml:
+                                    cur_lnum = int(ml.group(1))
+                                    counts_by_num.setdefault(cur_lnum, 0)
+                                    continue
+                                if cur_lnum is not None and "|" in s_wb:
+                                    cells_wb = [c.strip() for c in s_wb.strip("|").split("|") if c.strip()]
+                                    if len(cells_wb) >= 3 and cells_wb[0].isdigit():
+                                        counts_by_num[cur_lnum] = counts_by_num.get(cur_lnum, 0) + 1
+                        n1, n2 = int(lesson_nums[0]), int(lesson_nums[1])
+                        if counts_by_num.get(n1, 0) > 0 and counts_by_num.get(n2, 0) > 0:
+                            variables[f"so_tu_bai_{n1}"] = counts_by_num[n1]
+                            variables[f"so_tu_bai_{n2}"] = counts_by_num[n2]
+                            expressions.extend([
+                                f"so_tu_bai_{n1} = {counts_by_num[n1]}",
+                                f"so_tu_bai_{n2} = {counts_by_num[n2]}",
+                                f"chenh_lech_tu = abs(so_tu_bai_{n1} - so_tu_bai_{n2})",
+                            ])
+                    except Exception:
+                        pass
+
+            # 3) Hình học không gian tức thì (<1ms): Hình nón cụt, Hình nón, Hình trụ (kể cả R=7, h=10 hoặc quay hình chữ nhật), Hình cầu
             has_frustum = any(k in q_low for k in ("nón cụt", "non cut"))
             has_cylinder = any(k in q_low for k in ("hình trụ", "hinh tru"))
             has_cone = not has_frustum and any(k in q_low for k in ("hình nón", "hinh non"))
@@ -229,13 +309,25 @@ def _fast_local_reasoning_planner(
                     r"bán\s+kính(?:\s*(?:2|hai)\s+đáy)?[^0-9\n]{0,35}?(\d+(?:[.,]\d+)?)\s*(?:cm|m|dm|mm)?\s*(?:và|,|;)\s*(\d+(?:[.,]\d+)?)",
                     q_low,
                 )
-                h_m = re.search(r"chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                r_big_m = re.search(r"nón\s+cụt[^.\n]{0,60}?\bR\s*=\s*(\d+(?:[.,]\d+)?)", q_clean)
+                r_small_m = re.search(r"nón\s+cụt[^.\n]{0,80}?\br\s*=\s*(\d+(?:[.,]\d+)?)", q_clean)
+                h_m = (
+                    re.search(r"nón\s+cụt[^.\n]{0,110}?\bh\s*=\s*(\d+(?:[.,]\d+)?)", q_clean, re.IGNORECASE)
+                    or re.search(r"chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                )
                 if rad_m and h_m:
                     r1 = float(rad_m.group(1).replace(",", "."))
                     r2 = float(rad_m.group(2).replace(",", "."))
                     variables["R_nc"] = max(r1, r2)
                     variables["r_nc"] = min(r1, r2)
                     variables["h_nc"] = float(h_m.group(1).replace(",", "."))
+                elif r_big_m and r_small_m and h_m:
+                    r1 = float(r_big_m.group(1).replace(",", "."))
+                    r2 = float(r_small_m.group(1).replace(",", "."))
+                    variables["R_nc"] = max(r1, r2)
+                    variables["r_nc"] = min(r1, r2)
+                    variables["h_nc"] = float(h_m.group(1).replace(",", "."))
+                if "R_nc" in variables and "r_nc" in variables and "h_nc" in variables:
                     expressions.extend([
                         "duong_sinh_l = round(sqrt((R_nc - r_nc) ** 2 + h_nc ** 2), 4)",
                         "V_non_cut = round((pi * h_nc / 3) * (R_nc ** 2 + r_nc ** 2 + R_nc * r_nc), 4)",
@@ -260,37 +352,43 @@ def _fast_local_reasoning_planner(
                     else:
                         variables["h_tru"] = bc
                         variables["R_tru"] = ab
-                    expressions.extend([
-                        "V_tru = round(pi * (R_tru ** 2) * h_tru, 4)",
-                        "S_tp_tru = round(2 * pi * R_tru * (h_tru + R_tru), 4)",
-                    ])
                 else:
-                    cyl_r = re.search(r"hình\s+trụ[^.\n]{0,60}?bán\s+kính\s*(?:đáy\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
-                    cyl_h = re.search(r"hình\s+trụ[^.\n]{0,90}?chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                    cyl_r = re.search(
+                        r"hình\s+trụ[^.\n]{0,70}?(?:bán\s+kính\s*(?:đáy\s*)?(?:r\s*)?(?:là|bằng|=|:)?\s*|r\s*=\s*)(\d+(?:[.,]\d+)?)",
+                        q_low,
+                    )
+                    cyl_h = re.search(
+                        r"hình\s+trụ[^.\n]{0,110}?(?:chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*|h\s*=\s*)(\d+(?:[.,]\d+)?)",
+                        q_low,
+                    )
                     if cyl_r and cyl_h:
                         variables["R_tru"] = float(cyl_r.group(1).replace(",", "."))
                         variables["h_tru"] = float(cyl_h.group(1).replace(",", "."))
-                        expressions.extend([
-                            "V_tru = round(pi * (R_tru ** 2) * h_tru, 4)",
-                            "S_tp_tru = round(2 * pi * R_tru * (h_tru + R_tru), 4)",
-                        ])
+                if "R_tru" in variables and "h_tru" in variables:
+                    expressions.extend([
+                        "C_day_tru = round(2 * pi * R_tru, 4)",
+                        "S_xq_tru = round(2 * pi * R_tru * h_tru, 4)",
+                        "S_tp_tru = round(2 * pi * R_tru * (h_tru + R_tru), 4)",
+                        "V_tru = round(pi * (R_tru ** 2) * h_tru, 4)",
+                    ])
 
             if "V_non_cut" in str(expressions) and "V_tru" in str(expressions):
                 expressions.append("chenh_lech_V = round(V_non_cut - V_tru, 4)")
-                expressions.append("chenh_lech_phan_tram = round(abs(V_non_cut - V_tru) / V_tru * 100, 2)")
+                expressions.append("chenh_lech_phan_tram = round(abs(V_non_cut - V_tru) / min(V_non_cut, V_tru) * 100, 2)")
             elif has_cone:
-                cone_r = re.search(r"bán\s+kính\s*(?:đáy\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
-                cone_h = re.search(r"chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                cone_r = re.search(r"bán\s+kính\s*(?:đáy\s*)?(?:R\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                cone_h = re.search(r"chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 if cone_r and cone_h:
                     variables["R_non"] = float(cone_r.group(1).replace(",", "."))
                     variables["h_non"] = float(cone_h.group(1).replace(",", "."))
                     expressions.extend([
                         "l_non = round(sqrt(R_non ** 2 + h_non ** 2), 4)",
+                        "S_xq_non = round(pi * R_non * l_non, 4)",
                         "V_non = round((pi * (R_non ** 2) * h_non) / 3, 4)",
                         "S_tp_non = round(pi * R_non * (R_non + l_non), 4)",
                     ])
             elif has_sphere:
-                sph_r = re.search(r"bán\s+kính\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                sph_r = re.search(r"bán\s+kính\s*(?:R\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 if sph_r:
                     variables["R_cau"] = float(sph_r.group(1).replace(",", "."))
                     expressions.extend([
@@ -431,24 +529,60 @@ def _audit_reasoning_grounding(
     cleaned = _sanitize_rag_output(cleaned, citations_count)
     cleaned = re.sub(r" +([,.;:])", r"\1", cleaned)
 
+    _SANDBOX_LABELS = {
+        "duong_sinh_l": "Đường sinh l",
+        "V_non_cut": "Thể tích hình nón cụt (V)",
+        "S_xq_non_cut": "Diện tích xung quanh nón cụt (Sxq)",
+        "S_tp_non_cut": "Diện tích toàn phần nón cụt (Stp)",
+        "C_day_tru": "Chu vi đáy hình trụ (C)",
+        "S_xq_tru": "Diện tích xung quanh hình trụ (Sxq)",
+        "S_tp_tru": "Diện tích toàn phần hình trụ (Stp)",
+        "V_tru": "Thể tích hình trụ (V)",
+        "chenh_lech_V": "Chênh lệch thể tích (ΔV)",
+        "chenh_lech_phan_tram": "Tỷ lệ chênh lệch (%)",
+        "x2_cong_y2": "x² + y²",
+        "x3_tru_y3": "x³ - y³",
+        "x3_cong_y3": "x³ + y³",
+        "gia_tri_B": "Giá trị biểu thức B",
+        "gia_tri_A": "Giá trị biểu thức A",
+        "chenh_lech_tu": "Chênh lệch số từ",
+    }
+
     extra_delta = ""
     sandbox_note = ""
-    if sandbox_res and sandbox_res.get("ok") and sandbox_res.get("final_result") is not None:
-        final_val = sandbox_res["final_result"]
-        human_val = _format_human_number(final_val)
-        candidates = {str(final_val), human_val}
-        if isinstance(final_val, float) and final_val.is_integer():
-            candidates.add(str(int(final_val)))
-        if isinstance(final_val, (int, float)):
-            candidates.add(f"{final_val:,.0f}".replace(",", "."))
-            candidates.add(f"{final_val:,.0f}")
-            candidates.add(f"{final_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        if not any(tok in cleaned for tok in candidates):
-            extra_delta = (
-                f"\n\n> **Kiểm chứng Python Sandbox:** Kết quả tính toán xác thực là **`{human_val}`**."
-            )
+    steps_to_check: List[Dict[str, Any]] = []
+    if sandbox_res and sandbox_res.get("ok"):
+        if sandbox_res.get("steps"):
+            steps_to_check = list(sandbox_res["steps"])
+        elif sandbox_res.get("final_result") is not None:
+            steps_to_check = [{"target": "Kết quả tính toán xác thực", "value": sandbox_res["final_result"]}]
+
+    if steps_to_check:
+        missing_rows: List[str] = []
+        for st in steps_to_check:
+            val = st.get("value")
+            if val is None or isinstance(val, bool):
+                continue
+            target_k = str(st.get("target") or "Kết quả")
+            human_val = _format_human_number(val)
+            candidates = {str(val), human_val}
+            if isinstance(val, float) and val.is_integer():
+                candidates.add(str(int(val)))
+            if isinstance(val, (int, float)):
+                candidates.add(f"{val:,.0f}".replace(",", "."))
+                candidates.add(f"{val:,.0f}")
+                candidates.add(f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                candidates.add(f"{val:.2f}")
+            if not any(tok in cleaned for tok in candidates):
+                pretty_k = _SANDBOX_LABELS.get(target_k, target_k.replace("_", " "))
+                missing_rows.append(f"- **{pretty_k}**: `{human_val}`")
+        if missing_rows:
+            if len(missing_rows) == 1:
+                extra_delta = f"\n\n> **Kiểm chứng Python Sandbox:** {missing_rows[0].lstrip('- ')}."
+            else:
+                extra_delta = "\n\n> **Bảng số liệu xác thực từ Python Sandbox:**\n" + "\n".join(missing_rows)
             cleaned = cleaned.rstrip() + extra_delta
-            sandbox_note = " Đã bổ sung số liệu xác thực từ Sandbox."
+            sandbox_note = f" Đã bổ sung {len(missing_rows)} số liệu xác thực từ Sandbox."
 
     step_detail = (
         f"Đã đối chiếu {citations_count} nguồn trích dẫn"
@@ -627,7 +761,13 @@ async def stream_autonomous_reasoning(
 
     if expressions:
         yield f"data: {json.dumps({'stage': 'reasoning_tool', 'stage_label': 'Đang kiểm chứng phép tính & điều kiện logic qua Python Sandbox...'}, ensure_ascii=False)}\n\n"
-        sandbox_res = evaluate_python_sandbox(variables, expressions)
+        try:
+            sandbox_res = await asyncio.wait_for(
+                run_in_threadpool(evaluate_python_sandbox, variables, expressions),
+                timeout=3.0,
+            )
+        except asyncio.TimeoutError:
+            sandbox_res = {"ok": False, "steps": [], "env": {}, "final_result": None, "error": "Quá thời gian thực thi Sandbox (3s)."}
         if not sandbox_res.get("ok") and ollama_status.get("running") and model_available:
             repaired = await _repair_sandbox_expressions(
                 query,
@@ -640,7 +780,13 @@ async def stream_autonomous_reasoning(
                 new_vars = repaired.get("variables") if isinstance(repaired.get("variables"), dict) else variables
                 new_exprs = [str(e).strip() for e in repaired.get("expressions", []) if str(e).strip()]
                 if new_exprs:
-                    sandbox_res = evaluate_python_sandbox(new_vars, new_exprs)
+                    try:
+                        sandbox_res = await asyncio.wait_for(
+                            run_in_threadpool(evaluate_python_sandbox, new_vars, new_exprs),
+                            timeout=3.0,
+                        )
+                    except asyncio.TimeoutError:
+                        sandbox_res = {"ok": False, "steps": [], "env": {}, "final_result": None, "error": "Quá thời gian thực thi Sandbox (3s)."}
 
         if sandbox_res.get("ok"):
             s_detail = f"Đã kiểm chứng {len(sandbox_res.get('steps', []))} bước tính -> Kết quả: {sandbox_res.get('final_result')}"
@@ -804,6 +950,7 @@ async def stream_autonomous_reasoning(
             None,
             estimated_input_tokens=est_tokens,
         )
+        sampling_opts["num_predict"] = max(int(sampling_opts.get("num_predict") or 520), 1024)
         sampling_opts["temperature"] = 0.22
         sampling_opts["repeat_penalty"] = 1.12
         try:
@@ -839,7 +986,7 @@ async def stream_autonomous_reasoning(
                 yield raw_evt
 
             step4_detail = "Đã hoàn thành lập luận có căn cứ trích dẫn."
-            if enable_self_verify and full_answer:
+            if full_answer:
                 audited, extra_delta, step4_detail = _audit_reasoning_grounding(
                     full_answer,
                     len(citations),

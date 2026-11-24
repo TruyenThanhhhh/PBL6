@@ -288,6 +288,11 @@ def _try_build_structured_workbook_summary(
         return None
     if _COMPARE_CUE_RE.search(query):
         return None
+    # Không cướp luồng nếu người dùng đang hỏi 1 bài/chương cụ thể hoặc giới hạn N mục (vd: "5 từ đầu tiên của Bài 3")
+    if re.search(r"\b(?:bài|chương|phần|mục|bai|chuong|phan|muc)\s+(?:\d+|[IVXLCDM]+)\b", query, re.IGNORECASE | re.UNICODE):
+        return None
+    if re.search(r"\b\d{1,2}\s*(?:từ(?:\s*vựng)?|động(?:\s*từ)?|danh(?:\s*từ)?|tính(?:\s*từ)?|phó(?:\s*từ)?|mục|dòng|tu|muc)\b", query, re.IGNORECASE | re.UNICODE):
+        return None
 
     doc_ids = [str(c.get("document_id") or "") for c in context_chunks if c.get("document_id")]
     if len(set(doc_ids)) != 1:
@@ -374,24 +379,84 @@ def _try_build_structured_workbook_summary(
     return "\n".join(lines)
 
 
+def _try_build_exact_cjk_vocab_answer(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Khi người dùng tra cứu trực tiếp 1 từ vựng CJK/Nhật ngắn (vd: '後半 là gì', '男性 nghĩa là gì')
+    và trong chunk bảng có dòng khớp chính xác, trả lời 100% tiếng Việt chuẩn xác tức thì (<5ms),
+    chặn triệt để lỗi model Qwen 3B tự chuyển sang giải thích bằng tiếng Trung giản thể.
+    """
+    q = (query or "").strip()
+    if not q or len(q.split()) > 8 or not context_chunks:
+        return None
+    cjk_terms = re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", q)
+    if not cjk_terms:
+        return None
+    # Chỉ kích hoạt cho câu hỏi tra nghĩa/đọc trực tiếp (không áp dụng cho so sánh/đặt câu/tạo quiz)
+    if _COMPARE_CUE_RE.search(q) or re.search(r"\b(?:ví\s*dụ|đặt\s*câu|so\s*sánh|phân\s*biệt|quiz|trắc\s*nghiệm)\b", q, re.IGNORECASE):
+        return None
+    target_term = max(cjk_terms, key=len)
+
+    for ref_idx, ch in enumerate(context_chunks[:5], start=1):
+        txt = str(ch.get("content") or "")
+        if "|" not in txt or target_term not in txt:
+            continue
+        for raw_ln in txt.splitlines():
+            ln = raw_ln.strip()
+            if "|" not in ln or target_term not in ln:
+                continue
+            cells = [c.strip() for c in ln.strip("|").split("|") if c.strip()]
+            if len(cells) < 3:
+                continue
+            # Khớp chính xác ô từ vựng (bỏ qua cột STT ở đầu nếu là chữ số)
+            start_col = 1 if cells[0].isdigit() else 0
+            if len(cells) <= start_col + 1:
+                continue
+            word_cell = cells[start_col]
+            if target_term == word_cell or word_cell.startswith(target_term + "（") or word_cell.startswith(target_term + "("):
+                reading = cells[start_col + 1] if len(cells) > start_col + 1 else ""
+                meaning = " — ".join(cells[start_col + 2:]) if len(cells) > start_col + 2 else ""
+                doc_name = ch.get("document_name") or "tài liệu"
+                if meaning:
+                    return (
+                        f"Theo tài liệu `{doc_name}`, từ **{word_cell}** (cách đọc: `{reading}`) có nghĩa là: **{meaning}**. [{ref_idx}]"
+                    )
+                return f"Theo tài liệu `{doc_name}`, mục từ **{word_cell}** tương ứng với: **{reading}**. [{ref_idx}]"
+    return None
+
+
 def _try_build_exhaustive_tabular_list_answer(
     query: str,
     context_chunks: List[Dict[str, Any]],
 ) -> Optional[str]:
     """
-    Khi người dùng yêu cầu liệt kê đầy đủ một danh sách lớn từ bảng (ví dụ: 'cho tôi 99 động từ bài 2',
-    'liệt kê tất cả 120 từ vựng bài 1'), trích xuất trực tiếp 100% các dòng bảng từ tất cả các chunk
-    đã tìm được trong < 1ms để:
-    - Không bị thiếu dòng nào (LLM thường dừng ở dòng 15–20).
-    - Không bao giờ bị model nhỏ 3B chép sai mặt chữ Kanji/Hiragana/Số liệu.
+    Khi người dùng yêu cầu tra từ CJK chuẩn xác hoặc liệt kê danh sách từ bảng (ví dụ: '5 từ đầu tiên của Bài 3',
+    'cho tôi 99 động từ bài 2', 'liệt kê tất cả 120 từ vựng bài 1'), trích xuất trực tiếp từ bảng trong < 5ms
+    để không bị thiếu dòng, không sai chữ Kanji/Hiragana và không rò tiếng Trung.
     """
     if not query or not context_chunks:
         return None
-    if not _EXHAUSTIVE_LIST_QUERY_RE.search(query):
+
+    cjk_exact = _try_build_exact_cjk_vocab_answer(query, context_chunks)
+    if cjk_exact:
+        return cjk_exact
+
+    m_num = re.search(
+        r"\b(\d{1,3})\s*(?:từ(?:\s*vựng)?|động(?:\s*từ)?|danh(?:\s*từ)?|tính(?:\s*từ)?|phó(?:\s*từ)?|mục|dòng|tu(?:\s*vung)?|dong|muc)\b",
+        query,
+        re.IGNORECASE | re.UNICODE,
+    )
+    has_small_list_ask = bool(
+        m_num
+        and re.search(r"\b(?:liệt\s*kê|cho\s*tôi|lấy|nêu|kể\s*tên|đầu\s*tiên|cuối\s*cùng|liet\s*ke|dau\s*tien|cuoi\s*cung)\b", query, re.IGNORECASE | re.UNICODE)
+    )
+    if not _EXHAUSTIVE_LIST_QUERY_RE.search(query) and not has_small_list_ask:
         return _try_build_structured_workbook_summary(query, context_chunks)
 
-    m_num = re.search(r"\b(\d{2,3})\s*(?:từ|động|danh|tính|phó|mục|dòng|tu|dong|muc)\b", query, re.IGNORECASE)
     requested_limit = int(m_num.group(1)) if m_num else 250
+    is_from_end = bool(re.search(r"\b(?:cuối(?:\s*cùng)?|cuoi(?:\s*cung)?)\b", query, re.IGNORECASE | re.UNICODE))
 
     header_cols: Optional[List[str]] = None
     data_rows: List[List[str]] = []
@@ -419,14 +484,16 @@ def _try_build_exhaustive_tabular_list_answer(
                 seen_rows.add(row_key)
                 data_rows.append(cells)
 
-    if len(data_rows) < 12:
+    min_needed = min(requested_limit, 3) if has_small_list_ask else 12
+    if len(data_rows) < min_needed:
         return None
 
-    selected_rows = data_rows[:max(requested_limit, len(data_rows))]
+    take_n = min(requested_limit, len(data_rows))
+    selected_rows = data_rows[-take_n:] if is_from_end else data_rows[:take_n]
     cols = header_cols or [f"Cột {i+1}" for i in range(len(selected_rows[0]))]
     col_cnt = len(cols)
 
-    title_line = f"**Danh sách đầy đủ {len(selected_rows)} mục" + (f" ({section_title})**" if section_title else " từ tài liệu:**")
+    title_line = f"**Danh sách {len(selected_rows)} mục" + (f" ({section_title})**" if section_title else " từ tài liệu:**")
     md_lines = [
         f"{title_line} [1]\n",
         "| " + " | ".join(cols) + " |",
@@ -1282,6 +1349,9 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     def _fix_leading_list_ref(match: re.Match) -> str:
         idx = int(match.group(1))
         body_part = match.group(2).strip()
+        # Nếu phần sau bắt đầu trực tiếp bằng vị ngữ ('không đề cập...', 'không chứa...', 'nêu...'), bổ sung chủ ngữ 'Tài liệu' để câu không bị cụt
+        if re.match(r"^(?:không\s+(?:đề\s+cập|chứa|dạy|có|quy\s+định)|đề\s+cập|cho\s+biết|quy\s+định)\b", body_part, re.IGNORECASE):
+            body_part = f"Tài liệu {body_part}"
         if 1 <= idx <= citations_count:
             if f"[{idx}]" not in body_part:
                 return f"- {body_part} [{idx}]"
@@ -1292,7 +1362,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
 
     text = re.sub(r"(?m)^\s*\[(\d{1,2})\]\s*:\s*(.+)$", _fix_leading_list_ref, text)
 
-    # 3. Cắt các trích dẫn [n] hoặc ký hiệu giả [H1], [D1] vượt phạm vi nguồn thực tế
+    # 3. Cắt các trích dẫn [n] hoặc ký hiệu giả [H1], [D1] vượt phạm vi nguồn thực tế (bảo toàn chỉ số mảng kiểu arr[0], dp[10])
     text = re.sub(r"(?m)^\s*\[[A-Za-z]\d{1,2}\]\s*", "", text)
     def _filter_citation(match: re.Match) -> str:
         idx = int(match.group(1))
@@ -1300,7 +1370,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
             return match.group(0)
         return ""
 
-    text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
+    text = re.sub(r"(?<![A-Za-z0-9_])\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
     text = re.sub(
         r"\n*\s*(?:Trích\s*Đoạn\s*Trọng\s*Tâm\s*Khớp\s*Câu\s*Hỏi\s*Nhất\s*:[\s\S]*?(?=\n---GỢI\s*Ý|\Z))",
@@ -1410,6 +1480,7 @@ def _prepare_rag_prompts_and_citations(
         max_context_tokens, _, _, _ = _resolve_llm_runtime_budget()
     context_text = ""
     citations: List[Dict[str, Any]] = []
+    included_local_chunks: List[Dict[str, Any]] = []
     used_tokens = 0
     seen_doc_tails: Dict[str, str] = {}
 
@@ -1480,6 +1551,7 @@ def _prepare_rag_prompts_and_citations(
             "snippet": _build_word_boundary_preview(snippet_src, 320),
             "full_text": full_citation_text,
         })
+        included_local_chunks.append(chunk)
 
     for source in (web_sources or []):
         ref_id = len(citations) + 1
@@ -1531,7 +1603,7 @@ def _prepare_rag_prompts_and_citations(
         )
     )
     is_summary_ask = bool(_GLOBAL_SUMMARY_CUE_RE.search(query or ""))
-    pinpointed = "" if (is_section_ask or is_summary_ask) else _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
+    pinpointed = "" if (is_section_ask or is_summary_ask) else _extract_pinpointed_answer_sentences(query, included_local_chunks) if has_local else None
     pinpoint_block = (
         f"\n🎯 [TRÍCH ĐOẠN TRỌNG TÂM KHỚP CÂU HỎI NHẤT (ưu tiên trả lời chính xác từ thông tin này)]:\n{pinpointed}\n"
         if pinpointed

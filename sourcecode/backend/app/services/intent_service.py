@@ -23,11 +23,13 @@ def _strip_vietnamese_accents(text: str) -> str:
 
 
 _PURE_QUESTION_SUFFIX_RE = re.compile(
-    r"(?:\b(?:là\s+gì|như\s+thế\s+nào|gồm\s+những\s+gì|tại\s+sao|vì\s+sao|ý\s+nghĩa\s+là\s+gì)\s*[?!.]*$)",
+    r"(?:\b(?:là\s+gì|như\s+thế\s+nào|gồm\s+những\s+gì|nói\s+(?:về\s+)?(?:nội\s+dung\s+)?gì|"
+    r"chứa\s+(?:nội\s+dung\s+)?gì|có\s+những\s+gì|gồm\s+mấy\s+bước|tại\s+sao|vì\s+sao|ý\s+nghĩa\s+là\s+gì)\s*[?!.]*$)",
     re.IGNORECASE | re.UNICODE,
 )
 _PURE_QUESTION_SUFFIX_ASCII_RE = re.compile(
-    r"(?:\b(?:la\s+gi|nhu\s+the\s+nao|gom\s+nhung\s+gi|tai\s+sao|vi\s+sao|y\s+nghia\s+la\s+gi)\s*[?!.]*$)",
+    r"(?:\b(?:la\s+gi|nhu\s+the\s+nao|gom\s+nhung\s+gi|noi\s+(?:ve\s+)?(?:noi\s+dung\s+)?gi|"
+    r"chua\s+(?:noi\s+dung\s+)?gi|co\s+nhung\s+gi|gom\s+may\s+buoc|tai\s+sao|vi\s+sao|y\s+nghia\s+la\s+gi)\s*[?!.]*$)",
     re.IGNORECASE,
 )
 
@@ -98,13 +100,15 @@ _PLAN_ACTION_ASCII_RE = re.compile(
 )
 
 _COMPOSE_DOC_RE = re.compile(
-    r"(?:soạn(?:\s*thảo)?|viết|tạo|lập|khởi\s*tạo).{0,28}"
-    r"(?:văn\s*bản|công\s*văn|báo\s*cáo|biên\s*bản|đề\s*cương|tờ\s*trình|hợp\s*đồng|thông\s*báo|quyết\s*định|đơn\s*xin|bài\s*luận|tài\s*liệu\s*mẫu|mẫu\s*đề\s*xuất)",
+    r"(?:(?:soạn(?:\s*thảo)?|viết|tạo|lập|khởi\s*tạo).{0,28}"
+    r"(?:văn\s*bản|công\s*văn|báo\s*cáo|biên\s*bản|đề\s*cương|tờ\s*trình|hợp\s*đồng|thông\s*báo|quyết\s*định|đơn\s*xin|bài\s*luận|tài\s*liệu\s*mẫu|mẫu\s*đề\s*xuất)"
+    r"|(?:soạn(?:\s*thảo)?|viết|tạo|lập|xuất).{0,60}(?:ra|thành|sang)\s+(?:file|tệp)\s*(?:word|docx|pdf|excel|xlsx|markdown|md|pptx|powerpoint))",
     re.IGNORECASE | re.UNICODE,
 )
 _COMPOSE_DOC_ASCII_RE = re.compile(
-    r"(?:soan(?:\s*thao)?|viet|tao|lap|khoi\s*tao).{0,28}"
-    r"(?:van\s*ban|cong\s*van|bao\s*cao|bien\s*ban|de\s*cuong|to\s*trinh|hop\s*dong|thong\s*bao|quyet\s*dinh|don\s*xin|bai\s*luan|tai\s*lieu\s*mau|mau\s*de\s*xuat)",
+    r"(?:(?:soan(?:\s*thao)?|viet|tao|lap|khoi\s*tao).{0,28}"
+    r"(?:van\s*ban|cong\s*van|bao\s*cao|bien\s*ban|de\s*cuong|to\s*trinh|hop\s*dong|thong\s*bao|quyet\s*dinh|don\s*xin|bai\s*luan|tai\s*lieu\s*mau|mau\s*de\s*xuat)"
+    r"|(?:soan(?:\s*thao)?|viet|tao|lap|xuat).{0,60}(?:ra|thanh|sang)\s+(?:file|tep)\s*(?:word|docx|pdf|excel|xlsx|markdown|md|pptx|powerpoint))",
     re.IGNORECASE,
 )
 
@@ -147,15 +151,17 @@ _DEEP_REASONING_ASCII_RE = re.compile(
 
 def _extract_count(query: str, default: int, max_val: int) -> int:
     folded = _strip_vietnamese_accents(query)
-    m = re.search(
-        r"\b(\d{1,2})\s*(?:câu|thẻ|từ(?:\s*vựng)?|mục|nhiệm\s*vụ|bước|cau|the|tu(?:\s*vung)?|muc|nhiem\s*vu|buoc)?\b",
+    # Ưu tiên số có đơn vị đo rõ ràng (vd: "5 câu", "10 thẻ", "8 từ") và tránh bắt nhầm số chương/bài/toán 9
+    m_unit = re.search(
+        r"(?<!chuong\s)(?<!bai\s)(?<!phan\s)(?<!muc\s)(?<!dieu\s)(?<!toan\s)(?<!lop\s)"
+        r"\b(\d{1,2})\s+(?:cau(?:\s*hoi)?|the|flash\s*cards?|quiz|tu(?:\s*vung)?|muc|nhiem\s*vu|buoc)\b",
         folded,
         re.IGNORECASE,
     )
-    if not m:
-        return default
-    val = int(m.group(1))
-    return min(max(val, 1), max_val)
+    if m_unit:
+        val = int(m_unit.group(1))
+        return min(max(val, 1), max_val)
+    return default
 
 
 def _detect_card_style(query: str) -> str:
@@ -170,11 +176,15 @@ def _detect_card_style(query: str) -> str:
 
 
 def _detect_difficulty(query: str) -> str:
-    low = _strip_vietnamese_accents(query.lower())
-    if any(k in low for k in ("de", "co ban", "nhe nhang")):
-        return "easy"
-    if any(k in low for k in ("kho", "nang cao", "chuyen sau")):
+    raw_low = (query or "").lower()
+    low = _strip_vietnamese_accents(raw_low)
+    if re.search(r"\b(?:kho|nang\s*cao|chuyen\s*sau|hard)\b", low):
         return "hard"
+    # Phân biệt rõ "dễ" với "đề" (đề thi/đề trắc nghiệm) và "để"
+    if re.search(r"\b(?:dễ|cơ\s*bản|nhẹ\s*nhàng|easy)\b", raw_low) or re.search(r"\b(?:co\s*ban|nhe\s*nhang)\b", low):
+        return "easy"
+    if re.search(r"\bde\b", low) and not re.search(r"\b(?:đề|để|vấn\s*đề)\b", raw_low) and not re.search(r"\bde\s*(?:thi|trac\s*nghiem|kiem\s*tra|cuong)\b", low):
+        return "easy"
     return "medium"
 
 
@@ -251,14 +261,14 @@ def classify_chat_intent(
                     kind="create_plan",
                     params={"day_span": day_span, "focus_prompt": clean},
                 )
-            if _COMPOSE_DOC_RE.search(clean) or _COMPOSE_DOC_ASCII_RE.search(folded):
-                return IntentDecision(
-                    kind="compose_document",
-                    params={"default_export_format": _detect_export_hint(clean)},
-                )
             if _EXPORT_PREVIOUS_RE.search(clean) or _EXPORT_PREVIOUS_ASCII_RE.search(folded):
                 return IntentDecision(
                     kind="export_previous",
+                    params={"default_export_format": _detect_export_hint(clean)},
+                )
+            if _COMPOSE_DOC_RE.search(clean) or _COMPOSE_DOC_ASCII_RE.search(folded):
+                return IntentDecision(
+                    kind="compose_document",
                     params={"default_export_format": _detect_export_hint(clean)},
                 )
 

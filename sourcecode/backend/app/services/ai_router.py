@@ -30,26 +30,39 @@ logger = logging.getLogger(__name__)
 
 TIME_SENSITIVE_KEYWORDS = [
     "hôm nay", "ngày mai", "hôm qua", "tin tức", "thời sự", "thời tiết",
-    "mới nhất", "hiện tại", "bây giờ", "giá vàng", "tỷ giá", "chứng khoán",
-    "sự kiện", "update", "latest", "today", "weather", "news"
+    "mới nhất", "giá vàng", "tỷ giá", "chứng khoán", "giá cổ phiếu",
+    "latest", "today", "weather", "news",
 ]
+
+_LOCAL_SCOPE_CUE_RE = re.compile(
+    r"\b(?:kho\s*tài\s*liệu|tài\s*liệu|file|tệp|chương\s*\d+|bài\s*\d+|trang\s*\d+|mục\s*\d+|điều\s*\d+|pdf|docx|xlsx)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_WORKSPACE_INVENTORY_RE = re.compile(
+    r"(?:trong\s+(?:kho\s+)?(?:tài\s*liệu|workspace|không\s*gian).{0,25}(?:có\s+những|gồm\s+những|có\s+các|liệt\s+kê).{0,25}(?:tài\s*liệu|file|tệp)\s*(?:nào)?|"
+    r"(?:kho\s+tài\s+liệu|workspace)\s*(?:hiện\s*tại\s*)?(?:có|gồm)\s*(?:những\s*)?(?:tài\s*liệu|file|tệp)\s*nào)",
+    re.IGNORECASE | re.UNICODE,
+)
 
 
 def _detect_web_intent(query: str) -> bool:
-    q = query.lower()
+    q = (query or "").lower()
+    if _LOCAL_SCOPE_CUE_RE.search(q) or _WORKSPACE_INVENTORY_RE.search(q):
+        return False
     return any(kw in q for kw in TIME_SENSITIVE_KEYWORDS)
 
 
 def _resolve_routing_modes(mode: str, query: str, include_web: Optional[bool] = None) -> tuple[bool, bool]:
-    m = (mode or "auto").lower()
-    if m == "web":
+    m = (mode or "auto").strip().lower()
+    if m in ("web", "web_only"):
         return True, False
     if m == "hybrid":
         return True, True
-    if m == "local":
+    if m in ("local", "local_only", "private", "offline"):
         return False, True
 
-    # Auto mode: ưu tiên Local RAG, chỉ kích hoạt Web khi có từ khóa thời gian hoặc được yêu cầu
+    # Auto mode: ưu tiên Local RAG, chỉ kích hoạt Web khi có từ khóa thời gian thực sự (không đụng tài liệu cá nhân)
     auto_web = bool(include_web) or _detect_web_intent(query)
     return auto_web, True
 
@@ -71,16 +84,22 @@ def _sanitize_incoming_query(query: str) -> str:
     return re.sub(r"^\s*(?:[-*•]?\s*(?:\[\d+\])?\s*[:.-]\s*)+", "", (query or "").strip()).strip()
 
 
+_ANAPHORIC_REF_RE = re.compile(
+    r"\b(?:chương\s+này|bài\s+này|phần\s+này|mục\s+này|điều\s+này|ở\s+trên|vừa\s+nêu|vừa\s+rồi|đoạn\s+trên|câu\s+trên)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] = None) -> str:
     """
     Xây dựng câu truy vấn độc lập và giàu ngữ cảnh cho RAG.
-    Chỉ ghép câu hỏi trước khi câu hỏi hiện tại thực sự ngắn (<= 7 từ) và chứa đại từ/từ nối tiếp,
-    đồng thời bỏ qua các yêu cầu tạo câu hỏi ôn tập/quiz trước đó để không làm lệch truy xuất.
+    Ghép câu hỏi trước khi câu hiện tại ngắn (<= 7 từ) và chứa đại từ/từ nối tiếp,
+    HOẶC khi câu dài hơn (<= 15 từ) nhưng có tham chiếu tường minh ('chương này', 'bài này', 'vừa nêu', 'ở trên').
     """
     clean_q = _sanitize_incoming_query(query)
     words = clean_q.split()
-    # Nếu câu hỏi hiện tại đã đủ dài (>= 8 từ) và có chủ ngữ/tân ngữ độc lập thì không ghép câu cũ
-    if len(words) >= 8:
+    has_anaphora = bool(_ANAPHORIC_REF_RE.search(clean_q))
+    if len(words) >= 8 and not (has_anaphora and len(words) <= 15):
         return clean_q
 
     history_turns = (history or [])[-8:]
@@ -95,10 +114,66 @@ def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] =
         return clean_q
 
     q_lower = clean_q.lower()
-    if _FOLLOW_UP_CUE_RE.search(q_lower):
+    if has_anaphora or _FOLLOW_UP_CUE_RE.search(q_lower):
         return f"{prior_user_queries[-1]} {clean_q}".strip()
 
     return clean_q
+
+
+def _build_workspace_inventory_chunks(workspace_id: str) -> List[Dict[str, Any]]:
+    """Tạo danh sách nguồn xác thực 100% từ bảng documents + chunk đầu mỗi tài liệu khi hỏi tổng quan kho."""
+    from app.database import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        docs = conn.execute(
+            """
+            SELECT id, file_name, file_type, total_pages, total_chunks, version_number, effective_date
+            FROM documents
+            WHERE workspace_id = ? AND COALESCE(is_latest, 1) = 1
+            ORDER BY created_at DESC
+            """,
+            (workspace_id,),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for d in docs[:12]:
+            doc_id = d["id"]
+            first_chunks = conn.execute(
+                """
+                SELECT chunk_index, page_number, content
+                FROM document_chunks
+                WHERE document_id = ?
+                ORDER BY chunk_index ASC
+                LIMIT 2
+                """,
+                (doc_id,),
+            ).fetchall()
+            preview_parts = []
+            for fc in first_chunks:
+                txt = (fc["content"] or "").strip()
+                if txt:
+                    preview_parts.append(txt[:420])
+            preview_body = "\n".join(preview_parts) if preview_parts else "(Chưa có trích đoạn nội dung)"
+            summary_text = (
+                f"[TÀI LIỆU TRONG KHO TRI THỨC: {d['file_name']}]\n"
+                f"- Định dạng: {(d['file_type'] or '').upper()} | Số trang: {d['total_pages'] or 1} | Số đoạn chỉ mục: {d['total_chunks'] or 0}\n"
+                f"- Nội dung chính / Mục lục:\n{preview_body}"
+            )
+            out.append({
+                "chunk_id": f"inventory_{doc_id}",
+                "document_id": doc_id,
+                "workspace_id": workspace_id,
+                "document_name": d["file_name"],
+                "page_number": 1,
+                "page_label": "Tổng quan tài liệu",
+                "chunk_index": 0,
+                "version_number": d["version_number"] or 1,
+                "effective_date": d["effective_date"],
+                "content": summary_text,
+            })
+        return out
+    finally:
+        conn.close()
 
 
 async def _retrieve_local_sources(
@@ -116,6 +191,12 @@ async def _retrieve_local_sources(
     3. Nếu hỏi tóm tắt toàn bộ -> Lấy chunk phân phối đều khắp tài liệu.
     4. Tra cứu chi tiết -> Hybrid RAG (Exact + BM25 + Dense + Rerank).
     """
+    # 0. Nếu hỏi tổng quan toàn kho tài liệu hiện tại (không chọn riêng 1 file) -> trả về inventory xác thực của tất cả file trong workspace
+    if not selected_document_id and not document_ids and _WORKSPACE_INVENTORY_RE.search(query or ""):
+        inv_chunks = await run_in_threadpool(_build_workspace_inventory_chunks, workspace_id)
+        if inv_chunks:
+            return inv_chunks
+
     # 1. Kiểm tra xem có đang hỏi về một Bài/Chương/Lab cụ thể không
     sec_intent = detect_section_intent(query, history)
     if sec_intent:
@@ -128,6 +209,7 @@ async def _retrieve_local_sources(
             12,
             selected_document_id,
             document_ids,
+            query,
         )
         if section_chunks:
             return section_chunks

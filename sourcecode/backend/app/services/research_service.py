@@ -244,46 +244,46 @@ def _build_research_context_and_citations(
     context_lines: List[str] = []
     used_chars = 0
 
-    for idx, ch in enumerate(local_chunks, start=1):
+    for ch in local_chunks:
         doc_name = ch.get("document_name") or "Tài liệu"
         page_num = ch.get("page_number") or 1
         snippet = str(ch.get("content") or "").strip()
-        citations.append({
-            "refId": idx,
-            "documentId": ch.get("document_id"),
-            "documentName": doc_name,
-            "pageNumber": page_num,
-            "pageLabel": f"Trang {page_num}",
-            "chunkIndex": ch.get("chunk_index"),
-            "snippet": snippet[:280],
-            "sourceKind": "local",
-        })
-        block = f"[{idx}] {doc_name} (Trang {page_num}):\n{snippet[:850]}"
+        ref_id = len(citations) + 1
+        block = f"[{ref_id}] {doc_name} (Trang {page_num}):\n{snippet[:850]}"
         if used_chars + len(block) <= char_budget or not context_lines:
             context_lines.append(block)
             used_chars += len(block) + 2
+            citations.append({
+                "refId": ref_id,
+                "documentId": ch.get("document_id"),
+                "documentName": doc_name,
+                "pageNumber": page_num,
+                "pageLabel": f"Trang {page_num}",
+                "chunkIndex": ch.get("chunk_index"),
+                "snippet": snippet[:280],
+                "sourceKind": "local",
+            })
 
-    start_web_ref = len(citations) + 1
-    for offset, w in enumerate(web_sources[:3]):
-        ref_id = start_web_ref + offset
+    for w in web_sources[:3]:
+        ref_id = len(citations) + 1
         title = str(w.get("title") or w.get("domain") or "Nguồn Web")
         url = str(w.get("url") or "")
         snippet = str(w.get("snippet") or w.get("content") or "").strip()
-        citations.append({
-            "refId": ref_id,
-            "documentId": None,
-            "documentName": title,
-            "pageNumber": None,
-            "pageLabel": w.get("domain") or "Web",
-            "chunkIndex": None,
-            "snippet": snippet[:280],
-            "sourceKind": "web",
-            "url": url,
-        })
         block = f"[{ref_id}] Nguồn Web - {title} ({url}):\n{snippet[:650]}"
         if used_chars + len(block) <= char_budget:
             context_lines.append(block)
             used_chars += len(block) + 2
+            citations.append({
+                "refId": ref_id,
+                "documentId": None,
+                "documentName": title,
+                "pageNumber": None,
+                "pageLabel": w.get("domain") or "Web",
+                "chunkIndex": None,
+                "snippet": snippet[:280],
+                "sourceKind": "web",
+                "url": url,
+            })
 
     # Nếu chưa truy xuất được chunk nào nhưng có tài liệu được chọn, vẫn đưa danh mục nguồn
     if not citations and target_docs:
@@ -587,6 +587,8 @@ async def stream_research_synthesis(
                         raise RuntimeError(f"Ollama HTTP {resp.status_code}")
                     async for raw_line in resp.aiter_lines():
                         if is_disconnected and await is_disconnected():
+                            partial_md = "".join(collected_tokens).strip() or "Quá trình nghiên cứu đã bị ngắt kết nối bởi người dùng."
+                            await run_in_threadpool(_finalize_project_record, proj_id, partial_md, citations)
                             return
                         if not raw_line:
                             continue
@@ -600,7 +602,8 @@ async def stream_research_synthesis(
                             yield f"data: {json.dumps({'type': 'delta', 'content': token}, ensure_ascii=False)}\n\n"
                         if chunk_data.get("done"):
                             break
-            report_md = "".join(collected_tokens).strip()
+            from app.services.llm_service import _sanitize_rag_output
+            report_md = _sanitize_rag_output("".join(collected_tokens).strip(), len(citations))
         except Exception:
             logger.exception("Research LLM streaming failed, falling back to structured evidence summary")
             report_md = ""

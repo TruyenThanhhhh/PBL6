@@ -9,6 +9,7 @@ import math
 import re
 import logging
 import threading
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -306,6 +307,7 @@ def search_section_chunks(
     max_chunks: int = 16,
     document_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
+    query: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Trích xuất toàn bộ các chunk liên tục thuộc về Bài X / Chương II / Điều 5 trong tài liệu.
@@ -336,38 +338,77 @@ def search_section_chunks(
 
         pat_start = _build_section_heading_regex(sec_type, sec_num)
         pat_next = _build_section_heading_regex(sec_type, sec_num + 1)
+        # Fallback cho tài liệu đánh số đầu mục kiểu "9. HAI ĐƯỜNG THẲNG..." thay vì ghi chữ "Chương 9"
+        pat_num_start = re.compile(
+            rf"(?:^|\n)\s*(?:#{1,4}\s*|\[)?{sec_num}\.\s+[A-ZÀ-Ỹ][^\n]{{4,110}}",
+            re.UNICODE,
+        )
+        pat_num_next = re.compile(
+            rf"(?:^|\n)\s*(?:#{1,4}\s*|\[)?{sec_num + 1}\.\s+[A-ZÀ-Ỹ][^\n]{{4,110}}",
+            re.UNICODE,
+        )
+
+        def _is_toc_chunk(c: Dict[str, Any]) -> bool:
+            content_lower = c["content"].lower()
+            has_toc_marker = (
+                "mục lục" in content_lower
+                or "danh mục các phần trong bảng:" in content_lower
+                or "cây mục lục & tổng quan" in content_lower
+                or "table of contents" in content_lower
+                or "........" in c["content"]
+            )
+            return bool(has_toc_marker and (int(c.get("chunk_index", 0)) <= 2 or int(c.get("page_number") or 1) <= 4))
+
+        def _score_section_candidate(idx_pos: int) -> int:
+            if not query:
+                return 0
+            q_f = "".join(
+                ch for ch in unicodedata.normalize("NFKD", query.replace("đ", "d").replace("Đ", "D"))
+                if not unicodedata.combining(ch)
+            ).lower()
+            q_toks = [w for w in re.sub(r"[^\w\s]", " ", q_f).split() if len(w) >= 3 and w not in {"noi", "dung", "chuong", "phan", "muc", "bai", "cua", "cho", "toi", "xem", "hay", "giai", "thich"}]
+            if not q_toks:
+                return 0
+            c_f = "".join(
+                ch for ch in unicodedata.normalize("NFKD", all_chunks[idx_pos]["content"][:600].replace("đ", "d").replace("Đ", "D"))
+                if not unicodedata.combining(ch)
+            ).lower()
+            return sum(1 for tok in q_toks if tok in c_f)
+
+        start_candidates: List[int] = []
+        used_num_fallback = False
+
+        for i, c in enumerate(all_chunks):
+            if not _is_toc_chunk(c) and pat_start.search(c["content"]):
+                start_candidates.append(i)
+
+        # Nếu không có chữ tường minh "Chương 9" (ví dụ Sổ tay Toán 9 chỉ ghi "9. HAI ĐƯỜNG THẲNG..."), khớp theo tiêu đề đánh số
+        if not start_candidates and sec_type in ("chương", "phần", "mục", "bài", "chapter", "section"):
+            for i, c in enumerate(all_chunks):
+                if not _is_toc_chunk(c) and pat_num_start.search(c["content"]):
+                    start_candidates.append(i)
+            if start_candidates:
+                used_num_fallback = True
 
         start_idx = None
         end_idx = None
-
-        for i, c in enumerate(all_chunks):
-            content_lower = c["content"].lower()
-            # Bỏ qua các trang Mục lục đầu tài liệu hoặc dòng Danh mục tổng quan
-            is_toc = (
-                (
-                    "mục lục" in content_lower
-                    or "danh mục các phần trong bảng:" in content_lower
-                    or "cây mục lục & tổng quan" in content_lower
-                    or "table of contents" in content_lower
-                    or "........" in c["content"]
-                )
-                and c["page_number"] <= 3
-                and int(c.get("chunk_index", 0)) <= 1
-                and sec_num > 1
-            )
-            if not is_toc and pat_start.search(c["content"]):
-                if start_idx is None:
-                    start_idx = i
-            if start_idx is not None and i > start_idx:
-                if pat_next.search(c["content"]):
-                    end_idx = i
+        if start_candidates:
+            start_idx = max(start_candidates, key=_score_section_candidate)
+            stop_pat = pat_num_next if used_num_fallback else pat_next
+            for j in range(start_idx + 1, len(all_chunks)):
+                if all_chunks[j]["document_id"] != all_chunks[start_idx]["document_id"]:
+                    end_idx = j
+                    break
+                if stop_pat.search(all_chunks[j]["content"]):
+                    end_idx = j
                     break
 
         if start_idx is not None:
+            cap = min(max_chunks, 6) if used_num_fallback else max_chunks
             if end_idx is None:
-                end_idx = min(start_idx + max_chunks, len(all_chunks))
+                end_idx = min(start_idx + cap, len(all_chunks))
             else:
-                end_idx = min(end_idx, start_idx + max_chunks)
+                end_idx = min(end_idx, start_idx + cap)
             res = all_chunks[start_idx:end_idx]
             for c in res:
                 if "page_label" not in c and c.get("page_number") is not None:
@@ -471,25 +512,35 @@ def filter_relevant_chunks(
     if not chunks:
         return []
 
+    def _fold_ascii(s: str) -> str:
+        s2 = (s or "").replace("đ", "d").replace("Đ", "D")
+        return "".join(ch for ch in unicodedata.normalize("NFKD", s2) if not unicodedata.combining(ch)).lower()
+
     stopwords = {
-        "là", "gì", "những", "các", "cho", "tôi", "như", "nào", "trong", "của", "với", "được", "có", "làm",
-        "thế", "sao", "ở", "đâu", "khi", "nào", "bao", "nhiêu", "hãy", "giải", "thích", "nêu", "hỏi", "về",
-        "cần", "muốn", "biết", "và", "hoặc", "hay", "đã", "đang", "sẽ", "một", "hai", "ba", "bốn", "năm",
-        "bản", "bạn", "mình", "người", "dùng", "file", "tệp", "xem", "không", "chăng", "tài", "liệu",
-        "nói", "nội", "dung", "văn", "thông", "tin", "sách", "giáo", "trình", "đoạn", "trang"
+        "la", "gi", "nhung", "cac", "cho", "toi", "nhu", "nao", "trong", "cua", "voi", "duoc", "co", "lam",
+        "the", "sao", "o", "dau", "khi", "bao", "nhieu", "hay", "giai", "thich", "neu", "hoi", "ve",
+        "can", "muon", "biet", "va", "hoac", "da", "dang", "se", "mot", "hai", "ba", "bon", "nam",
+        "ban", "minh", "nguoi", "dung", "file", "tep", "xem", "chang", "tai", "lieu",
+        "noi", "van", "thong", "tin", "sach", "giao", "trinh", "doan", "trang",
     }
-    clean_q = re.sub(r"[^\w\s]", " ", query.lower(), flags=re.UNICODE)
-    substantive_tokens = [
-        w for w in clean_q.split()
-        if (len(w) >= 2 or _contains_cjk(w)) and w not in stopwords
-    ]
+    clean_q_raw = re.sub(r"[^\w\s]", " ", query.lower(), flags=re.UNICODE)
+    substantive_tokens: List[tuple[str, str]] = []
+    for w in clean_q_raw.split():
+        wf = _fold_ascii(w)
+        if (len(w) >= 2 or _contains_cjk(w)) and wf not in stopwords:
+            substantive_tokens.append((w, wf))
 
     # Nếu câu hỏi không có từ khóa nội dung đặc thù, giữ nguyên
     if not substantive_tokens:
         return chunks
 
-    # Các từ khóa chuyên biệt / danh từ riêng có độ dài >= 5 ký tự (vd: bitcoin, windows, hybrid, docker...)
-    long_specific_tokens = [w for w in substantive_tokens if len(w) >= 5]
+    # Các từ khóa chuyên biệt / danh từ riêng có độ dài >= 5 ký tự (vd: bitcoin, windows, hybrid, fermat...)
+    long_specific_tokens = [(w, wf) for w, wf in substantive_tokens if len(w) >= 5]
+
+    def _tok_in_text(tok: str, tok_f: str, text_low: str, text_folded: str) -> bool:
+        if _contains_cjk(tok):
+            return tok in text_low
+        return bool(re.search(rf"\b{re.escape(tok_f)}\b", text_folded))
 
     filtered = []
     for c in chunks:
@@ -497,22 +548,17 @@ def filter_relevant_chunks(
             filtered.append(c)
             continue
         c_text = (c.get("content", "") + " " + c.get("document_name", "")).lower()
+        c_folded = _fold_ascii(c_text)
         score = c.get("rerank_score")
         dense_score = c.get("dense_score")
 
-        # Kiểm tra xem có từ khóa chuyên biệt dài nào không
         has_specific_match = (
-            any(tok in c_text for tok in long_specific_tokens)
+            any(_tok_in_text(w, wf, c_text, c_folded) for w, wf in long_specific_tokens)
             if long_specific_tokens
             else True
         )
+        matched_tokens = sum(1 for w, wf in substantive_tokens if _tok_in_text(w, wf, c_text, c_folded))
 
-        matched_tokens = sum(1 for tok in substantive_tokens if tok in c_text)
-
-        # Điều kiện giữ lại chunk:
-        # 1. Nếu có từ khóa chuyên biệt dài: bắt buộc phải xuất hiện ít nhất 1 từ chuyên biệt đó
-        #    và tổng số từ khóa khớp >= 1 (hoặc >= 2 nếu câu hỏi dài)
-        # 2. Hoặc điểm rerank rất cao (> -0.45), hay điểm dense cao (>= 0.48 khi tắt rerank)
         is_semantic_match = (score is not None and score > -0.45) or (
             score is None and dense_score is not None and float(dense_score) >= 0.48
         )
@@ -550,11 +596,21 @@ def expand_and_stitch_chunks(
                     needed_keys.add((doc_id, int(c_idx) - 1))
                 needed_keys.add((doc_id, int(c_idx) + 1))
 
-        doc_ids = list({k[0] for k in needed_keys})
-        if not doc_ids:
+        doc_idx_groups: Dict[str, List[int]] = {}
+        for doc_id, idx_val in needed_keys:
+            doc_idx_groups.setdefault(doc_id, []).append(int(idx_val))
+        if not doc_idx_groups:
             return chunks
 
-        placeholders = ",".join("?" for _ in doc_ids)
+        where_clauses = []
+        sql_params: List[Any] = []
+        for doc_id, idxs in doc_idx_groups.items():
+            uniq_idxs = sorted(set(idxs))
+            in_ph = ",".join("?" for _ in uniq_idxs)
+            where_clauses.append(f"(c.document_id = ? AND c.chunk_index IN ({in_ph}))")
+            sql_params.append(doc_id)
+            sql_params.extend(uniq_idxs)
+
         cursor.execute(
             f"""
             SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
@@ -563,10 +619,10 @@ def expand_and_stitch_chunks(
                    d.effective_date
             FROM document_chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE c.document_id IN ({placeholders})
+            WHERE {" OR ".join(where_clauses)}
             ORDER BY c.document_id, c.chunk_index ASC
             """,
-            tuple(doc_ids),
+            tuple(sql_params),
         )
 
         all_doc_chunks = cursor.fetchall()
