@@ -354,13 +354,35 @@ class MainContentExtractor(HTMLParser):
         return _select_relevant_web_passages(self.paragraphs, query=query, max_chars=max_chars)
 
 
+def _is_safe_public_http_url(url: str) -> bool:
+    """Chặn SSRF vào địa chỉ localhost / private IP / link-local khi cào nội dung trang web."""
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").strip().lower()
+        if not host or host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.endswith(".local"):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return False
+        except ValueError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 async def _fetch_webpage_content(
     url: str,
     timeout: float = 3.5,
     query: str = "",
 ) -> Tuple[Optional[str], Optional[str]]:
     """Tải và cào nội dung chi tiết bài viết thực tế cùng tiêu đề từ trang web đích."""
-    if not url or not url.startswith("http"):
+    if not url or not _is_safe_public_http_url(url):
         return None, None
     headers = {
         'User-Agent': 'KnowledgeRAGBot/1.0 (https://github.com/TruyenThanhhhh/PBL6; contact@example.com) Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0',
@@ -475,9 +497,11 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     if not WEB_SEARCH_ENABLED or not query.strip():
         return []
 
+    from starlette.concurrency import run_in_threadpool
+
     normalized = " ".join(query.strip().lower().split())
     query_hash = hashlib.md5(f"{normalized}:{limit}".encode("utf-8")).hexdigest()
-    cached = _get_cached_results(query_hash)
+    cached = await run_in_threadpool(_get_cached_results, query_hash)
     if cached is not None:
         return cached
 
@@ -577,6 +601,6 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
 
     if combined:
         ttl = 15 if weather_source else 360  # Dữ liệu thời tiết lưu cache 15 phút, nội dung web lưu 6 giờ
-        _save_cached_results(query_hash, query.strip(), combined, ttl_minutes=ttl)
+        await run_in_threadpool(_save_cached_results, query_hash, query.strip(), combined, ttl)
 
     return combined

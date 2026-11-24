@@ -201,6 +201,7 @@ async def _retrieve_local_sources(
     sec_intent = detect_section_intent(query, history)
     if sec_intent:
         sec_type, sec_num = sec_intent
+        sec_query = _build_retrieval_query(query, history)
         section_chunks = await run_in_threadpool(
             search_section_chunks,
             workspace_id,
@@ -209,7 +210,7 @@ async def _retrieve_local_sources(
             12,
             selected_document_id,
             document_ids,
-            query,
+            sec_query,
         )
         if section_chunks:
             return section_chunks

@@ -81,6 +81,12 @@ export const AI_MODEL_OPTIONS: AIModelOption[] = [
     description: "Tự chọn model tối ưu theo phần cứng và độ khó câu hỏi.",
   },
   {
+    id: "gemma3:4b",
+    label: "Gemma 3 4B · Tiếng Việt chuẩn & Vision",
+    provider: "ollama-local",
+    description: "Diễn đạt tiếng Việt tự nhiên, không rò tiếng Trung/Hàn, hỗ trợ đọc ảnh trực tiếp và vừa khít 4GB VRAM.",
+  },
+  {
     id: "qwen2.5:3b",
     label: "Nhanh & Nhẹ (Qwen 3B · Eco)",
     provider: "ollama-local",

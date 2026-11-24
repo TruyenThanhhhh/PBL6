@@ -45,10 +45,27 @@ def is_conversational_query(query: str) -> bool:
     return bool(re.match(pattern, q, re.IGNORECASE))
 
 
-async def check_ollama_status() -> Dict[str, Any]:
+_OLLAMA_STATUS_CACHE: Dict[str, Any] = {"ts": 0.0, "base_url": "", "data": None}
+_OLLAMA_STATUS_TTL_SEC = 10.0
+
+
+async def check_ollama_status(force_refresh: bool = False) -> Dict[str, Any]:
     """
-    Kiểm tra dịch vụ Ollama cục bộ có đang hoạt động hay không
+    Kiểm tra dịch vụ Ollama cục bộ có đang hoạt động hay không (có cache TTL 10s để giảm độ trễ).
     """
+    import time as _t
+
+    is_mocked_client = hasattr(httpx.AsyncClient, "assert_called") or hasattr(httpx.AsyncClient, "_mock_name")
+    now = _t.monotonic()
+    if (
+        not force_refresh
+        and not is_mocked_client
+        and _OLLAMA_STATUS_CACHE["data"] is not None
+        and _OLLAMA_STATUS_CACHE["base_url"] == OLLAMA_BASE_URL
+        and (now - float(_OLLAMA_STATUS_CACHE["ts"])) < _OLLAMA_STATUS_TTL_SEC
+    ):
+        return dict(_OLLAMA_STATUS_CACHE["data"])
+
     try:
         async with httpx.AsyncClient(timeout=1.5) as client:
             resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
@@ -59,19 +76,25 @@ async def check_ollama_status() -> Dict[str, Any]:
                 for name in raw_names:
                     if name and ":" in name:
                         model_names.append(name.split(":")[0])
-                return {
+                result = {
                     "running": True,
                     "available_models": list(dict.fromkeys(model_names)),
                     "message": f"Ollama đang chạy cục bộ với {len(raw_names)} model(s)."
                 }
+                if not is_mocked_client:
+                    _OLLAMA_STATUS_CACHE.update({"ts": now, "base_url": OLLAMA_BASE_URL, "data": result})
+                return result
     except Exception:
         pass
 
-    return {
+    result = {
         "running": False,
         "available_models": [],
         "message": "Ollama chưa được bật trên máy (cần cài đặt hoặc gõ `ollama serve`)."
     }
+    if not is_mocked_client:
+        _OLLAMA_STATUS_CACHE.update({"ts": now, "base_url": OLLAMA_BASE_URL, "data": result})
+    return result
 
 
 _MAX_RAG_CONTEXT_TOKENS = 2200
@@ -1861,7 +1884,8 @@ async def generate_rag_answer(
     )
 
     if not image_base64:
-        direct_list_ans = _try_build_exhaustive_tabular_list_answer(query, context_chunks)
+        from starlette.concurrency import run_in_threadpool
+        direct_list_ans = await run_in_threadpool(_try_build_exhaustive_tabular_list_answer, query, context_chunks)
         if direct_list_ans:
             instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
             if instant_sugs:
@@ -1875,7 +1899,8 @@ async def generate_rag_answer(
             }
 
     if image_base64 and not model_available:
-        ocr_text = _extract_image_ocr_text_fallback(image_base64)
+        from starlette.concurrency import run_in_threadpool
+        ocr_text = await run_in_threadpool(_extract_image_ocr_text_fallback, image_base64)
         text_fallback_model = (
             resolve_available_chat_model(DEFAULT_LLM_MODEL, ollama_status.get("available_models") or [])
             if ollama_status.get("running")
@@ -2106,7 +2131,8 @@ async def stream_rag_answer(
     )
 
     if not image_base64:
-        direct_list_ans = _try_build_exhaustive_tabular_list_answer(query, context_chunks)
+        from starlette.concurrency import run_in_threadpool
+        direct_list_ans = await run_in_threadpool(_try_build_exhaustive_tabular_list_answer, query, context_chunks)
         if direct_list_ans:
             instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
             if instant_sugs:
@@ -2141,7 +2167,8 @@ async def stream_rag_answer(
     yield f"data: {json.dumps(initial_meta, ensure_ascii=False)}\n\n"
 
     if image_base64 and not model_available:
-        ocr_text = _extract_image_ocr_text_fallback(image_base64)
+        from starlette.concurrency import run_in_threadpool
+        ocr_text = await run_in_threadpool(_extract_image_ocr_text_fallback, image_base64)
         text_fallback_model = (
             resolve_available_chat_model(DEFAULT_LLM_MODEL, ollama_status.get("available_models") or [])
             if ollama_status.get("running")

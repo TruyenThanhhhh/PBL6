@@ -454,6 +454,14 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
         self.assertIn("phần cuối", cjk_ans or "")
         self.assertNotIn("是指", cjk_ans or "")
 
+        # 5. Chặn SSRF vào localhost/private IP trong web_search_service
+        from app.services.web_search_service import _is_safe_public_http_url
+        self.assertFalse(_is_safe_public_http_url("http://127.0.0.1:8000/api/v1/workspaces"))
+        self.assertFalse(_is_safe_public_http_url("http://localhost:11434/api/tags"))
+        self.assertFalse(_is_safe_public_http_url("http://192.168.1.1/admin"))
+        self.assertFalse(_is_safe_public_http_url("http://169.254.169.254/latest/meta-data"))
+        self.assertTrue(_is_safe_public_http_url("https://vi.wikipedia.org/wiki/Python"))
+
 
 if __name__ == "__main__":
     unittest.main()
