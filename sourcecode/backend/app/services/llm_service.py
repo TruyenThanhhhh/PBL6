@@ -944,10 +944,10 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
 
     # 0. Gỡ tiêu đề nội bộ, câu mở/chốt máy móc, dòng biến Sandbox/tên file bị rò và làm sạch LaTeX thô
     text = re.sub(
-        r'^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
+        r'(?im)^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
         "",
         text,
-        flags=re.IGNORECASE | re.UNICODE,
+        flags=re.UNICODE,
     )
     text = re.sub(
         r"^(?:Để\s+đáp\s+lại\s+yêu\s+cầu\s+của\s+bạn[^\n]{0,180}:\s*\n+)",

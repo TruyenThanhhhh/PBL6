@@ -223,6 +223,17 @@ def search_positional_chunks(
             # Bỏ qua chunk trang bìa/header thuần túy không có từ nào bắt đầu bằng chữ cái mục tiêu
             matched = [c for c in all_chunks if pat.search(c.get("content", ""))]
             if matched:
+                # Ưu tiên tài liệu từ vựng / bảng từ (có phiên âm IPA /.../ hoặc nhãn loại từ) lên trước tài liệu kỹ thuật lẫn chữ cái tình cờ
+                ipa_re = re.compile(r"/[^/\n]{2,20}/")
+                line_hits_re = re.compile(rf"(?im)^\s*{re.escape(letter_filter)}[a-z]{{1,18}}\b")
+                matched.sort(
+                    key=lambda c: (
+                        1 if ("từ vựng" in (c.get("document_name") or "").lower() or "từ tiếng anh" in (c.get("document_name") or "").lower() or "vocabulary" in (c.get("document_name") or "").lower()) else 0,
+                        1 if ipa_re.search(c.get("content") or "") else 0,
+                        min(len(line_hits_re.findall(c.get("content") or "")), 8),
+                    ),
+                    reverse=True,
+                )
                 candidates = matched
 
         selected = candidates[-max_chunks:] if position == "end" else candidates[:max_chunks]
