@@ -69,16 +69,21 @@ function cleanMathDisplay(text: string): string {
     .replace(/\(\s+([^()\n]{2,80}?)\s+\)/g, "($1)")
 }
 
-function withCitationChips(text: string) {
+function withCitationChips(text: string, maxCitationRef?: number) {
   // Gỡ heading rỗng kiểu '### **[1]' hoặc '**[1]' chưa đóng trước khi chuyển chip trích dẫn
   const normalizedHeading = text
     .replace(/^#{1,4}\s*\*{0,2}\s*\[(?:Tài liệu |Nguồn(?:\s*web)? |Web )?(\d{1,3})\]\*{0,2}\s*$/gim, "")
     .replace(/^(\*{1,2})\[(\d{1,3})\](?!\*{1,2})\s*$/gm, "[$2]")
-  // Làm sạch ký hiệu LaTeX thô và các biến thể trích dẫn lồng tên file từ LLM nhỏ
+  // Làm sạch ký hiệu LaTeX thô và chỉ chuẩn hóa thẻ đóng ngoặc ']' thật sự (không nuốt văn bản sau dấu ':')
   const cleaned = cleanMathDisplay(normalizedHeading)
-    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\]\n"]{2,180}\]?"?/gi, "[[cite:$1]]")
-    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?/gi, "[[cite:$1]]")
-  return cleaned.replace(/\[(\d{1,3})\]/g, (_m, n: string) => `[[cite:${n}]]`)
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*[:\-]\s*[^\]\n"]{2,160}\]"?/gi, "[$1]")
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?/gi, "[$1]")
+  const cap = typeof maxCitationRef === "number" ? maxCitationRef : 25
+  return cleaned.replace(/(?<![A-Za-z0-9_])\[(\d{1,3})\]/g, (full, n: string) => {
+    const num = Number(n)
+    if (cap <= 0 || num < 1 || num > cap) return full
+    return `[[cite:${n}]]`
+  })
 }
 
 function CodeBlockWithCopy({
@@ -130,9 +135,15 @@ function CodeBlockWithCopy({
   )
 }
 
-export function CitationMarkdown({ content }: { content: string }) {
+export function CitationMarkdown({
+  content,
+  citationCount,
+}: {
+  content: string
+  citationCount?: number
+}) {
   const setActive = useAppStore((s) => s.setActiveCitation)
-  const prepared = withCitationChips(content)
+  const prepared = withCitationChips(content, citationCount)
 
   return (
     <div className="markdown-body text-[15px] leading-7 text-ink">

@@ -120,21 +120,36 @@ def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] =
     return clean_q
 
 
-def _build_workspace_inventory_chunks(workspace_id: str) -> List[Dict[str, Any]]:
+def _build_workspace_inventory_chunks(
+    workspace_id: str,
+    document_ids: Optional[list[str]] = None,
+) -> List[Dict[str, Any]]:
     """Tạo danh sách nguồn xác thực 100% từ bảng documents + chunk đầu mỗi tài liệu khi hỏi tổng quan kho."""
     from app.database import get_db_connection
 
     conn = get_db_connection()
     try:
-        docs = conn.execute(
-            """
-            SELECT id, file_name, file_type, total_pages, total_chunks, version_number, effective_date
-            FROM documents
-            WHERE workspace_id = ? AND COALESCE(is_latest, 1) = 1
-            ORDER BY created_at DESC
-            """,
-            (workspace_id,),
-        ).fetchall()
+        if document_ids:
+            ph = ",".join("?" for _ in document_ids)
+            docs = conn.execute(
+                f"""
+                SELECT id, file_name, file_type, total_pages, total_chunks, version_number, effective_date
+                FROM documents
+                WHERE workspace_id = ? AND id IN ({ph}) AND COALESCE(is_latest, 1) = 1
+                ORDER BY created_at DESC
+                """,
+                (workspace_id, *document_ids),
+            ).fetchall()
+        else:
+            docs = conn.execute(
+                """
+                SELECT id, file_name, file_type, total_pages, total_chunks, version_number, effective_date
+                FROM documents
+                WHERE workspace_id = ? AND COALESCE(is_latest, 1) = 1
+                ORDER BY created_at DESC
+                """,
+                (workspace_id,),
+            ).fetchall()
         out: List[Dict[str, Any]] = []
         for d in docs[:12]:
             doc_id = d["id"]
@@ -191,9 +206,10 @@ async def _retrieve_local_sources(
     3. Nếu hỏi tóm tắt toàn bộ -> Lấy chunk phân phối đều khắp tài liệu.
     4. Tra cứu chi tiết -> Hybrid RAG (Exact + BM25 + Dense + Rerank).
     """
-    # 0. Nếu hỏi tổng quan toàn kho tài liệu hiện tại (không chọn riêng 1 file) -> trả về inventory xác thực của tất cả file trong workspace
-    if not selected_document_id and not document_ids and _WORKSPACE_INVENTORY_RE.search(query or ""):
-        inv_chunks = await run_in_threadpool(_build_workspace_inventory_chunks, workspace_id)
+    # 0. Nếu hỏi tổng quan toàn kho tài liệu hiện tại (kể cả khi người dùng tick chọn tất cả / nhiều file ở cột Nguồn) -> trả về inventory xác thực
+    is_single_doc_scope = bool(selected_document_id) and (not document_ids or len(document_ids) == 1)
+    if not is_single_doc_scope and _WORKSPACE_INVENTORY_RE.search(query or ""):
+        inv_chunks = await run_in_threadpool(_build_workspace_inventory_chunks, workspace_id, document_ids)
         if inv_chunks:
             return inv_chunks
 

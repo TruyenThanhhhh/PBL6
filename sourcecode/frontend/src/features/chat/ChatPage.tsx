@@ -1350,7 +1350,7 @@ export function ChatPage() {
                             </details>
                           ) : null}
 
-                          <CitationMarkdown content={mainContent} />
+                          <CitationMarkdown content={mainContent} citationCount={m.citations?.length ?? 0} />
 
                           {/* Action Card thực thi trực tiếp cho Học liệu / Văn bản / Đối chiếu */}
                           {!isUser && m.actionArtifact && !m.streaming ? (

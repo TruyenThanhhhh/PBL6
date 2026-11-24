@@ -67,7 +67,7 @@ async def check_ollama_status(force_refresh: bool = False) -> Dict[str, Any]:
         return dict(_OLLAMA_STATUS_CACHE["data"])
 
     try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
+        async with httpx.AsyncClient(timeout=3.5) as client:
             resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
             if resp.status_code == 200:
                 models = resp.json().get("models", [])
@@ -87,14 +87,12 @@ async def check_ollama_status(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception:
         pass
 
-    result = {
+    # KHÔNG lưu cache trạng thái running=False để tránh kẹt 10s khi Ollama chỉ vừa bận nạp model
+    return {
         "running": False,
         "available_models": [],
         "message": "Ollama chưa được bật trên máy (cần cài đặt hoặc gõ `ollama serve`)."
     }
-    if not is_mocked_client:
-        _OLLAMA_STATUS_CACHE.update({"ts": now, "base_url": OLLAMA_BASE_URL, "data": result})
-    return result
 
 
 _MAX_RAG_CONTEXT_TOKENS = 2200
@@ -169,12 +167,13 @@ async def unload_ollama_models() -> List[str]:
 
 
 def _estimate_tokens(text: str) -> int:
-    """Ước lượng an toàn số token cho ngữ liệu pha trộn tiếng Việt / Nhật (CJK) / tiếng Anh."""
+    """Ước lượng an toàn số token cho ngữ liệu pha trộn tiếng Việt / Nhật (CJK) / công thức toán."""
     if not text:
         return 0
     non_ascii = sum(1 for ch in text if ord(ch) > 127)
-    ascii_cnt = len(text) - non_ascii
-    return max(1, int(non_ascii * 0.9 + ascii_cnt * 0.32))
+    math_ops = sum(1 for ch in text if ch in "+-*/=()[]{}^0123456789")
+    ascii_other = len(text) - non_ascii - math_ops
+    return max(1, int(non_ascii * 1.0 + math_ops * 0.75 + ascii_other * 0.36))
 
 
 _QUIZ_TEMPLATE_POLLUTION_RE = re.compile(
@@ -2008,46 +2007,62 @@ async def _stream_ollama_chat(
     is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
     followup_suggestions: Optional[List[str]] = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream phản hồi từ Ollama /api/chat và ngắt ngay nếu client đóng kết nối."""
+    """Stream phản hồi từ Ollama /api/chat, tự mở rộng num_ctx nếu gặp lỗi 400 vượt context và ngắt ngay nếu client đóng kết nối."""
     full_answer = ""
     timeout = httpx.Timeout(connect=15.0, read=OLLAMA_TIMEOUT, write=60.0, pool=60.0)
+    active_payload = dict(payload)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
-            if resp.status_code != 200:
-                raise RuntimeError(f"Ollama stream status {resp.status_code}")
+        for attempt in range(2):
+            async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=active_payload) as resp:
+                if resp.status_code != 200:
+                    err_body = ""
+                    try:
+                        err_body = (await resp.aread()).decode("utf-8", errors="ignore")[:400]
+                    except Exception:
+                        pass
+                    if attempt == 0 and resp.status_code == 400 and "context length" in err_body.lower():
+                        logger.warning("Ollama 400 context length exceeded for %s; retrying with expanded num_ctx=8192", model_name)
+                        retry_opts = dict(active_payload.get("options") or {})
+                        retry_opts["num_ctx"] = max(int(retry_opts.get("num_ctx") or 4096), 8192)
+                        active_payload = {**active_payload, "options": retry_opts}
+                        continue
+                    logger.error("Ollama stream HTTP %s for %s: %s", resp.status_code, model_name, err_body)
+                    raise RuntimeError(f"Ollama stream status {resp.status_code}: {err_body}")
 
-            yield f"data: {json.dumps({'stage': 'generating', 'stage_label': 'AI đang viết câu trả lời...'}, ensure_ascii=False)}\n\n"
-            async for line in resp.aiter_lines():
-                if is_disconnected and await is_disconnected():
-                    logger.info("Client disconnected during Ollama stream; cancelling generation")
-                    if collector is not None and full_answer:
-                        collector["full_answer"] = full_answer
-                        collector["citations"] = citations
-                        collector["model_used"] = model_name
-                        collector["engine"] = engine_name
-                    return
-                if not line:
-                    continue
-                try:
-                    chunk_data = json.loads(line)
-                    delta = chunk_data.get("message", {}).get("content", "")
-                    if delta:
-                        full_answer += delta
-                        yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                except Exception:
-                    continue
+                yield f"data: {json.dumps({'stage': 'generating', 'stage_label': 'AI đang viết câu trả lời...'}, ensure_ascii=False)}\n\n"
+                async for line in resp.aiter_lines():
+                    if is_disconnected and await is_disconnected():
+                        logger.info("Client disconnected during Ollama stream; cancelling generation")
+                        if collector is not None and full_answer:
+                            collector["full_answer"] = full_answer
+                            collector["citations"] = citations
+                            collector["model_used"] = model_name
+                            collector["engine"] = engine_name
+                        return
+                    if not line:
+                        continue
+                    try:
+                        chunk_data = json.loads(line)
+                        delta = chunk_data.get("message", {}).get("content", "")
+                        if delta:
+                            full_answer += delta
+                            yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        continue
 
-            sanitized_answer = _sanitize_rag_output(full_answer, len(citations))
-            if followup_suggestions and "---GỢI Ý TIẾP THEO---" not in sanitized_answer:
-                sug_block = "\n".join(f"- {s}" for s in followup_suggestions)
-                sanitized_answer = f"{sanitized_answer.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
-            if collector is not None:
-                collector["full_answer"] = sanitized_answer
-                collector["citations"] = citations
-                collector["model_used"] = model_name
-                collector["engine"] = engine_name
-            yield f"data: {json.dumps({'answer': sanitized_answer, 'done': True}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+                sanitized_answer = _sanitize_rag_output(full_answer, len(citations))
+                if followup_suggestions and "---GỢI Ý TIẾP THEO---" not in sanitized_answer:
+                    sug_block = "\n".join(f"- {s}" for s in followup_suggestions)
+                    sanitized_answer = f"{sanitized_answer.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
+                if collector is not None:
+                    collector["full_answer"] = sanitized_answer
+                    collector["citations"] = citations
+                    collector["model_used"] = model_name
+                    collector["engine"] = engine_name
+                yield f"data: {json.dumps({'answer': sanitized_answer, 'done': True}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
 
 async def stream_rag_answer(
