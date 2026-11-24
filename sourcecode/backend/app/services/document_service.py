@@ -1,4 +1,5 @@
 import base64
+import csv
 import hashlib
 import io
 import uuid
@@ -6,7 +7,7 @@ import re
 import logging
 import threading
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
 
@@ -74,6 +75,269 @@ def _extract_docx_blocks(doc: Any) -> List[str]:
             if table_lines:
                 blocks.append("\n".join(table_lines))
     return blocks
+
+
+_NUMERIC_CLEAN_RE = re.compile(r"^[-+]?\d+(?:[.,]\d+)*(?:%)?$")
+_OUTLINE_HEADING_RE = re.compile(
+    r"^(?:#{1,4}\s+.+|(?:chương|bài|phần|mục|điều|khoản|chapter|section|part|article)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b.*)$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _try_parse_number(val: str) -> Optional[float]:
+    clean = (val or "").strip().replace(" ", "")
+    if not clean or clean.endswith("%"):
+        return None
+    if not _NUMERIC_CLEAN_RE.match(clean):
+        return None
+    # Hỗ trợ cả định dạng 1,234,567.89 hoặc 1.234.567,89 hoặc số thuần
+    if "," in clean and "." in clean:
+        if clean.rfind(",") > clean.rfind("."):
+            clean = clean.replace(".", "").replace(",", ".")
+        else:
+            clean = clean.replace(",", "")
+    elif clean.count(",") == 1 and len(clean.split(",")[1]) in (1, 2):
+        clean = clean.replace(",", ".")
+    elif clean.count(",") >= 1:
+        clean = clean.replace(",", "")
+    elif clean.count(".") > 1:
+        clean = clean.replace(".", "")
+    try:
+        num = float(clean)
+        return num if not (num != num) else None
+    except Exception:
+        return None
+
+
+def _fmt_num(val: float) -> str:
+    if abs(val - round(val)) < 1e-6:
+        return str(int(round(val)))
+    return f"{val:.2f}"
+
+
+def _build_tabular_analytics_summary(raw_rows: List[List[str]], title: str = "Bảng dữ liệu") -> str:
+    """
+    Tính toán thống kê toàn bảng (Tổng số dòng, Tổng cộng, Trung bình, Min, Max của từng cột số
+    và phân bố nhóm danh mục) để AI trả lời chính xác 100% câu hỏi trên bảng lớn (>100 dòng).
+    """
+    non_empty = [r for r in raw_rows if any(str(c).strip() for c in r)]
+    if len(non_empty) < 2:
+        return ""
+    headers = [str(h).strip() or f"Cột_{idx+1}" for idx, h in enumerate(non_empty[0])]
+    data_rows = non_empty[1:]
+    row_count = len(data_rows)
+    col_count = len(headers)
+
+    numeric_stats: List[str] = []
+    category_stats: List[str] = []
+    numeric_cols: List[Tuple[int, str]] = []
+    category_cols: List[Tuple[int, str, List[Tuple[str, int]]]] = []
+
+    for col_idx, col_name in enumerate(headers[:16]):
+        nums: List[float] = []
+        cats: Dict[str, int] = {}
+        for r in data_rows:
+            cell = str(r[col_idx]).strip() if col_idx < len(r) else ""
+            if not cell:
+                continue
+            parsed = _try_parse_number(cell)
+            if parsed is not None:
+                nums.append(parsed)
+            elif len(cell) <= 48:
+                cats[cell] = cats.get(cell, 0) + 1
+
+        # Bỏ qua cột STT / ID tăng dần đơn thuần nếu tên cột là stt/id
+        col_low = col_name.lower()
+        is_id_col = col_low in ("stt", "id", "no", "no.", "index", "mã", "ma")
+        if len(nums) >= max(2, int(row_count * 0.5)) and not is_id_col:
+            total = sum(nums)
+            avg = total / len(nums)
+            mn = min(nums)
+            mx = max(nums)
+            numeric_cols.append((col_idx, col_name))
+            numeric_stats.append(
+                f"  - Cột '{col_name}' ({len(nums)} giá trị số): Tổng cộng (SUM) = {_fmt_num(total)} | "
+                f"Trung bình (AVG) = {_fmt_num(avg)} | Nhỏ nhất (MIN) = {_fmt_num(mn)} | Lớn nhất (MAX) = {_fmt_num(mx)}"
+            )
+        elif 1 < len(cats) <= 12 and sum(cats.values()) >= max(2, int(row_count * 0.5)):
+            top_cats = sorted(cats.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
+            category_cols.append((col_idx, col_name, top_cats))
+            cat_str = ", ".join(f"{k}: {v} dòng" for k, v in top_cats)
+            category_stats.append(f"  - Phân bố cột '{col_name}': {cat_str}")
+
+    groupby_stats: List[str] = []
+    for cat_idx, cat_name, top_cats in category_cols[:2]:
+        allowed_keys = {k for k, _ in top_cats}
+        for num_idx, num_name in numeric_cols[:3]:
+            grouped_vals: Dict[str, List[float]] = {k: [] for k in allowed_keys}
+            for r in data_rows:
+                c_val = str(r[cat_idx]).strip() if cat_idx < len(r) else ""
+                n_raw = str(r[num_idx]).strip() if num_idx < len(r) else ""
+                if c_val in grouped_vals and n_raw:
+                    n_val = _try_parse_number(n_raw)
+                    if n_val is not None:
+                        grouped_vals[c_val].append(n_val)
+            parts = []
+            for k, _ in top_cats:
+                vals = grouped_vals.get(k) or []
+                if vals:
+                    parts.append(
+                        f"{k} ({len(vals)} dòng): SUM={_fmt_num(sum(vals))}, AVG={_fmt_num(sum(vals)/len(vals))}"
+                    )
+            if parts:
+                groupby_stats.append(f"  - '{num_name}' theo '{cat_name}': {' | '.join(parts)}")
+
+    lines = [
+        f"[THỐNG KÊ TOÀN BẢNG DỮ LIỆU - {title}]",
+        f"- Quy mô toàn bảng: {row_count} dòng dữ liệu x {col_count} cột ({', '.join(headers[:16])}).",
+    ]
+    if numeric_stats:
+        lines.append("- Số liệu tính toán chính xác trên 100% dòng của bảng:")
+        lines.extend(numeric_stats)
+    if category_stats:
+        lines.append("- Thống kê phân nhóm danh mục trên toàn bảng:")
+        lines.extend(category_stats)
+    if groupby_stats:
+        lines.append("- Tổng hợp chi tiết theo từng nhóm (Group-By Subtotals):")
+        lines.extend(groupby_stats)
+    return "\n".join(lines)
+
+
+def _unpivot_side_by_side_blocks(raw_rows: List[List[str]]) -> Optional[str]:
+    """
+    Phát hiện và tách các bảng con xếp ngang nhau (Side-by-Side Horizontal Sub-Tables)
+    trên cùng 1 Sheet Excel (ví dụ: 'Bài 1 | ... | Bài 2 | ... | Bài 12' với các cụm cột lặp lại 'STT | Kanji | Hiragana | Meaning').
+    Chuyển thành từng mục 'Bài 1', 'Bài 2'... theo chiều dọc để `search_section_chunks` lấy trọn vẹn 100% mục/từ vựng của từng bài.
+    """
+    if len(raw_rows) < 3:
+        return None
+
+    # Tìm dòng tiêu đề lặp lại (ví dụ chữ 'STT' hoặc tên cột đầu xuất hiện >= 3 lần trên cùng 1 dòng)
+    header_row_idx = -1
+    block_starts: List[int] = []
+    for r_idx, row in enumerate(raw_rows[:8]):
+        starts = [c_idx for c_idx, val in enumerate(row) if val.strip().upper() in ("STT", "NO", "NO.", "ID")]
+        if len(starts) >= 3:
+            header_row_idx = r_idx
+            block_starts = starts
+            break
+
+    if header_row_idx == -1 or len(block_starts) < 3:
+        return None
+
+    max_cols = max(len(r) for r in raw_rows)
+    block_ranges: List[Tuple[int, int]] = []
+    for i, s_col in enumerate(block_starts):
+        e_col = block_starts[i + 1] if (i + 1) < len(block_starts) else max_cols
+        block_ranges.append((s_col, e_col))
+
+    # Đọc dòng phía trên header_row_idx để gán nhãn Bài / Chương / Phần cho từng cụm cột
+    section_labels: List[str] = []
+    active_label = "Phần 1"
+    for s_col, e_col in block_ranges:
+        found_label = ""
+        for prev_r in range(0, header_row_idx):
+            row = raw_rows[prev_r]
+            slice_vals = [row[c].strip() for c in range(s_col, min(e_col, len(row))) if row[c].strip()]
+            if slice_vals:
+                found_label = " - ".join(slice_vals)
+                break
+        if found_label and not found_label.replace(".", "").isdigit():
+            active_label = found_label
+        section_labels.append(active_label)
+
+    # Gom các dòng dữ liệu theo từng Bài/Mục đúng thứ tự dọc
+    grouped_sections: List[Tuple[str, List[str]]] = []
+    label_to_lines: Dict[str, List[str]] = {}
+    for b_idx, (s_col, e_col) in enumerate(block_ranges):
+        lbl = section_labels[b_idx]
+        if lbl not in label_to_lines:
+            hdr_cells = [
+                raw_rows[header_row_idx][c].strip()
+                for c in range(s_col, min(e_col, len(raw_rows[header_row_idx])))
+                if raw_rows[header_row_idx][c].strip()
+            ]
+            lines_list = [lbl]
+            if hdr_cells:
+                lines_list.append(" | ".join(hdr_cells))
+            label_to_lines[lbl] = lines_list
+            grouped_sections.append((lbl, lines_list))
+
+        target_lines = label_to_lines[lbl]
+        for data_r in raw_rows[header_row_idx + 1 :]:
+            cells = [
+                data_r[c].strip()
+                for c in range(s_col, min(e_col, len(data_r)))
+                if data_r[c].strip()
+            ]
+            if len(cells) >= 2:
+                target_lines.append(" | ".join(cells))
+
+    if not grouped_sections:
+        return None
+
+    overview = "Danh mục các phần trong bảng: " + " ; ".join(lbl for lbl, _ in grouped_sections)
+    section_blocks = ["\n".join(lines) for _, lines in grouped_sections if len(lines) > 2]
+    return overview + "\n\n" + "\n\n".join(section_blocks)
+
+
+def _build_csv_analytics_summary(content: str, file_name: str) -> str:
+    """Phân tích toàn bộ nội dung CSV và tạo khối thống kê tổng hợp chính xác."""
+    try:
+        reader = csv.reader(io.StringIO(content))
+        rows = [[cell.strip() for cell in row] for row in reader if any(cell.strip() for cell in row)]
+        if len(rows) < 2:
+            return ""
+        return _build_tabular_analytics_summary(rows, title=file_name)
+    except Exception:
+        return ""
+
+
+def _build_document_outline_summary(pages: List[Dict[str, Any]], file_name: str) -> Optional[str]:
+    """
+    Trích xuất Cây mục lục & Bản đồ cấu trúc toàn tài liệu (Document Outline) cho tài liệu nhiều trang/nhiều chương.
+    Giúp AI nắm toàn cảnh mọi Chương/Điều/Mục ngay cả khi tài liệu dài 50-100 trang.
+    """
+    headings: List[str] = []
+    seen_headings = set()
+    for p in pages:
+        p_no = p.get("page", 1)
+        for raw_line in (p.get("text") or "").splitlines():
+            line = raw_line.strip()
+            if not line or len(line) > 140:
+                continue
+            if _OUTLINE_HEADING_RE.match(line):
+                clean_h = re.sub(r"^#{1,6}\s*", "", line).strip()
+                norm_key = clean_h.lower()
+                if norm_key not in seen_headings:
+                    seen_headings.add(norm_key)
+                    headings.append(f"  - [Trang {p_no}] {clean_h}")
+                    if len(headings) >= 45:
+                        break
+        if len(headings) >= 45:
+            break
+
+    if len(headings) < 3 and len(pages) < 3:
+        return None
+
+    outline_lines = [
+        f"[CÂY MỤC LỤC & TỔNG QUAN CẤU TRÚC TÀI LIỆU: {file_name}]",
+        f"- Tổng số trang/phần: {len(pages)}",
+    ]
+    if headings:
+        outline_lines.append(f"- Danh mục {len(headings)} Chương / Điều / Mục chính trong toàn bộ tài liệu:")
+        outline_lines.extend(headings)
+    else:
+        page_previews = []
+        for p in pages[:12]:
+            first_line = next((ln.strip() for ln in (p.get("text") or "").splitlines() if ln.strip()), "")[:110]
+            if first_line:
+                page_previews.append(f"  - [Trang {p.get('page', 1)}] {first_line}")
+        if page_previews:
+            outline_lines.append("- Tóm lược mở đầu các trang:")
+            outline_lines.extend(page_previews)
+
+    return "\n".join(outline_lines)
 
 
 _RAPIDOCR_ENGINE: Any = None
@@ -308,13 +572,28 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 try:
                     for sheet_idx, sheet_name in enumerate(wb.sheetnames):
                         ws = wb[sheet_name]
+                        raw_rows: List[List[str]] = []
                         lines = []
                         for row in ws.iter_rows(values_only=True):
-                            cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
-                            if cells:
+                            row_vals = ["" if c is None else str(c).strip() for c in row]
+                            if any(v != "" for v in row_vals):
+                                raw_rows.append(row_vals)
+                                cells = [v for v in row_vals if v != ""]
                                 lines.append(" | ".join(cells))
                         if lines:
-                            sheet_text = f"Sheet: {sheet_name}\n" + "\n".join(lines)
+                            unpivoted = _unpivot_side_by_side_blocks(raw_rows)
+                            if unpivoted:
+                                sheet_text = f"Sheet: {sheet_name}\n{unpivoted}"
+                            else:
+                                summary_header = _build_tabular_analytics_summary(
+                                    raw_rows, title=f"Sheet: {sheet_name}"
+                                )
+                                body = "\n".join(lines)
+                                sheet_text = (
+                                    f"{summary_header}\n\nSheet: {sheet_name}\n{body}"
+                                    if summary_header
+                                    else f"Sheet: {sheet_name}\n{body}"
+                                )
                             results.append({"page": sheet_idx + 1, "text": sheet_text})
                 finally:
                     wb.close()
@@ -325,8 +604,23 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                     df = pd.read_excel(excel_file, sheet_name=sheet_name)
                     df_clean = df.dropna(how="all")
                     if not df_clean.empty:
+                        raw_rows = [
+                            [str(col).strip() for col in df_clean.columns],
+                            *[
+                                ["" if pd.isna(v) else str(v).strip() for v in row]
+                                for row in df_clean.to_numpy().tolist()
+                            ],
+                        ]
+                        summary_header = _build_tabular_analytics_summary(
+                            raw_rows, title=f"Sheet: {sheet_name}"
+                        )
                         text = df_clean.to_string(index=False)
-                        results.append({"page": sheet_idx + 1, "text": f"Sheet: {sheet_name}\n{text}"})
+                        sheet_text = (
+                            f"{summary_header}\n\nSheet: {sheet_name}\n{text}"
+                            if summary_header
+                            else f"Sheet: {sheet_name}\n{text}"
+                        )
+                        results.append({"page": sheet_idx + 1, "text": sheet_text})
         except Exception as e:
             logger.exception("Excel extraction failed")
             raise ValueError(f"Không thể trích xuất nội dung tệp Excel: {e}") from e
@@ -340,6 +634,10 @@ def extract_text_from_file(file_path: Path, file_type: str) -> List[Dict[str, An
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
             if content.strip():
+                if file_type == "csv":
+                    csv_summary = _build_csv_analytics_summary(content, file_path.name)
+                    if csv_summary:
+                        content = f"{csv_summary}\n\n{content}"
                 results.append({"page": 1, "text": content})
         except Exception as e:
             logger.exception("Text extraction failed")
@@ -698,9 +996,22 @@ def process_and_index_document(
 
     total_pages = max(1, len(pages))
 
-    # 2. Chunking
+    # 2. Chunking + Cây mục lục cấp tài liệu (Document Outline cho tài liệu dài/nhiều mục)
     all_chunks = []
     chunk_index = 0
+    outline_summary = _build_document_outline_summary(pages, safe_name)
+    if outline_summary:
+        all_chunks.append({
+            "id": str(uuid.uuid4()),
+            "document_id": doc_id,
+            "workspace_id": workspace_id,
+            "chunk_index": chunk_index,
+            "page_number": 1,
+            "token_count": max(1, len(outline_summary.split())),
+            "content": outline_summary,
+        })
+        chunk_index += 1
+
     for p in pages:
         page_chunks = recursive_chunk_text(p["text"])
         for c in page_chunks:

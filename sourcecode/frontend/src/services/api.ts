@@ -107,6 +107,27 @@ export async function updateHardwareProfileApi(mode: HardwareProfileMode): Promi
   }
 }
 
+export async function freeSystemMemoryApi(): Promise<{
+  hardwareProfile?: HardwareProfileSummary
+  unloadedOllamaModels: string[]
+  message: string
+}> {
+  const data = await request<{
+    hardware_profile?: Record<string, unknown>
+    unloaded_ollama_models?: string[]
+    message?: string
+  }>("/api/v1/system/free-memory", {
+    method: "POST",
+  })
+  return {
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+    unloadedOllamaModels: Array.isArray(data.unloaded_ollama_models)
+      ? data.unloaded_ollama_models.map(String)
+      : [],
+    message: String(data.message ?? "Đã giải phóng bộ nhớ các model AI."),
+  }
+}
+
 export function mapBackendWorkspace(w: Record<string, unknown>): Workspace {
   const createdAt = String(w.created_at ?? nowIso())
   const updatedAt = String(w.updated_at ?? createdAt)

@@ -163,6 +163,7 @@ export interface SendChatRequest {
   backendOnline: boolean
   contextDocuments?: KnowledgeDocument[]
   selectedDocumentId?: string
+  history?: Array<{ role: "user" | "assistant"; content: string }>
   imageBase64?: string
   imageMimeType?: "image/png" | "image/jpeg" | "image/webp"
   signal?: AbortSignal
@@ -249,6 +250,7 @@ async function tryStreamOrQueryBackend(
         mode: req.mode,
         reasoning_mode: req.reasoningMode ?? "auto",
         selected_document_id: req.selectedDocumentId ?? undefined,
+        history: req.history?.length ? req.history.slice(-10) : undefined,
         image_base64: req.imageBase64 ?? undefined,
         image_mime_type: req.imageMimeType ?? undefined,
       }),
@@ -378,6 +380,7 @@ async function tryStreamOrQueryBackend(
       model: req.modelId,
       mode: req.mode,
       reasoning_mode: req.reasoningMode ?? "auto",
+      history: req.history?.length ? req.history.slice(-10) : undefined,
       image_base64: req.imageBase64 ?? undefined,
       image_mime_type: req.imageMimeType ?? undefined,
     }),

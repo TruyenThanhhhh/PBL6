@@ -441,6 +441,20 @@ export function ChatPage() {
     }
 
     const convId = activeConv.id
+    const regenIdx = regenerateAssistantId
+      ? activeConv.messages.findIndex((m) => m.id === regenerateAssistantId)
+      : activeConv.messages.length
+    const validBase = (regenIdx >= 0 ? activeConv.messages.slice(0, regenIdx) : activeConv.messages).filter(
+      (m) => !m.error && !m.streaming && Boolean(m.content?.trim()),
+    )
+    const priorMessages =
+      regenerateAssistantId && validBase.length > 0 && validBase[validBase.length - 1].role === "user"
+        ? validBase.slice(0, -1)
+        : validBase
+    const recentHistory = priorMessages.slice(-8).map((m) => ({
+      role: m.role,
+      content: m.content.slice(0, 6000),
+    }))
 
     if (!regenerateAssistantId) {
       appendMessage(convId, {
@@ -501,6 +515,7 @@ export function ChatPage() {
         modelId: localLlmModel,
         backendOnline: status.backendOnline,
         contextDocuments: workspaceDocuments,
+        history: recentHistory,
         imageBase64: currentImage?.base64,
         imageMimeType: currentImage?.mimeType,
         signal: controller.signal,

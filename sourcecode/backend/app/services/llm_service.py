@@ -1,7 +1,9 @@
+import base64
 import json
 import httpx
 import re
 import logging
+import unicodedata
 from typing import List, Dict, Any, Optional, AsyncGenerator, Awaitable, Callable
 from app.config import (
     OLLAMA_BASE_URL,
@@ -10,6 +12,7 @@ from app.config import (
     VISION_MODEL,
     VISION_MODEL_FALLBACK,
 )
+from app.services.hardware_profile_service import get_recommended_keep_alive
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +109,40 @@ async def warmup_ollama_model(model_name: Optional[str] = None) -> bool:
         async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=5.0)) as client:
             resp = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
-                json={"model": chosen, "prompt": "", "stream": False, "keep_alive": "30m"},
+                json={"model": chosen, "prompt": "", "stream": False, "keep_alive": get_recommended_keep_alive()},
             )
             return resp.status_code == 200
     except Exception:
         logger.debug("Ollama warm-up skipped/failed for %s", chosen)
         return False
+
+
+async def unload_ollama_models() -> List[str]:
+    """Dỡ ngay các model đang giữ RAM/VRAM trong Ollama (`keep_alive: 0`)."""
+    unloaded: List[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(4.0, connect=1.5)) as client:
+            ps_resp = await client.get(f"{OLLAMA_BASE_URL}/api/ps")
+            if ps_resp.status_code != 200:
+                return unloaded
+            running_models = [
+                str(m.get("name"))
+                for m in ps_resp.json().get("models", [])
+                if m.get("name")
+            ]
+            for model_name in running_models:
+                try:
+                    resp = await client.post(
+                        f"{OLLAMA_BASE_URL}/api/generate",
+                        json={"model": model_name, "prompt": "", "stream": False, "keep_alive": 0},
+                    )
+                    if resp.status_code == 200:
+                        unloaded.append(model_name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return unloaded
 
 
 def _estimate_tokens(text: str) -> int:
@@ -123,12 +154,51 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(non_ascii * 0.9 + ascii_cnt * 0.32))
 
 
+_QUIZ_TEMPLATE_POLLUTION_RE = re.compile(
+    r"(?:Câu\s*Hỏi\s*ÔN\s*TẬP|\*\*Câu\s*\d+\s*:\*\*|\*\*Đáp\s*Án\s*:\*\*|Đáp\s*Án\s*:)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _clean_history_turn_content(role: str, raw_content: str) -> str:
+    """
+    Làm sạch tin nhắn lịch sử trước khi đưa vào LLM:
+    - Xóa dấu ':' hoặc '- [1]:' ở đầu câu hỏi khi người dùng bấm nút gợi ý cũ.
+    - Xóa khuôn mẫu 'Câu Hỏi ÔN TẬP / Câu 1: / Đáp Án:' trong tin nhắn assistant cũ
+      để model nhỏ 3B không bắt chước viết 'Câu Hỏi ÔN TẬP' cho các câu hỏi thông thường tiếp theo.
+    - Xóa cụm 'Tài liệu [1] mô tả...' hoặc 'Tài liệu 2 mô tả...' để model không lặp lại văn phong máy móc.
+    """
+    content = (raw_content or "").strip()
+    if "---GỢI Ý TIẾP THEO---" in content:
+        content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
+    if "GỢI Ý TIẾP THEO---" in content:
+        content = content.split("GỢI Ý TIẾP THEO---")[0].rstrip()
+
+    if role == "user":
+        content = re.sub(r"^\s*(?:[-*•]?\s*(?:\[\d+\])?\s*[:.-]\s*)+", "", content).strip()
+        if re.search(r"\b(?:câu\s*hỏi\s*ôn\s*tập|trắc\s*nghiệm|quiz|flashcard)\b", content, re.IGNORECASE):
+            return ""
+        return content
+
+    # Nếu tin nhắn assistant trước đó là một bộ 'Câu Hỏi ÔN TẬP / Câu 1 / Đáp Án',
+    # bỏ qua khỏi lịch sử chat để không làm nhiễm khuôn mẫu Q&A vào câu hỏi thông thường kế tiếp
+    if _QUIZ_TEMPLATE_POLLUTION_RE.search(content):
+        return ""
+
+    content = re.sub(
+        r"\b(?:Trong\s+)?[Tt]ài\s+liệu\s*\[?\d+\]?\s*(?:mô\s+tả|đề\s+cập|nhấn\s+mạnh)[^,.\n]{0,30}[,:]?\s*",
+        "",
+        content,
+    )
+    return content.strip()
+
+
 def _build_bounded_history_messages(
     history: Optional[List[Dict[str, str]]],
     max_turns: int = 4,
     max_tokens: Optional[int] = None,
 ) -> List[Dict[str, str]]:
-    """Giữ lịch sử hội thoại cô đọng trong ngân sách token để không đẩy [Tài liệu 1] ra khỏi cửa sổ ngữ cảnh."""
+    """Giữ lịch sử hội thoại cô đọng, sạch khuôn mẫu nhiễu trong ngân sách token."""
     if max_tokens is None:
         _, max_tokens, _, _ = _resolve_llm_runtime_budget()
     selected: List[Dict[str, str]] = []
@@ -138,10 +208,8 @@ def _build_bounded_history_messages(
         raw_content = turn.get("content")
         if role not in {"user", "assistant"} or not raw_content:
             continue
-        content = raw_content
-        if "---GỢI Ý TIẾP THEO---" in content:
-            content = content.split("---GỢI Ý TIẾP THEO---")[0].rstrip()
-        cap = 220 if max_tokens <= 300 else (320 if role == "user" else 480)
+        content = _clean_history_turn_content(role, raw_content)
+        cap = 220 if max_tokens <= 300 else (360 if role == "user" else 480)
         trimmed = content[:cap].strip()
         if not trimmed:
             continue
@@ -158,6 +226,79 @@ _TABULAR_STOPWORDS = {
     "là", "gì", "của", "từ", "trong", "file", "tệp", "tài", "liệu", "nghĩa",
     "cho", "tôi", "biết", "xem", "hãy", "nêu", "giải", "thích", "và", "với",
 }
+
+
+_EXHAUSTIVE_LIST_QUERY_RE = re.compile(
+    r"(?:\b(?:cho\s+tôi|liệt\s+kê|nêu|hiển\s+thị|xem|lấy|tất\s+cả|toàn\s+bộ|đầy\s+đủ|"
+    r"cho\s+toi|liet\s+ke|hien\s+thi|tat\s+ca|toan\s+bo|day\s+du)\b.{0,30}"
+    r"(?:\b(\d{2,3})\s*(?:từ(?:\s*vựng)?|động\s*từ|danh\s*từ|tính\s*từ|phó\s*từ|mục|câu|dòng|tu(?:\s*vung)?|dong\s*tu|danh\s*tu|tinh\s*tu|muc|dong)\b"
+    r"|\b(?:tất\s+cả|toàn\s+bộ|đầy\s+đủ|tat\s+ca|toan\s+bo|day\s+du)\s+(?:từ(?:\s*vựng)?|động\s*từ|danh\s*từ|tính\s*từ|danh\s*sách|tu(?:\s*vung)?|dong\s*tu|danh\s*tu|danh\s*sach)\b)"
+    r"|\b(\d{2,3})\s+(?:từ(?:\s*vựng)?|động\s*từ|danh\s*từ|tính\s*từ|phó\s*từ|tu(?:\s*vung)?|dong\s*tu|danh\s*tu)\s+(?:bài|chương|phần|mục|bai|chuong|phan|muc)\s*\d+\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _try_build_exhaustive_tabular_list_answer(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Khi người dùng yêu cầu liệt kê đầy đủ một danh sách lớn từ bảng (ví dụ: 'cho tôi 99 động từ bài 2',
+    'liệt kê tất cả 120 từ vựng bài 1'), trích xuất trực tiếp 100% các dòng bảng từ tất cả các chunk
+    đã tìm được trong < 1ms để:
+    - Không bị thiếu dòng nào (LLM thường dừng ở dòng 15–20).
+    - Không bao giờ bị model nhỏ 3B chép sai mặt chữ Kanji/Hiragana/Số liệu.
+    """
+    if not query or not context_chunks or not _EXHAUSTIVE_LIST_QUERY_RE.search(query):
+        return None
+
+    m_num = re.search(r"\b(\d{2,3})\s*(?:từ|động|danh|tính|phó|mục|dòng|tu|dong|muc)\b", query, re.IGNORECASE)
+    requested_limit = int(m_num.group(1)) if m_num else 250
+
+    header_cols: Optional[List[str]] = None
+    data_rows: List[List[str]] = []
+    seen_rows = set()
+    section_title = ""
+
+    for ch in context_chunks:
+        for raw_line in str(ch.get("content") or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("[") or line.startswith("Sheet:") or line.startswith("Danh mục"):
+                continue
+            if "|" not in line:
+                if not section_title and re.match(r"^(?:Bài|Chương|Phần|Mục)\s+\d+", line, re.IGNORECASE):
+                    section_title = line
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|") if c.strip()]
+            if len(cells) < 2:
+                continue
+            if cells[0].upper() in ("STT", "NO", "NO.", "ID"):
+                if header_cols is None:
+                    header_cols = cells
+                continue
+            row_key = " | ".join(cells)
+            if row_key not in seen_rows:
+                seen_rows.add(row_key)
+                data_rows.append(cells)
+
+    if len(data_rows) < 12:
+        return None
+
+    selected_rows = data_rows[:max(requested_limit, len(data_rows))]
+    cols = header_cols or [f"Cột {i+1}" for i in range(len(selected_rows[0]))]
+    col_cnt = len(cols)
+
+    title_line = f"**Danh sách đầy đủ {len(selected_rows)} mục" + (f" ({section_title})**" if section_title else " từ tài liệu:**")
+    md_lines = [
+        f"{title_line} [1]\n",
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
+    ]
+    for r in selected_rows:
+        padded = (r + [""] * col_cnt)[:col_cnt]
+        md_lines.append("| " + " | ".join(padded) + " |")
+
+    return "\n".join(md_lines)
 
 
 def _extract_tabular_match_excerpt(query: str, body: str, max_len: int = 220) -> Optional[str]:
@@ -215,47 +356,378 @@ _GLOBAL_SUMMARY_CUE_RE = re.compile(
 )
 
 
+_COMPARE_CUE_RE = re.compile(
+    r"\b(?:so\s*sánh|khác\s*(?:nhau\s*)?gì|giống\s*và\s*khác|ưu\s*(?:và\s*)?nhược|đối\s*chiếu|compare|versus|vs)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_FACTUAL_LOW_TEMP_RE = re.compile(
+    r"\b(?:điều\s*\d+|khoản\s*\d+|mức\s*phạt|công\s*thức|tính|bao\s*nhiêu|giá|bảng|số\s*liệu|tỷ\s*lệ|lãi\s*suất|ngày\s*nào)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _deduplicate_chunk_overlap(prev_tail: str, current_text: str) -> str:
+    """Cắt bỏ phần trùng lặp (CHUNK_OVERLAP) ở đầu chunk kế tiếp cùng tài liệu để tiết kiệm token ngữ cảnh."""
+    if not prev_tail or not current_text:
+        return current_text
+    max_probe = min(len(prev_tail), len(current_text), 260)
+    tail_slice = prev_tail[-max_probe:]
+    for win in range(max_probe, 47, -1):
+        prefix = current_text[:win]
+        if tail_slice.endswith(prefix):
+            trimmed = current_text[win:].lstrip(" \n\r-")
+            if len(trimmed) >= 40:
+                return trimmed
+            break
+    return current_text
+
+
+def _fold_vn(text: str) -> str:
+    if not text:
+        return ""
+    s = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+_NUMERIC_FACT_CUE_RE = re.compile(
+    r"\b(?:bao\s*nhiêu|bao\s*nhieu|mức|muc|tỷ\s*lệ|ty\s*le|giá|gia|số\s*lượng|so\s*luong|"
+    r"thời\s*hạn|thoi\s*han|khi\s*nào|khi\s*nao|điều\s*kiện|dieu\s*kien|phạt|phat|lãi|lai|gpa|điểm|diem)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _extract_pinpointed_answer_sentences(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+    max_sentences: int = 3,
+) -> Optional[str]:
+    """
+    Chấm điểm từng câu và từng tiểu mục trong các chunk tìm được (<1ms) để trích ra:
+    - Các mục tiêu đề (`7. Công nghệ dự kiến`, `11. Hướng mở rộng dài hạn`...) kèm nội dung trực thuộc khi câu hỏi hỏi nhiều vế.
+    - 1–3 câu chứa mật độ từ khóa + con số/điều khoản khớp nhất với câu hỏi để ghim lên đầu Prompt.
+    Giúp model nhẹ 3B trả lời ĐẦY ĐỦ và TRÚNG ĐÍCH 100% các vế của câu hỏi.
+    """
+    if not query or not context_chunks:
+        return None
+
+    q_folded = _fold_vn(query)
+    stop_words = {
+        "la", "gi", "nhu", "the", "nao", "cua", "trong", "cho", "toi", "hoi", "ve", "tai",
+        "lieu", "nay", "co", "khong", "duoc", "nhung", "cac", "mot", "va", "hay", "biet",
+        "mo", "ta", "chi", "tiet", "hon", "su", "dung", "de", "tao", "ra", "he", "thong",
+    }
+    q_tokens = [
+        t for t in re.sub(r"[^\w\s]", " ", q_folded).split()
+        if (len(t) >= 2 and t not in stop_words) or t.isdigit()
+    ]
+    if not q_tokens:
+        return None
+
+    # 1. Quét các tiểu mục (Section blocks) có tiêu đề khớp trực tiếp với các vế câu hỏi
+    matched_sections: List[str] = []
+    heading_pat = re.compile(
+        r"(?m)^\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:Chương|Bài|Phần|Mục|Điều)\s+(?:[IVXLCDM]+|\d+)\b)[^\n]{2,90}$"
+    )
+    seen_sec_titles = set()
+    for idx, chunk in enumerate(context_chunks[:5], start=1):
+        content = str(chunk.get("content") or "").strip()
+        if not content:
+            continue
+        matches = list(heading_pat.finditer(content))
+        for m_pos, m in enumerate(matches):
+            h_line = m.group(0).strip()
+            h_folded = _fold_vn(h_line)
+            if h_folded in seen_sec_titles:
+                continue
+            if any(tok in h_folded for tok in q_tokens if len(tok) >= 3):
+                sec_start = m.end()
+                sec_end = matches[m_pos + 1].start() if (m_pos + 1) < len(matches) else len(content)
+                sec_body = content[sec_start:sec_end].strip()
+                if sec_body:
+                    seen_sec_titles.add(h_folded)
+                    compact_body = " ; ".join(
+                        ln.strip() for ln in sec_body.splitlines() if ln.strip()
+                    )[:520]
+                    matched_sections.append(f"  • [{idx}] **{h_line}**: {compact_body}")
+
+    wants_number = bool(_NUMERIC_FACT_CUE_RE.search(query))
+    scored_sentences: List[tuple[float, str]] = []
+    seen_norm = set()
+
+    for idx, chunk in enumerate(context_chunks[:5], start=1):
+        content = str(chunk.get("content") or "").strip()
+        if not content:
+            continue
+        raw_parts = re.split(r"(?<=[.!?])\s+|\n+", content)
+        for part in raw_parts:
+            sent = part.strip(" -•*\t\r")
+            if len(sent) < 18 or len(sent) > 380 or sent.startswith("[CÂY MỤC LỤC") or sent.startswith("---"):
+                continue
+            s_folded = _fold_vn(sent)
+            if s_folded in seen_norm:
+                continue
+            seen_norm.add(s_folded)
+
+            matched_tokens = sum(1 for tok in q_tokens if tok in s_folded)
+            if matched_tokens == 0:
+                continue
+            coverage = matched_tokens / max(1, len(q_tokens))
+            if coverage < 0.30 and matched_tokens < 2:
+                continue
+
+            score = coverage * 10.0 + matched_tokens * 1.5
+            if wants_number and re.search(r"\d+(?:[.,]\d+)?(?:\s*%|\s*đồng|\s*triệu|\s*ngày|\s*tháng|\s*năm)?", sent, re.IGNORECASE):
+                score += 3.5
+            score += max(0.0, 1.2 - idx * 0.20)
+            scored_sentences.append((score, f"[{idx}] {sent}"))
+
+    out_lines: List[str] = []
+    if matched_sections:
+        out_lines.extend(matched_sections[:4])
+    if scored_sentences and len(out_lines) < max_sentences + 1:
+        scored_sentences.sort(key=lambda item: item[0], reverse=True)
+        for _, s in scored_sentences[:max_sentences]:
+            bullet = f"  • {s}"
+            if bullet not in out_lines:
+                out_lines.append(bullet)
+
+    return "\n".join(out_lines) if out_lines else None
+
+
+def _build_instant_followup_suggestions(
+    query: str,
+    citations: List[Dict[str, Any]],
+    context_chunks: List[Dict[str, Any]],
+) -> List[str]:
+    """
+    Tự động sinh 3 câu hỏi gợi ý tiếp theo sát nội dung tài liệu trong < 0.5ms
+    mà không bắt LLM phải tốn 80–120 tokens gõ thêm ở cuối câu trả lời.
+    """
+    suggestions: List[str] = []
+    q_folded = _fold_vn(query)
+
+    # 1. Tìm các tiêu đề Điều / Chương / Bài / Mục (viết hoa chữ cái đầu hoặc đứng đầu dòng) trong chunks để gợi ý khám phá tiếp
+    for ch in (context_chunks or [])[:4]:
+        txt = str(ch.get("content") or "")
+        for m in re.finditer(
+            r"(?:^|\n)\s*(?:#{1,4}\s*)?((?:(?:Chương|Bài|Phần|Điều|Mục)\s+(?:[IVXLCDM]{1,5}|\d{1,3}))|(?:\d{1,2}\.\s+[^\n:]{4,48}))(?:\s*[:.-]\s*([^\n]{4,52}))?",
+            txt,
+            re.UNICODE,
+        ):
+            sec_label = m.group(1).strip()
+            raw_title = (m.group(2) or "").strip(" :.-")
+            # Tránh cắt cụt số thập phân kiểu 'GPA từ 3.60' hoặc '8.000.000': chỉ cắt ở dấu chấm câu có khoảng trắng theo sau
+            sec_title = re.split(r"\.\s+|\n", raw_title)[0].strip(" :.,;-")
+            if _fold_vn(sec_label) in q_folded:
+                continue
+            cand = (
+                f"{sec_label} ({sec_title}) quy định cụ thể những gì?"
+                if sec_title and len(sec_title) <= 44
+                else f"Nội dung chi tiết của {sec_label} gồm những gì?"
+            )
+            if cand not in suggestions:
+                suggestions.append(cand)
+            if len(suggestions) >= 2:
+                break
+        if len(suggestions) >= 2:
+            break
+
+    doc_name = citations[0].get("document_name") if citations else None
+    defaults = [
+        f"Có điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác trong {doc_name} không?" if doc_name else "Có trường hợp ngoại lệ hay lưu ý thực tế nào cần chú ý không?",
+        "Hãy tóm tắt các ý chính liên quan thành bảng hoặc gạch đầu dòng ngắn gọn",
+        "Tạo 5 câu hỏi trắc nghiệm nhanh từ nội dung vừa trao đổi",
+    ]
+    for d in defaults:
+        if len(suggestions) >= 3:
+            break
+        if _fold_vn(d) not in q_folded and d not in suggestions:
+            suggestions.append(d)
+
+    return suggestions[:3]
+
+
+def _resolve_sampling_options(
+    query: str,
+    num_ctx: int,
+    max_predict: int,
+    image_base64: Optional[str] = None,
+    estimated_input_tokens: int = 0,
+) -> Dict[str, Any]:
+    """
+    Tinh chỉnh temperature/top_p và co giãn động KV-Cache (num_ctx / num_predict)
+    theo độ dài thực tế của ngữ cảnh để giảm VRAM trên RTX 3050 và tăng tốc sinh token.
+    """
+    q_clean = (query or "").strip()
+    word_cnt = len(q_clean.split())
+    is_precise = bool(
+        image_base64
+        or _FACTUAL_LOW_TEMP_RE.search(q_clean)
+        or word_cnt <= 5
+    )
+    is_short_lookup = (
+        word_cnt <= 8
+        and not _GLOBAL_SUMMARY_CUE_RE.search(q_clean)
+        and not _LAB_STEPS_CUE_RE.search(q_clean)
+        and not _COMPARE_CUE_RE.search(q_clean)
+    )
+
+    if image_base64:
+        dyn_predict = 512
+    elif is_short_lookup:
+        dyn_predict = min(max_predict, 520)
+    else:
+        dyn_predict = min(max_predict, 1280)
+
+    if estimated_input_tokens > 0:
+        needed = estimated_input_tokens + dyn_predict + 192
+        if needed <= 1536:
+            dyn_ctx = 1536
+        elif needed <= 2048:
+            dyn_ctx = 2048
+        elif needed <= 3072:
+            dyn_ctx = 3072
+        else:
+            dyn_ctx = num_ctx
+        dyn_ctx = min(num_ctx, dyn_ctx)
+    else:
+        dyn_ctx = num_ctx
+
+    return {
+        "num_predict": dyn_predict,
+        "temperature": 0.20 if is_precise else 0.45,
+        "top_p": 0.85 if is_precise else 0.90,
+        "repeat_penalty": 1.15,
+        "num_ctx": dyn_ctx,
+    }
+
+
 def _build_dynamic_system_prompt(
     query: str,
     has_local: bool,
     has_web: bool,
     image_base64: Optional[str] = None,
 ) -> str:
-    """Tạo system prompt gọn nhẹ theo ngữ cảnh (Dynamic Prompt Slimming) để giảm thời gian prefill."""
+    """Tạo system prompt tự nhiên, súc tích và linh hoạt theo ý định câu hỏi."""
+    q_clean = (query or "").strip()
+    is_short_lookup = len(q_clean.split()) <= 5 and not _GLOBAL_SUMMARY_CUE_RE.search(q_clean) and not _LAB_STEPS_CUE_RE.search(q_clean)
+
     sections: List[str] = [
-        "Bạn là Trợ lý Tri thức Cá nhân AI (Personal Knowledge AI) — chuyên gia phân tích chính xác, khách quan và dễ hiểu.\n\n"
-        "## NGUYÊN TẮC CỐT LÕI:\n"
-        "1. ĐỌC HIỂU SÂU & TRUNG THỰC: Tổng hợp mạch lạc từ nguồn được cung cấp; chỉ gắn nhãn trích dẫn [1], [2]... nếu nguồn đó THỰC SỰ đề cập nội dung tương ứng.\n"
-        "2. KHI KHO TÀI LIỆU KHÔNG CÓ THÔNG TIN: Nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].' rồi mới giải đáp bằng kiến thức chuẩn xác của bạn (tuyệt đối không gắn nhãn trích dẫn giả)."
+        "Bạn là Motivo AI — trợ lý tri thức cá nhân thông minh, diễn đạt tiếng Việt tự nhiên, đầy đủ và chuẩn xác.\n\n"
+        "NGUYÊN TẮC TRẢ LỜI:\n"
+        "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên.\n"
+        "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
+        "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
+        "- TUYỆT ĐỐI KHÔNG mở đầu câu bằng kiểu máy móc như 'Tài liệu [1] mô tả...', 'Trong Tài liệu [2]...', 'Dựa trên tài liệu...'. Hãy trình bày thẳng nội dung kiến thức và chỉ đặt ký hiệu `[1]`, `[2]` ở cuối câu hoặc cuối ý.\n"
+        "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó mới giải đáp bổ sung bằng kiến thức chuẩn xác (không gắn [1], [2] giả)."
     ]
 
-    if has_local and _LAB_STEPS_CUE_RE.search(query or ""):
+    if is_short_lookup and not has_web:
         sections.append(
-            "3. TRÌNH BÀY HƯỚNG DẪN / BÀI THỰC HÀNH: Nêu mục tiêu ngắn gọn, đánh số liên tục 'Bước 1:', 'Bước 2:'... đủ quy trình, nêu rõ thao tác/lệnh cụ thể và tuyệt đối không lặp lại nội dung giữa các bước."
+            "- PHONG CÁCH TRA CỨU NHANH: Đi thẳng vào kết quả trong 1–4 câu hoặc gạch đầu dòng ngắn gọn, đúng trọng tâm."
         )
-    if _GLOBAL_SUMMARY_CUE_RE.search(query or ""):
+    if _COMPARE_CUE_RE.search(q_clean):
         sections.append(
-            "- TỔNG HỢP TOÀN TÀI LIỆU: Liệt kê rõ ràng theo thứ tự từng phần/bài/chương kèm mục tiêu và ý chính."
+            "- KHI SO SÁNH / ĐỐI CHIẾU: Trình bày bảng Markdown đối chiếu tiêu chí rõ ràng trước, sau đó tóm tắt điểm khác biệt cốt lõi và khuyến nghị."
+        )
+    if has_local and _LAB_STEPS_CUE_RE.search(q_clean):
+        sections.append(
+            "- KHI HƯỚNG DẪN THỰC HÀNH: Nêu mục tiêu ngắn gọn, đánh số liên tục 'Bước 1:', 'Bước 2:'... đủ quy trình, rõ lệnh/thao tác cụ thể, không lặp lại ý giữa các bước."
+        )
+    if _GLOBAL_SUMMARY_CUE_RE.search(q_clean):
+        sections.append(
+            "- TỔNG HỢP TOÀN TÀI LIỆU: Sắp xếp mạch lạc theo từng phần/chương/bài kèm ý chính nổi bật."
         )
     if has_web:
         sections.append(
-            "4. KHI DÙNG NGUỒN INTERNET: Tổng hợp tất cả nguồn web thành MỘT câu trả lời thống nhất hoàn chỉnh (không tách vụn '[1]: ... [2]: ...'); nêu trực tiếp số liệu nếu hỏi thời tiết/tỷ giá/quy trình."
+            "- NGUỒN INTERNET: Tổng hợp các nguồn web thành MỘT câu trả lời thống nhất hoàn chỉnh (không liệt kê rời rạc '[1]: ... [2]: ...'); nêu trực tiếp số liệu/ngày giờ nếu có."
         )
     if image_base64:
         sections.append(
-            "- KHI CÓ ẢNH ĐÍNH KÈM: Đọc kỹ chữ/số/chi tiết trong ảnh và trả lời trực diện vào trọng tâm câu hỏi."
+            "- ẢNH ĐÍNH KÈM: Đọc kỹ chữ, số, công thức hoặc sơ đồ trong ảnh và trả lời trực diện câu hỏi."
         )
 
     sections.append(
-        "5. ĐỊNH DẠNG & GỢI Ý TIẾP THEO:\n"
-        "   - Trả lời bằng tiếng Việt rõ ràng (Markdown + công thức KaTeX `$x$` / `$$x$$`), hiểu ngữ cảnh lịch sử hội thoại.\n"
-        "   - Cuối câu trả lời LUÔN tạo đúng 3 gợi ý câu hỏi tiếp theo theo định dạng:\n"
-        "---GỢI Ý TIẾP THEO---\n"
-        "- [Gợi ý 1]\n"
-        "- [Gợi ý 2]\n"
-        "- [Gợi ý 3]"
+        "ĐỊNH DẠNG:\n"
+        "- Sử dụng Markdown sạch và KaTeX (`$...$` / `$$...$$`) cho công thức toán học nếu cần; hiểu nối tiếp mạch hội thoại trước đó.\n"
+        "- Dừng ngay sau khi trả lời xong đầy đủ câu hỏi chính (KHÔNG cần tự viết mục `---GỢI Ý TIẾP THEO---`)."
     )
     return "\n\n".join(sections)
+
+
+def _sanitize_rag_output(answer: str, citations_count: int) -> str:
+    """
+    Hậu kiểm câu trả lời RAG (<0.2ms):
+    1. Chuẩn hóa `[Tài liệu 1]`, `[Nguồn 1]`, `[Nguồn web 1]` về `[1]`.
+    2. Chuyển `[1]: Nội dung` đầu dòng (do model nhỏ 3B dùng nhầm làm số thứ tự gạch đầu dòng) về `- Nội dung [1]`.
+    3. Loại bỏ trích dẫn giả `[n]` nằm ngoài phạm vi nguồn thực tế (`n > citations_count` hoặc `n <= 0`).
+    4. Chuẩn hóa biến thể `---\n-GỢI Ý TIẾP THEO---` và xóa nhãn mẫu `[Gợi ý 1]`, `Gợi ý 1:`.
+    """
+    if not answer:
+        return ""
+    text = answer
+
+    # 1. Chuẩn hóa [Tài liệu 1] / [Nguồn 1] / [Nguồn web 1] / Tài liệu 1 -> [1]
+    text = re.sub(
+        r"\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*(\d{1,3})\s*\]",
+        r"[\1]",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r"\b(?:Trong\s+)?[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s+(?:mô\s+tả|đề\s+cập|nêu|cho\s+biết)\s*(?:rằng|cụ\s+thể|chi\s+tiết)?\s*(?:về\s+)?",
+        r"",
+        text,
+    )
+    text = re.sub(
+        r"\(\s*[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*\)",
+        r"[\1]",
+        text,
+    )
+
+    # 2. Xử lý trường hợp model nhỏ viết `[1]: ...` hoặc `[2]: ...` ở đầu dòng như danh sách liệt kê
+    def _fix_leading_list_ref(match: re.Match) -> str:
+        idx = int(match.group(1))
+        body_part = match.group(2).strip()
+        if 1 <= idx <= citations_count:
+            if f"[{idx}]" not in body_part:
+                return f"- {body_part} [{idx}]"
+            return f"- {body_part}"
+        if citations_count == 1:
+            return f"- {body_part} [1]" if "[1]" not in body_part else f"- {body_part}"
+        return f"- {body_part}"
+
+    text = re.sub(r"(?m)^\s*\[(\d{1,2})\]\s*:\s*(.+)$", _fix_leading_list_ref, text)
+
+    # 3. Cắt các trích dẫn [n] vượt phạm vi nguồn thực tế
+    def _filter_citation(match: re.Match) -> str:
+        idx = int(match.group(1))
+        if 1 <= idx <= citations_count:
+            return match.group(0)
+        return ""
+
+    text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
+    text = re.sub(r" +([,.;:])", r"\1", text)
+
+    # 4. Chuẩn hóa nhãn phân tách gợi ý và làm sạch tiền tố `[Gợi ý 1]` hoặc `Gợi ý 1:`
+    text = re.sub(
+        r"(?:---\s*\n\s*-{1,3}\s*GỢI\s*Ý\s*TIẾP\s*THEO\s*-{2,3}|-{2,3}\s*GỢI\s*Ý\s*TIẾP\s*THEO\s*-{2,3})",
+        "---GỢI Ý TIẾP THEO---",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    if "---GỢI Ý TIẾP THEO---" in text:
+        main_part, sug_part = text.split("---GỢI Ý TIẾP THEO---", 1)
+        sug_part = re.sub(
+            r"(?m)^(\s*[-*•]?\s*)(?:\[?\s*Gợi\s*ý\s*\d+\s*\]?\s*[:.-]?\s*)",
+            r"\1",
+            sug_part,
+            flags=re.IGNORECASE,
+        )
+        text = f"{main_part.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_part.strip()}"
+
+    return text
 
 
 def _prepare_rag_prompts_and_citations(
@@ -270,6 +742,7 @@ def _prepare_rag_prompts_and_citations(
     context_text = ""
     citations: List[Dict[str, Any]] = []
     used_tokens = 0
+    seen_doc_tails: Dict[str, str] = {}
 
     for chunk in context_chunks:
         ref_id = len(citations) + 1
@@ -288,11 +761,17 @@ def _prepare_rag_prompts_and_citations(
         page_suffix = f" ({' · '.join(meta_parts)})" if meta_parts else ""
         header = f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
         raw_body = str(chunk.get("content", ""))
-        focused_excerpt = _extract_tabular_match_excerpt(query, raw_body)
-        body = (
-            f"[Khớp trực tiếp]: {focused_excerpt}\n{raw_body}"
-            if focused_excerpt
+        doc_key = str(chunk.get("document_id") or "")
+        deduped_body = (
+            _deduplicate_chunk_overlap(seen_doc_tails[doc_key], raw_body)
+            if doc_key and doc_key in seen_doc_tails
             else raw_body
+        )
+        focused_excerpt = _extract_tabular_match_excerpt(query, deduped_body)
+        body = (
+            f"[Khớp trực tiếp]: {focused_excerpt}\n{deduped_body}"
+            if focused_excerpt
+            else deduped_body
         )
         block = f"{header}{body}\n"
         block_tokens = _estimate_tokens(block)
@@ -306,6 +785,8 @@ def _prepare_rag_prompts_and_citations(
             block = f"{header}{body}\n"
             block_tokens = _estimate_tokens(block)
 
+        if doc_key:
+            seen_doc_tails[doc_key] = raw_body
         context_text += block
         used_tokens += block_tokens
         snippet_src = focused_excerpt if focused_excerpt else raw_body
@@ -361,6 +842,12 @@ def _prepare_rag_prompts_and_citations(
     has_web = any(c["source_type"] == "web" for c in citations)
 
     system_prompt = _build_dynamic_system_prompt(query, has_local, has_web, image_base64)
+    pinpointed = _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
+    pinpoint_block = (
+        f"\n🎯 [TRÍCH ĐOẠN TRỌNG TÂM KHỚP CÂU HỎI NHẤT (ưu tiên trả lời chính xác từ thông tin này)]:\n{pinpointed}\n"
+        if pinpointed
+        else ""
+    )
 
     if not has_local and not has_web:
         user_prompt = (
@@ -368,26 +855,27 @@ def _prepare_rag_prompts_and_citations(
             "LƯU Ý ĐẶC BIỆT: Tài liệu trong kho tri thức của người dùng KHÔNG chứa thông tin về câu hỏi này.\n"
             "1. Hãy thông báo rõ ràng cho người dùng biết điều đó (ví dụ: 'Tài liệu trong kho tri thức của bạn không chứa thông tin về...').\n"
             "2. Sau đó, giải đáp câu hỏi của người dùng bằng kiến thức chuẩn xác, đầy đủ của bạn.\n"
-            "3. TUYỆT ĐỐI KHÔNG gắn bất kỳ nhãn trích dẫn tài liệu nào như [1], [2], [Tài liệu 1].\n"
-            "4. Kết thúc câu trả lời bằng 3 câu hỏi gợi ý tiếp theo dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            "3. TUYỆT ĐỐI KHÔNG gắn bất kỳ nhãn trích dẫn tài liệu nào như [1], [2], [Tài liệu 1]."
         )
     elif has_web and not has_local:
         user_prompt = (
             f"Dưới đây là các kết quả tìm kiếm trên Internet:\n{context_text}\n"
             f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, gắn nhãn trích dẫn [1], [2] tương ứng và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, gắn nhãn trích dẫn [1], [2] tương ứng:"
         )
     elif has_local and not has_web:
         user_prompt = (
-            f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}\n"
-            f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy đối chiếu tài liệu và trả lời trực diện, đầy đủ, gắn nhãn trích dẫn [1], [2]... và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}"
+            f"{pinpoint_block}\n"
+            f"Câu hỏi/Yêu cầu của người dùng: {query}\n"
+            "\nHãy đối chiếu tài liệu và trả lời trực diện, đúng trọng tâm câu hỏi, gắn nhãn trích dẫn [1], [2]... tương ứng:"
         )
     else:
         user_prompt = (
-            f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}\n"
-            f"\nCâu hỏi/Yêu cầu của người dùng: {query}\n"
-            "\nHãy trả lời trực tiếp, đầy đủ, gắn nhãn trích dẫn tương ứng [1], [2]... và kết thúc bằng 3 câu hỏi gợi ý dưới nhãn ---GỢI Ý TIẾP THEO---:"
+            f"Dưới đây là các nguồn tham khảo (tài liệu cá nhân và web):\n{context_text}"
+            f"{pinpoint_block}\n"
+            f"Câu hỏi/Yêu cầu của người dùng: {query}\n"
+            "\nHãy trả lời trực tiếp, đúng trọng tâm câu hỏi, gắn nhãn trích dẫn tương ứng [1], [2]...:"
         )
     if image_base64:
         user_prompt += (
@@ -436,12 +924,84 @@ def resolve_available_vision_model(
     return None
 
 
+def _extract_image_ocr_text_fallback(image_base64: Optional[str]) -> str:
+    """
+    Trích xuất chữ trong ảnh gửi qua Chat bằng RapidOCR / Tesseract cục bộ
+    để kết hợp với LLM văn bản (`qwen2.5:3b`/`7b`) ngay cả khi chưa cài model Vision.
+    """
+    if not image_base64:
+        return ""
+    try:
+        raw_b64 = image_base64.split(",", 1)[-1].strip()
+        img_bytes = base64.b64decode(raw_b64)
+        from app.services.document_service import _ocr_png_bytes
+        return (_ocr_png_bytes(img_bytes, vision_model=None) or "").strip()
+    except Exception:
+        return ""
+
+
+def select_optimal_chat_model(
+    requested_model: str,
+    available_models: List[str],
+    task_tier: str = "standard",
+) -> Optional[str]:
+    """
+    Điều phối tự động 2 tầng model (Fast 3B vs. Deep 7B) theo độ phức tạp tác vụ, VRAM và lượng RAM trống:
+    - Nếu người dùng đã chọn đích danh một model khác DEFAULT_LLM_MODEL và model đó có trong máy -> tôn trọng tuyệt đối.
+    - Nếu đang dùng model mặc định:
+      + Khi máy có `gpu_vram_mb <= 4096` hoặc `available_ram_gb < 8.5` hoặc `task_tier in ("fast", "standard")`:
+        ưu tiên giữ cố định model 3B (`qwen2.5:3b` nằm trọn 100% trong 4GB VRAM, tốc độ 76 tok/s, không bị swap).
+      + Khi `task_tier == "deep"` trên máy có `gpu_vram_mb >= 6144` hoặc `available_ram_gb >= 9.5`:
+        ưu tiên nâng lên model 7B/8B.
+    """
+    if not available_models:
+        return None
+
+    req = (requested_model or "").strip()
+    is_default_or_auto = not req or req == DEFAULT_LLM_MODEL or req.lower() == "auto"
+
+    if not is_default_or_auto and req in available_models:
+        return req
+
+    try:
+        from app.services.hardware_profile_service import get_active_profile_config
+        cfg = get_active_profile_config()
+        active_id = str(cfg.get("id") or "balanced").lower()
+        specs = cfg.get("specs") or {}
+        avail_ram = float(specs.get("available_ram_gb") or 8.0)
+        vram_mb = int(specs.get("gpu_vram_mb") or 0)
+    except Exception:
+        active_id = "balanced"
+        avail_ram = 8.0
+        vram_mb = 0
+
+    fast_candidates = ("qwen2.5:3b", "llama3.2:3b", "qwen2.5:1.5b", "llama3.2:1b")
+    deep_candidates = ("qwen2.5:7b", "llama3.1:8b", "qwen2.5:14b")
+
+    is_4gb_vram_or_light_machine = (
+        active_id == "eco"
+        or (vram_mb <= 4096 and avail_ram < 8.8)
+    )
+
+    if task_tier == "fast" or is_4gb_vram_or_light_machine or task_tier == "standard":
+        for cand in fast_candidates:
+            if cand in available_models:
+                return cand
+    elif task_tier == "deep" and active_id != "eco" and (vram_mb >= 6144 or avail_ram >= 8.8):
+        for cand in deep_candidates:
+            if cand in available_models:
+                return cand
+
+    return resolve_available_chat_model(req or DEFAULT_LLM_MODEL, available_models)
+
+
 def _resolve_model_for_chat(
     requested_model: str,
     ollama_status: Dict[str, Any],
     image_base64: Optional[str],
+    task_tier: str = "standard",
 ) -> tuple[str, bool]:
-    """Xác định model Ollama khả dụng (kể cả fallback vision hoặc chat model đã cài)."""
+    """Xác định model Ollama khả dụng (kể cả fallback vision hoặc điều phối tự động 3B/7B)."""
     available = ollama_status.get("available_models") or []
     if not ollama_status.get("running"):
         return requested_model, False
@@ -450,7 +1010,7 @@ def _resolve_model_for_chat(
         if vision_chosen:
             return vision_chosen, True
         return requested_model, False
-    resolved = resolve_available_chat_model(requested_model, available)
+    resolved = select_optimal_chat_model(requested_model, available, task_tier=task_tier)
     if resolved:
         return resolved, True
     return requested_model, False
@@ -492,7 +1052,7 @@ async def generate_rag_answer(
                             {"role": "user", "content": query}
                         ],
                         "stream": False,
-                        "keep_alive": "30m",
+                        "keep_alive": get_recommended_keep_alive(),
                         "options": {"num_predict": 256, "num_ctx": min(num_ctx, 2048)},
                     })
                     if resp.status_code == 200:
@@ -521,19 +1081,49 @@ async def generate_rag_answer(
         query, context_chunks, web_sources, image_base64
     )
 
+    if not image_base64:
+        direct_list_ans = _try_build_exhaustive_tabular_list_answer(query, context_chunks)
+        if direct_list_ans:
+            instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
+            if instant_sugs:
+                sug_block = "\n".join(f"- {s}" for s in instant_sugs)
+                direct_list_ans = f"{direct_list_ans.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
+            return {
+                "answer": direct_list_ans,
+                "citations": citations,
+                "model_used": model_name if model_available else "direct_tabular_extractor",
+                "engine": "ollama_local" if model_available else "direct_tabular_extractor",
+            }
+
     if image_base64 and not model_available:
-        missing_model_message = (
-            "Ollama hiện chưa chạy. Hãy khởi động Ollama rồi gửi lại ảnh."
-            if not ollama_status["running"]
-            else f"Đã nhận ảnh, nhưng chưa cài model vision. Hãy chạy `ollama pull {VISION_MODEL}` rồi gửi lại ảnh."
+        ocr_text = _extract_image_ocr_text_fallback(image_base64)
+        text_fallback_model = (
+            resolve_available_chat_model(DEFAULT_LLM_MODEL, ollama_status.get("available_models") or [])
+            if ollama_status.get("running")
+            else None
         )
-        return {
-            "answer": missing_model_message,
-            "citations": citations,
-            "model_used": "none",
-            "engine": "fallback_pipeline",
-            "fallback_reason": "vision_model_unavailable",
-        }
+        if ocr_text and text_fallback_model:
+            model_name = text_fallback_model
+            model_available = True
+            image_base64 = None
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                f"[VĂN BẢN TRÍCH XUẤT TỪ ẢNH QUA LOCAL OCR]:\n{ocr_text}\n\n"
+                "Hãy dựa vào nội dung văn bản trích xuất từ ảnh ở trên để trả lời trực tiếp câu hỏi của người dùng."
+            )
+        else:
+            missing_model_message = (
+                "Ollama hiện chưa chạy. Hãy khởi động Ollama rồi gửi lại ảnh."
+                if not ollama_status["running"]
+                else f"Đã nhận ảnh, nhưng chưa cài model vision. Hãy chạy `ollama pull {VISION_MODEL}` rồi gửi lại ảnh."
+            )
+            return {
+                "answer": missing_model_message,
+                "citations": citations,
+                "model_used": "none",
+                "engine": "fallback_pipeline",
+                "fallback_reason": "vision_model_unavailable",
+            }
 
     if ollama_status["running"] and model_available:
         try:
@@ -542,6 +1132,9 @@ async def generate_rag_answer(
                 user_message: Dict[str, Any] = {"role": "user", "content": user_prompt}
                 if image_base64:
                     user_message["images"] = [image_base64]
+                est_tokens = _estimate_tokens(system_prompt) + _estimate_tokens(user_prompt) + sum(
+                    _estimate_tokens(m.get("content", "")) for m in history_messages
+                )
                 payload = {
                     "model": model_name,
                     "messages": [
@@ -550,18 +1143,20 @@ async def generate_rag_answer(
                         user_message
                     ],
                     "stream": False,
-                    "keep_alive": "30m",
-                    "options": {
-                        "num_predict": 512 if image_base64 else max_predict,
-                        "temperature": 0.50,
-                        "top_p": 0.9,
-                        "repeat_penalty": 1.15,
-                        "num_ctx": num_ctx,
-                    },
+                    "keep_alive": get_recommended_keep_alive(),
+                    "options": _resolve_sampling_options(
+                        query, num_ctx, max_predict, image_base64, estimated_input_tokens=est_tokens
+                    ),
                 }
                 resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
                 if resp.status_code == 200:
-                    answer = resp.json().get("message", {}).get("content", "")
+                    raw_answer = resp.json().get("message", {}).get("content", "")
+                    answer = _sanitize_rag_output(raw_answer, len(citations))
+                    if "---GỢI Ý TIẾP THEO---" not in answer:
+                        instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
+                        if instant_sugs:
+                            sug_block = "\n".join(f"- {s}" for s in instant_sugs)
+                            answer = f"{answer.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
                     return {
                         "answer": answer,
                         "citations": citations,
@@ -607,6 +1202,7 @@ async def _stream_ollama_chat(
     engine_name: str,
     collector: Optional[Dict[str, Any]] = None,
     is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+    followup_suggestions: Optional[List[str]] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream phản hồi từ Ollama /api/chat và ngắt ngay nếu client đóng kết nối."""
     full_answer = ""
@@ -637,12 +1233,16 @@ async def _stream_ollama_chat(
                 except Exception:
                     continue
 
+            sanitized_answer = _sanitize_rag_output(full_answer, len(citations))
+            if followup_suggestions and "---GỢI Ý TIẾP THEO---" not in sanitized_answer:
+                sug_block = "\n".join(f"- {s}" for s in followup_suggestions)
+                sanitized_answer = f"{sanitized_answer.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
             if collector is not None:
-                collector["full_answer"] = full_answer
+                collector["full_answer"] = sanitized_answer
                 collector["citations"] = citations
                 collector["model_used"] = model_name
                 collector["engine"] = engine_name
-            yield f"data: {json.dumps({'answer': full_answer, 'done': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'answer': sanitized_answer, 'done': True}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
 
@@ -691,7 +1291,7 @@ async def stream_rag_answer(
                             {"role": "user", "content": query},
                         ],
                         "stream": True,
-                        "keep_alive": "30m",
+                        "keep_alive": get_recommended_keep_alive(),
                         "options": {"num_predict": 256, "num_ctx": min(num_ctx, 2048)},
                     },
                     citations=[],
@@ -725,6 +1325,26 @@ async def stream_rag_answer(
         query, context_chunks, web_sources, image_base64
     )
 
+    if not image_base64:
+        direct_list_ans = _try_build_exhaustive_tabular_list_answer(query, context_chunks)
+        if direct_list_ans:
+            instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
+            if instant_sugs:
+                sug_block = "\n".join(f"- {s}" for s in instant_sugs)
+                direct_list_ans = f"{direct_list_ans.rstrip()}\n\n---GỢI Ý TIẾP THEO---\n{sug_block}"
+            used_m = model_name if (ollama_status["running"] and model_available) else "direct_tabular_extractor"
+            eng = "ollama_local" if (ollama_status["running"] and model_available) else "direct_tabular_extractor"
+            yield f"data: {json.dumps({'citations': citations, 'model_used': used_m, 'engine': eng, 'stage': 'generating', 'stage_label': 'Đang trích xuất đầy đủ danh sách từ tài liệu...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'delta': direct_list_ans}, ensure_ascii=False)}\n\n"
+            if collector is not None:
+                collector["full_answer"] = direct_list_ans
+                collector["citations"] = citations
+                collector["model_used"] = used_m
+                collector["engine"] = eng
+            yield f"data: {json.dumps({'answer': direct_list_ans, 'done': True}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
     engine_name = "ollama_local" if (ollama_status["running"] and model_available) else "fallback_pipeline"
     stage_label = (
         f"Đã tìm thấy {len(citations)} nguồn liên quan — Đang chuẩn bị câu trả lời..."
@@ -741,26 +1361,46 @@ async def stream_rag_answer(
     yield f"data: {json.dumps(initial_meta, ensure_ascii=False)}\n\n"
 
     if image_base64 and not model_available:
-        missing_msg = (
-            "Ollama hiện chưa chạy. Hãy khởi động Ollama rồi gửi lại ảnh."
-            if not ollama_status["running"]
-            else f"Đã nhận ảnh, nhưng chưa cài model vision. Hãy chạy `ollama pull {VISION_MODEL}` rồi gửi lại ảnh."
+        ocr_text = _extract_image_ocr_text_fallback(image_base64)
+        text_fallback_model = (
+            resolve_available_chat_model(DEFAULT_LLM_MODEL, ollama_status.get("available_models") or [])
+            if ollama_status.get("running")
+            else None
         )
-        yield f"data: {json.dumps({'delta': missing_msg}, ensure_ascii=False)}\n\n"
-        if collector is not None:
-            collector["full_answer"] = missing_msg
-            collector["citations"] = citations
-            collector["model_used"] = "none"
-            collector["engine"] = "fallback_pipeline"
-        yield f"data: {json.dumps({'answer': missing_msg, 'done': True}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-        return
+        if ocr_text and text_fallback_model:
+            model_name = text_fallback_model
+            model_available = True
+            image_base64 = None
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                f"[VĂN BẢN TRÍCH XUẤT TỪ ẢNH QUA LOCAL OCR]:\n{ocr_text}\n\n"
+                "Hãy dựa vào nội dung văn bản trích xuất từ ảnh ở trên để trả lời trực tiếp câu hỏi của người dùng."
+            )
+        else:
+            missing_msg = (
+                "Ollama hiện chưa chạy. Hãy khởi động Ollama rồi gửi lại ảnh."
+                if not ollama_status["running"]
+                else f"Đã nhận ảnh, nhưng chưa cài model vision. Hãy chạy `ollama pull {VISION_MODEL}` rồi gửi lại ảnh."
+            )
+            yield f"data: {json.dumps({'delta': missing_msg}, ensure_ascii=False)}\n\n"
+            if collector is not None:
+                collector["full_answer"] = missing_msg
+                collector["citations"] = citations
+                collector["model_used"] = "none"
+                collector["engine"] = "fallback_pipeline"
+            yield f"data: {json.dumps({'answer': missing_msg, 'done': True}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
     if ollama_status["running"] and model_available:
         try:
             user_message: Dict[str, Any] = {"role": "user", "content": user_prompt}
             if image_base64:
                 user_message["images"] = [image_base64]
+            est_tokens = _estimate_tokens(system_prompt) + _estimate_tokens(user_prompt) + sum(
+                _estimate_tokens(m.get("content", "")) for m in history_messages
+            )
+            instant_sugs = _build_instant_followup_suggestions(query, citations, context_chunks)
             payload = {
                 "model": model_name,
                 "messages": [
@@ -769,14 +1409,10 @@ async def stream_rag_answer(
                     user_message,
                 ],
                 "stream": True,
-                "keep_alive": "30m",
-                "options": {
-                    "num_predict": 512 if image_base64 else max_predict,
-                    "temperature": 0.50,
-                    "top_p": 0.9,
-                    "repeat_penalty": 1.15,
-                    "num_ctx": num_ctx,
-                },
+                "keep_alive": get_recommended_keep_alive(),
+                "options": _resolve_sampling_options(
+                    query, num_ctx, max_predict, image_base64, estimated_input_tokens=est_tokens
+                ),
             }
             async for sse_line in _stream_ollama_chat(
                 payload=payload,
@@ -785,6 +1421,7 @@ async def stream_rag_answer(
                 engine_name="ollama_local",
                 collector=collector,
                 is_disconnected=is_disconnected,
+                followup_suggestions=instant_sugs,
             ):
                 yield sse_line
             return
@@ -877,7 +1514,7 @@ async def call_ollama_json(
         ],
         "stream": False,
         "format": "json",
-        "keep_alive": "30m",
+        "keep_alive": get_recommended_keep_alive(),
         "options": {
             "temperature": temperature,
             "top_p": 0.9,

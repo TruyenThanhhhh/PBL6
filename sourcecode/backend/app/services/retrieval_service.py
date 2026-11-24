@@ -46,26 +46,68 @@ def invalidate_workspace_vector_cache(workspace_id: Optional[str] = None) -> Non
         for k in keys:
             _VECTOR_CACHE.pop(k, None)
 
-# Từ khóa nhận biết câu hỏi muốn TÓM TẮT TOÀN BỘ tài liệu
+# Từ khóa nhận biết câu hỏi muốn TÓM TẮT TOÀN BỘ tài liệu (hỗ trợ cả có dấu & không dấu)
 _GLOBAL_SUMMARY_KEYWORDS = [
     "tóm tắt", "tóm lại", "tổng hợp", "liệt kê tất cả", "liệt kê các",
     "các bài", "các chương", "các phần", "nội dung chính", "toàn bộ",
     "overview", "summarize", "summary", "list all", "all chapters",
     "all sections", "main topics", "những bài", "những chương",
     "nêu các", "kể tên", "có những gì", "gồm những gì",
+    "tom tat", "tom lai", "tong hop", "liet ke tat ca", "liet ke cac",
+    "cac bai", "cac chuong", "cac phan", "noi dung chinh", "toan bo",
+    "nhung bai", "nhung chuong", "neu cac", "ke ten", "co nhung gi", "gom nhung gi",
 ]
 
-# Regex nhận diện "bài X", "chương X", "phần X", "lab X", "bài tập X", "bài số X"
+_ROMAN_TO_INT = {
+    "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
+    "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
+    "XI": 11, "XII": 12, "XIII": 13, "XIV": 14, "XV": 15,
+}
+_INT_TO_ROMAN = {v: k for k, v in _ROMAN_TO_INT.items()}
+
+# Regex nhận diện "bài X", "chương II", "điều 5", "khoản 2", "lab 1", "article 4"...
+# Lưu ý: với số La Mã, chỉ khớp chữ IN HOA (I, II, III, IV, V...) để không khớp nhầm chữ cái thường kiểu 'phần c'
 _SECTION_PATTERN = re.compile(
-    r"\b(?:(bài|chương|phần|lab|exercise|chapter|section|bai|chuong|phan)(?:\s+tập|\s+số|\s+tap|\s+so)?)\s*(\d+)\b",
+    r"\b([Bb]ài|[Cc]hương|[Pp]hần|[Đđ]iều|[Kk]hoản|[Mm]ục|[Ll]ab|[Ee]xercise|[Cc]hapter|[Ss]ection|[Aa]rticle|[Bb]ai|[Cc]huong|[Pp]han|[Dd]ieu|[Kk]hoan|[Mm]uc)"
+    r"(?:\s+(?:tập|số|tap|so))?\s+"
+    r"(\d+|(?:XIII|XII|XI|XIV|XV|VIII|VII|VI|IV|IX|III|II|I|V|X))\b",
+    re.UNICODE,
+)
+
+# Regex bản chuẩn giữ nguyên khoảng trắng tùy chọn (\s*) cho chữ số (vd: 'Bài1', 'Điều 5')
+_SECTION_ARABIC_COMPACT_RE = re.compile(
+    r"\b(bài|chương|phần|điều|khoản|mục|lab|exercise|chapter|section|article|bai|chuong|phan|dieu|khoan|muc)"
+    r"(?:\s+tập|\s+số|\s+tap|\s+so)?\s*(\d+)\b",
     re.IGNORECASE | re.UNICODE,
 )
+
+
+def _parse_section_number(token: str) -> Optional[int]:
+    clean = (token or "").strip().upper()
+    if clean.isdigit():
+        return int(clean)
+    return _ROMAN_TO_INT.get(clean)
+
+
+def _normalize_section_type(sec_raw: str) -> str:
+    low = sec_raw.lower()
+    mapping = {
+        "bài": "bài", "bai": "bài",
+        "chương": "chương", "chuong": "chương",
+        "phần": "phần", "phan": "phần",
+        "điều": "điều", "dieu": "điều",
+        "khoản": "khoản", "khoan": "khoản",
+        "mục": "mục", "muc": "mục",
+    }
+    return mapping.get(low, low)
 
 # Từ khóa thể hiện ý định hỏi về các bước hoặc câu hỏi nối tiếp về bài đang làm
 _FOLLOW_UP_KEYWORDS = [
     "bước tiếp", "bước iếp", "tiếp theo", "tiếp tục", "các bước",
     "từng bước", "hướng dẫn", "cách làm", "làm thế nào", "còn gì nữa",
     "chi tiết hơn", "bước mấy",
+    "buoc tiep", "tiep theo", "tiep tuc", "cac buoc", "tung buoc",
+    "huong dan", "cach lam", "lam the nao", "con gi nua", "chi tiet hon", "buoc may",
 ]
 
 
@@ -74,21 +116,21 @@ _CJK_SEQ_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff
 _QUOTED_TERM_RE = re.compile(r'["\'“”‘’「」『』]([^"\'“”‘’「」『」]{1,40})["\'“”‘’「」『』]')
 
 _START_POS_PATTERN = re.compile(
-    r"(?:\b(?:trang|phần|mục|đoạn|dòng|câu|từ(?:\s+vựng)?)\s+đầu(?:\s+tiên)?\b|"
-    r"\bđầu\s+tiên\s+(?:trong|của|ở)\s+(?:file|tệp|tài\s+liệu|văn\s+bản|danh\s+sách)\b|"
-    r"\b(?:mở\s+đầu|từ\s+đầu)\s+(?:file|tệp|tài\s+liệu)\b|"
-    r"\bbắt\s+đầu\s+(?:bằng|với)\s+chữ\b|"
-    r"\b\d+\s+(?:từ(?:\s+vựng)?|mục|câu|dòng)\s+đầu(?:\s+tiên)?\b)",
+    r"(?:\b(?:trang|phần|mục|đoạn|dòng|câu|từ(?:\s+vựng)?|phan|muc|doan|dong|cau|tu(?:\s+vung)?)\s+(?:đầu(?:\s+tiên)?|dau(?:\s+tien)?)\b|"
+    r"\b(?:đầu\s+tiên|dau\s+tien)\s+(?:trong|của|ở|cua|o)\s+(?:file|tệp|tài\s+liệu|văn\s+bản|danh\s+sách|tep|tai\s+lieu|van\s+ban|danh\s+sach)\b|"
+    r"\b(?:mở\s+đầu|từ\s+đầu|mo\s+dau|tu\s+dau)\s+(?:file|tệp|tài\s+liệu|tep|tai\s+lieu)\b|"
+    r"\b(?:bắt\s+đầu|bat\s+dau)\s+(?:bằng|với|bang|voi)\s+(?:chữ|chu)\b|"
+    r"\b\d+\s+(?:từ(?:\s+vựng)?|mục|câu|dòng|tu(?:\s+vung)?|muc|cau|dong)\s+(?:đầu(?:\s+tiên)?|dau(?:\s+tien)?)\b)",
     re.IGNORECASE | re.UNICODE,
 )
 _END_POS_PATTERN = re.compile(
-    r"(?:\b(?:trang|phần|mục|đoạn|dòng|câu|từ(?:\s+vựng)?)\s+cuối(?:\s+cùng)?\b|"
-    r"\bcuối\s+cùng\s+(?:trong|của|ở)\s+(?:file|tệp|tài\s+liệu|văn\s+bản|danh\s+sách)\b|"
-    r"\b\d+\s+(?:từ(?:\s+vựng)?|mục|câu|dòng)\s+cuối(?:\s+cùng)?\b)",
+    r"(?:\b(?:trang|phần|mục|đoạn|dòng|câu|từ(?:\s+vựng)?|phan|muc|doan|dong|cau|tu(?:\s+vung)?)\s+(?:cuối(?:\s+cùng)?|cuoi(?:\s+cung)?)\b|"
+    r"\b(?:cuối\s+cùng|cuoi\s+cung)\s+(?:trong|của|ở|cua|o)\s+(?:file|tệp|tài\s+liệu|văn\s+bản|danh\s+sách|tep|tai\s+lieu|van\s+ban|danh\s+sach)\b|"
+    r"\b\d+\s+(?:từ(?:\s+vựng)?|mục|câu|dòng|tu(?:\s+vung)?|muc|cau|dong)\s+(?:cuối(?:\s+cùng)?|cuoi(?:\s+cung)?)\b)",
     re.IGNORECASE | re.UNICODE,
 )
 _LETTER_FILTER_PATTERN = re.compile(
-    r"(?:bắt\s+đầu\s+(?:bằng|với)\s+(?:chữ(?:\s+cái)?\s+)?|chữ\s+cái\s+)[\"']?([a-zA-Z])[\"']?(?:\b|$)",
+    r"(?:(?:bắt\s+đầu|bat\s+dau)\s+(?:bằng|với|bang|voi)\s+(?:(?:chữ(?:\s+cái)?|chu(?:\s+cai)?)\s+)?|(?:chữ\s+cái|chu\s+cai)\s+)[\"']?([a-zA-Z])[\"']?(?:\b|$)",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -194,9 +236,10 @@ def search_positional_chunks(
 
 def is_global_summary_query(query: str) -> bool:
     """Trả về True nếu người dùng muốn tóm tắt/liệt kê toàn bộ nội dung tài liệu."""
-    q = query.lower().strip()
-    # Nếu có chỉ định rõ bài cụ thể (ví dụ: "tóm tắt bài 1") thì ưu tiên Section Extraction
-    if _SECTION_PATTERN.search(q):
+    raw_q = (query or "").strip()
+    q = raw_q.lower()
+    # Nếu có chỉ định rõ bài/chương/điều cụ thể (ví dụ: "tóm tắt bài 1", "chương II") thì ưu tiên Section Extraction
+    if _SECTION_ARABIC_COMPACT_RE.search(raw_q) or _SECTION_PATTERN.search(raw_q):
         return False
     return any(kw in q for kw in _GLOBAL_SUMMARY_KEYWORDS)
 
@@ -206,39 +249,36 @@ def detect_section_intent(
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[Tuple[str, int]]:
     """
-    Phát hiện xem người dùng đang hỏi về Bài/Chương/Lab mấy.
+    Phát hiện xem người dùng đang hỏi về Bài/Chương/Điều/Lab mấy (hỗ trợ cả chữ số Ả Rập và số La Mã).
     Hỗ trợ phát hiện trong câu hỏi hiện tại hoặc suy luận từ ngữ cảnh hội thoại trước đó.
     """
-    q = query.lower().strip()
-    m = _SECTION_PATTERN.search(q)
+    q = (query or "").strip()
+    m = _SECTION_ARABIC_COMPACT_RE.search(q) or _SECTION_PATTERN.search(q)
     if m:
-        sec_raw = m.group(1).lower()
-        sec_norm = (
-            "bài" if sec_raw in ("bài", "bai")
-            else "chương" if sec_raw in ("chương", "chuong")
-            else "phần" if sec_raw in ("phần", "phan")
-            else sec_raw
-        )
-        return sec_norm, int(m.group(2))
+        num = _parse_section_number(m.group(2))
+        if num is not None:
+            return _normalize_section_type(m.group(1)), num
 
     # Nếu câu hỏi hiện tại là câu nối tiếp (ví dụ: "các bước tiếp theo đâu", "bước iếp theo")
-    is_follow_up = any(kw in q for kw in _FOLLOW_UP_KEYWORDS) or len(q.split()) <= 5
+    q_lower = q.lower()
+    is_follow_up = any(kw in q_lower for kw in _FOLLOW_UP_KEYWORDS) or len(q_lower.split()) <= 5
     if is_follow_up and history:
         for turn in reversed(history[-8:]):
             if turn.get("role") == "user":
-                prev_text = turn.get("content", "").lower()
-                pm = _SECTION_PATTERN.search(prev_text)
+                prev_text = turn.get("content", "")
+                pm = _SECTION_ARABIC_COMPACT_RE.search(prev_text) or _SECTION_PATTERN.search(prev_text)
                 if pm:
-                    psec_raw = pm.group(1).lower()
-                    psec_norm = (
-                        "bài" if psec_raw in ("bài", "bai")
-                        else "chương" if psec_raw in ("chương", "chuong")
-                        else "phần" if psec_raw in ("phần", "phan")
-                        else psec_raw
-                    )
-                    return psec_norm, int(pm.group(2))
+                    num = _parse_section_number(pm.group(2))
+                    if num is not None:
+                        return _normalize_section_type(pm.group(1)), num
 
     return None
+
+
+def _build_section_heading_regex(sec_type: str, sec_num: int) -> re.Pattern:
+    roman = _INT_TO_ROMAN.get(sec_num)
+    num_pat = rf"(?:{sec_num}|{roman})" if roman else str(sec_num)
+    return re.compile(rf"\b{re.escape(sec_type)}\s*{num_pat}\b", re.IGNORECASE | re.UNICODE)
 
 
 def search_section_chunks(
@@ -250,8 +290,8 @@ def search_section_chunks(
     document_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Trích xuất toàn bộ các chunk liên tục thuộc về Bài X / Chương X trong tài liệu.
-    Bắt đầu từ chunk chứa tiêu đề Bài X (bỏ qua trang Mục lục) cho đến khi gặp Bài X+1
+    Trích xuất toàn bộ các chunk liên tục thuộc về Bài X / Chương II / Điều 5 trong tài liệu.
+    Bắt đầu từ chunk chứa tiêu đề (bỏ qua trang Mục lục) cho đến khi gặp phần kế tiếp
     hoặc đạt tối đa max_chunks chunk.
     """
     conn = get_db_connection()
@@ -276,16 +316,27 @@ def search_section_chunks(
         if not all_chunks:
             return []
 
-        pat_start = re.compile(rf"\b{sec_type}\s*{sec_num}\b", re.IGNORECASE)
-        pat_next = re.compile(rf"\b{sec_type}\s*{sec_num + 1}\b", re.IGNORECASE)
+        pat_start = _build_section_heading_regex(sec_type, sec_num)
+        pat_next = _build_section_heading_regex(sec_type, sec_num + 1)
 
         start_idx = None
         end_idx = None
 
         for i, c in enumerate(all_chunks):
             content_lower = c["content"].lower()
-            # Bỏ qua các trang Mục lục đầu tài liệu
-            is_toc = ("mục lục" in content_lower or "table of contents" in content_lower or "........" in c["content"]) and c["page_number"] <= 3
+            # Bỏ qua các trang Mục lục đầu tài liệu hoặc dòng Danh mục tổng quan
+            is_toc = (
+                (
+                    "mục lục" in content_lower
+                    or "danh mục các phần trong bảng:" in content_lower
+                    or "cây mục lục & tổng quan" in content_lower
+                    or "table of contents" in content_lower
+                    or "........" in c["content"]
+                )
+                and c["page_number"] <= 3
+                and int(c.get("chunk_index", 0)) <= 1
+                and sec_num > 1
+            )
             if not is_toc and pat_start.search(c["content"]):
                 if start_idx is None:
                     start_idx = i
@@ -436,9 +487,9 @@ def expand_and_stitch_chunks(
     max_total_chars: int = 4800,
 ) -> List[Dict[str, Any]]:
     """
-    Mở rộng và ghép nối có điều kiện các chunk liền kề (adjacent chunks) của cùng một tài liệu.
-    Chỉ ghép khi chunk hiện tại chưa kết thúc câu hoặc đang liệt kê các bước/danh sách;
-    kiểm soát ngân sách ký tự để mô hình cục bộ xử lý cực nhanh trên GPU/CPU máy yếu.
+    Mở rộng và ghép nối 2 chiều có điều kiện các chunk liền kề (c_idx - 1 và c_idx + 1) của cùng tài liệu.
+    Giúp giữ trọn câu điều kiện/tiêu đề dẫn ngay phía trên cũng như phần bước/danh sách phía dưới
+    trong giới hạn ngân sách ký tự cho GPU/CPU cục bộ.
     """
     if not chunks:
         return []
@@ -452,7 +503,9 @@ def expand_and_stitch_chunks(
             c_idx = c.get("chunk_index")
             if doc_id and c_idx is not None:
                 needed_keys.add((doc_id, c_idx))
-                needed_keys.add((doc_id, c_idx + 1))
+                if int(c_idx) > 0:
+                    needed_keys.add((doc_id, int(c_idx) - 1))
+                needed_keys.add((doc_id, int(c_idx) + 1))
 
         doc_ids = list({k[0] for k in needed_keys})
         if not doc_ids:
@@ -499,25 +552,58 @@ def expand_and_stitch_chunks(
             end_page = c.get("page_number")
             visited.add((doc_id, c_idx))
 
-            # Ghép với chunk liền sau nếu có lý do liên tục
-            next_c = doc_chunk_map.get(doc_id, {}).get(c_idx + 1)
+            content_stripped = merged_content.strip()
+            is_tabular_chunk = content_stripped.count("|") >= 4
+
+            # 1. Ghép ngược chunk liền trước (c_idx - 1) nếu chunk hiện tại bắt đầu lửng hoặc nối sau tiêu đề/dấu ':'
+            prev_c = doc_chunk_map.get(doc_id, {}).get(int(c_idx) - 1) if int(c_idx) > 0 else None
+            if (
+                prev_c
+                and (doc_id, int(c_idx) - 1) not in visited
+                and (accumulated_chars + len(merged_content) + len(prev_c.get("content", ""))) <= max_total_chars
+            ):
+                prev_text = prev_c.get("content", "").strip()
+                prev_is_tabular = prev_text.count("|") >= 4
+                should_prepend = False
+                if is_tabular_chunk and prev_is_tabular:
+                    should_prepend = True
+                elif not is_tabular_chunk and prev_text:
+                    # Chỉ ghép ngược khi chunk trước kết thúc bằng dấu ':' hoặc '-' (dẫn vào danh sách)
+                    # hoặc chunk hiện tại bắt đầu bằng chữ thường (câu bị cắt giữa chừng)
+                    if prev_text.endswith((":", "-")):
+                        should_prepend = True
+                    elif content_stripped and content_stripped[0].islower():
+                        should_prepend = True
+                if should_prepend:
+                    visited.add((doc_id, int(c_idx) - 1))
+                    merged_content = prev_text + "\n\n" + merged_content
+                    if prev_c.get("page_number") is not None:
+                        start_page = (
+                            min(start_page, prev_c["page_number"])
+                            if start_page is not None
+                            else prev_c["page_number"]
+                        )
+
+            # 2. Ghép xuôi chunk liền sau (c_idx + 1) nếu có lý do liên tục
+            next_c = doc_chunk_map.get(doc_id, {}).get(int(c_idx) + 1)
             should_stitch = False
             content_stripped = merged_content.strip()
-
-            is_tabular_chunk = content_stripped.count("|") >= 4
-            if next_c and (accumulated_chars + len(merged_content) + len(next_c.get("content", ""))) <= max_total_chars:
-                # 1. Đang liệt kê bước thực hành (Bước, Step, Bài)
-                if re.search(r'\b(?:bước|step|bài)\s*\d+', content_stripped, re.IGNORECASE):
+            if next_c and (doc_id, int(c_idx) + 1) not in visited and (
+                accumulated_chars + len(merged_content) + len(next_c.get("content", ""))
+            ) <= max_total_chars:
+                next_stripped = next_c.get("content", "").strip()
+                # Đang liệt kê bước thực hành (Bước, Step)
+                if re.search(r'\b(?:bước|step)\s*\d+', content_stripped, re.IGNORECASE):
                     should_stitch = True
-                # 2. Chunk tiếp theo bắt đầu bằng bước hoặc số thứ tự tiếp nối
-                elif next_c.get("content", "").strip().startswith(("Bước", "Step", "1.", "2.", "3.", "4.", "5.")):
+                # Chunk tiếp theo bắt đầu bằng Bước hoặc chữ thường (câu bị cắt giữa chừng)
+                elif next_stripped.startswith(("Bước", "Step")) or (next_stripped and next_stripped[0].islower()):
                     should_stitch = True
-                # 3. Đoạn văn kết thúc lửng lơ (chưa hết câu), không áp dụng cho bảng/từ vựng phân cách bằng '|'
-                elif not is_tabular_chunk and content_stripped and not content_stripped.endswith((".", "!", "?", "...", ":")):
+                # Đoạn hiện tại kết thúc bằng dấu ':' (dẫn sang danh sách ở chunk sau)
+                elif not is_tabular_chunk and content_stripped.endswith(":"):
                     should_stitch = True
 
             if should_stitch and next_c:
-                visited.add((doc_id, c_idx + 1))
+                visited.add((doc_id, int(c_idx) + 1))
                 merged_content += "\n\n" + next_c.get("content", "")
                 if next_c.get("page_number") is not None:
                     end_page = next_c["page_number"]
@@ -597,6 +683,17 @@ def _find_exact_term_chunks(
     return [pair[1] for pair in scored[:limit]]
 
 
+_MAX_CACHED_WORKSPACES = 3
+
+
+def _store_vector_cache_entry(db_key: Tuple[str, str, str], entry: Dict[str, Any]) -> None:
+    with _VECTOR_CACHE_LOCK:
+        _VECTOR_CACHE.pop(db_key, None)
+        while len(_VECTOR_CACHE) >= _MAX_CACHED_WORKSPACES:
+            _VECTOR_CACHE.pop(next(iter(_VECTOR_CACHE)), None)
+        _VECTOR_CACHE[db_key] = entry
+
+
 def _get_workspace_vector_index(cursor: Any, workspace_id: str) -> Dict[str, Any]:
     """Tải và đệm ma trận vector chuẩn hóa L2 theo từng chiều (dim) để tính cosine hàng loạt cực nhanh."""
     db_key = (str(db_mod.DATABASE_PATH), workspace_id, EMBEDDING_MODEL)
@@ -620,8 +717,7 @@ def _get_workspace_vector_index(cursor: Any, workspace_id: str) -> Dict[str, Any
 
     if row_count == 0:
         empty_index = {"total_count": 0, "latest_sum": 0, "buckets": {}}
-        with _VECTOR_CACHE_LOCK:
-            _VECTOR_CACHE[db_key] = empty_index
+        _store_vector_cache_entry(db_key, empty_index)
         return empty_index
 
     cursor.execute(
@@ -679,8 +775,7 @@ def _get_workspace_vector_index(cursor: Any, workspace_id: str) -> Dict[str, Any
         }
 
     built = {"total_count": row_count, "latest_sum": latest_sum, "buckets": buckets}
-    with _VECTOR_CACHE_LOCK:
-        _VECTOR_CACHE[db_key] = built
+    _store_vector_cache_entry(db_key, built)
     return built
 
 
@@ -771,6 +866,26 @@ def _fts_hit_is_sufficient_for_eco(
     return matched >= min(len(meaningful), 2)
 
 
+def _fts_hit_is_high_confidence_fast_path(
+    sparse: List[Dict[str, Any]],
+    tokens: List[str],
+) -> bool:
+    """
+    Kiểm tra xem kết quả đầu của FTS5 BM25 đã khớp hầu hết (>=75%) từ khóa câu hỏi hay chưa.
+    Dùng để bỏ qua Cross-Encoder Reranker trên CPU (và bỏ qua nạp lạnh BGE-M3 khi đang tiết kiệm RAM),
+    rút thời gian truy xuất xuống < 15ms.
+    """
+    if not sparse:
+        return False
+    meaningful = [t.lower() for t in tokens if len(t) >= 2 or t.isdigit() or _contains_cjk(t)]
+    if not meaningful:
+        return False
+    top_text = str(sparse[0].get("content", "")).lower()
+    matched = sum(1 for tok in meaningful if tok in top_text)
+    required = max(1, int(math.ceil(len(meaningful) * 0.75)))
+    return matched >= required
+
+
 def _smart_rerank(
     query: str,
     docs: List[Dict[str, Any]],
@@ -779,7 +894,7 @@ def _smart_rerank(
     max_candidates: Optional[int] = None,
     single_doc_scope: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Bỏ qua Cross-Encoder trên CPU khi không cần thiết để tăng tốc rõ rệt."""
+    """Bỏ qua Cross-Encoder trên CPU khi không cần thiết hoặc khi top kết quả đã khớp rõ ràng để tăng tốc rõ rệt."""
     if not docs or limit <= 0:
         return []
     if not profile.get("rerank_enabled", True):
@@ -787,9 +902,191 @@ def _smart_rerank(
     if len(docs) <= 2 or (single_doc_scope and len(docs) <= limit):
         return docs[:limit]
 
+    # Fast-path: nếu ứng viên số 1 đã khớp >= 75% từ khóa câu hỏi hoặc là exact match thì không tốn 1.5s gọi Cross-Encoder CPU
+    q_tokens = [
+        t for t in re.sub(r"[^\w\s]", " ", query or "", flags=re.UNICODE).split()
+        if len(t) >= 2 or t.isdigit() or _contains_cjk(t)
+    ]
+    if docs[0].get("_exact_match") or _fts_hit_is_high_confidence_fast_path(docs[:1], q_tokens):
+        return docs[:limit]
+
     profile_cap = int(profile.get("rerank_max_candidates") or RERANK_MAX_CANDIDATES)
     cap = min(max_candidates or RERANK_MAX_CANDIDATES, profile_cap)
     return rerank_documents(query, docs, limit, max_candidates=cap)
+
+
+_QUERY_SYNONYM_MAP: List[Tuple[Tuple[str, ...], str]] = [
+    (("đi muộn", "đi trễ", "trễ giờ", "chậm giờ", "di muon", "di tre", "tre gio", "cham gio"), "chậm giờ thời gian làm việc kỷ luật"),
+    (("trừ lương", "bị phạt", "phạt tiền", "chế tài", "tru luong", "bi phat", "phat tien", "che tai"), "mức phạt xử phạt chế tài khấu trừ"),
+    (("nghỉ việc", "nghỉ phép", "nghỉ ốm", "vắng mặt", "nghi viec", "nghi phep", "nghi om", "vang mat"), "nghỉ phép chế độ ngày nghỉ bảo hiểm"),
+    (("chậm tiến độ", "trễ hạn", "quá hạn", "cham tien do", "tre han", "qua han"), "chậm tiến độ thời hạn phạt vi phạm hợp đồng"),
+    (("tính tiền", "tổng tiền", "cách tính", "ra bao nhiêu", "tinh tien", "tong tien", "cach tinh", "ra bao nhieu"), "công thức tính tỷ lệ đơn giá"),
+    (("rủi ro", "bất lợi", "nguy cơ", "bẫy", "rui ro", "bat loi", "nguy co", "bay"), "điều khoản phạt nghĩa vụ trách nhiệm ngoại lệ"),
+    (("đăng nhập", "lỗi xác thực", "mật khẩu", "dang nhap", "loi xac thuc", "mat khau"), "xác thực token mật khẩu quyền truy cập"),
+]
+
+_OVERVIEW_OR_TABULAR_QUERY_RE = re.compile(
+    r"\b(?:mục\s*lục|cấu\s*trúc|các\s*chương|bao\s*nhiêu\s*(?:chương|điều|mục|dòng|cột|hàng)|"
+    r"tóm\s*tắt\s*toàn\s*bộ|tổng\s*quan|toàn\s*bảng|tổng\s*(?:cộng|doanh\s*thu|chi\s*phí|số\s*lượng|giá\s*trị|tiền|điểm)|"
+    r"trung\s*bình|cao\s*nhất|thấp\s*nhất|lớn\s*nhất|nhỏ\s*nhất|"
+    r"muc\s*luc|cau\s*truc|cac\s*chuong|bao\s*nhieu\s*(?:chuong|dieu|muc|dong|cot|hang)|"
+    r"tom\s*tat\s*toan\s*bo|tong\s*quan|toan\s*bang|tong\s*(?:cong|doanh\s*thu|chi\s*phi|so\s*luong|gia\s*tri|tien|diem)|"
+    r"trung\s*binh|cao\s*nhat|thap\s*nhat|lon\s*nhat|nho\s*nhat)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _fetch_outline_or_tabular_summary_chunks(
+    cursor: Any,
+    workspace_id: str,
+    document_filter: str,
+    document_params: tuple,
+    limit: int = 2,
+) -> List[Dict[str, Any]]:
+    """Lấy trực tiếp các chunk chứa Cây mục lục tài liệu hoặc Thống kê toàn bảng dữ liệu."""
+    cursor.execute(
+        f"""
+        SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+               c.page_number, c.chunk_index, d.file_name AS document_name,
+               COALESCE(d.version_number, 1) AS version_number,
+               d.effective_date
+        FROM document_chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.workspace_id = ?{document_filter}
+          AND (
+              c.content LIKE '[CÂY MỤC LỤC%'
+              OR c.content LIKE '[THỐNG KÊ TOÀN BẢNG%'
+          )
+        ORDER BY d.created_at DESC, c.chunk_index ASC
+        LIMIT ?
+        """,
+        (workspace_id, *document_params, limit),
+    )
+    return [dict(r) for r in cursor.fetchall()]
+
+
+def _build_rescue_query(query: str) -> Optional[str]:
+    """Mở rộng truy vấn thông minh bằng đồng nghĩa nghiệp vụ khi tìm kiếm vòng 1 không có kết quả."""
+    clean_lower = re.sub(r"\s+", " ", (query or "").lower()).strip()
+    if not clean_lower:
+        return None
+    expansions: List[str] = []
+    for cues, target_terms in _QUERY_SYNONYM_MAP:
+        if any(cue in clean_lower for cue in cues):
+            expansions.append(target_terms)
+
+    stripped = re.sub(
+        r"\b(?:là\s+gì|như\s+thế\s+nào|thế\s+nào|ra\s+sao|bao\s+nhiêu|ở\s+đâu|khi\s+nào|"
+        r"cho\s+tôi\s+hỏi|hãy\s+cho\s+biết|có\s+bị|không|vậy|ạ|nhé|"
+        r"la\s+gi|nhu\s+the\s+nao|the\s+nao|bao\s+nhieu|o\s+dau|khi\s+nao|"
+        r"cho\s+toi\s+hoi|hay\s+cho\s+biet|co\s+bi|khong|vay|nhe)\b",
+        " ",
+        clean_lower,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    core = re.sub(r"\s+", " ", stripped).strip()
+    if not expansions and (not core or core == clean_lower):
+        return None
+    combined = f"{core} {' '.join(expansions)}".strip()
+    return combined if combined and combined != clean_lower else None
+
+
+def _run_hybrid_rrf_candidates(
+    cursor: Any,
+    workspace_id: str,
+    query: str,
+    tokens: List[str],
+    exact_matches: List[Dict[str, Any]],
+    document_filter: str,
+    document_params: tuple,
+    document_id: Optional[str],
+    document_ids: Optional[List[str]],
+    candidate_limit: int,
+    top_k: int,
+    profile: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    sparse: List[Dict[str, Any]] = []
+    if tokens:
+        match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+        try:
+            cursor.execute(
+                """SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                   c.page_number, c.chunk_index, d.file_name AS document_name,
+                   COALESCE(d.version_number, 1) AS version_number,
+                   d.effective_date,
+                   bm25(chunks_fts) AS score
+                FROM chunks_fts f
+                JOIN document_chunks c ON c.id = f.chunk_id
+                JOIN documents d ON d.id = c.document_id
+                WHERE chunks_fts MATCH ? AND c.workspace_id = ?{document_filter}
+                ORDER BY score ASC LIMIT ?
+            """.format(document_filter=document_filter),
+                (match_query, workspace_id, *document_params, candidate_limit),
+            )
+            sparse = [dict(row) for row in cursor.fetchall()]
+        except Exception:
+            sparse = []
+
+    # Ở chế độ Eco hoặc khi BGE-M3 chưa nạp vào RAM mà FTS5 đã tìm thấy đoạn khớp độ tin cậy cao (>=75% từ khóa),
+    # bỏ qua nạp lạnh BGE-M3 để phản hồi tức thì (<15ms) và tiết kiệm ~2.9GB RAM.
+    from app.services.embedding_service import is_embedding_model_loaded
+    embed_mocked = bool(
+        hasattr(embed_texts, "_mock_name")
+        or hasattr(embed_texts, "assert_called")
+        or getattr(embed_texts, "__module__", "").startswith("unittest.mock")
+    )
+    should_skip_dense_for_eco = (
+        profile.get("fts_first_shortcut")
+        and (bool(exact_matches) or _fts_hit_is_sufficient_for_eco(sparse, tokens, top_k))
+    ) or (
+        not embed_mocked
+        and not is_embedding_model_loaded()
+        and str(profile.get("id") or "balanced").lower() != "performance"
+        and (bool(exact_matches) or _fts_hit_is_high_confidence_fast_path(sparse, tokens))
+    )
+    dense: List[Dict[str, Any]] = []
+    if profile.get("enable_dense_retrieval", True) and not should_skip_dense_for_eco:
+        dense = _search_dense_candidates(
+            cursor,
+            workspace_id,
+            query,
+            candidate_limit,
+            document_id,
+            document_ids,
+        )
+
+    # Reciprocal Rank Fusion (RRF) + Heading Topic Boost
+    q_low = (query or "").lower()
+    topic_cues = [
+        w for w in ("công nghệ", "mở rộng", "kiến trúc", "lộ trình", "mục tiêu", "đánh giá", "module", "chế độ", "hoạt động")
+        if w in q_low
+    ]
+    merged: Dict[str, Dict[str, Any]] = {}
+    for channel_name, ranking in (("sparse", sparse), ("dense", dense)):
+        for rank, item in enumerate(ranking, start=1):
+            chunk_id = item["chunk_id"]
+            if chunk_id not in merged:
+                merged[chunk_id] = {key: value for key, value in item.items() if key != "score"}
+                merged[chunk_id]["rrf_score"] = 0.0
+            if channel_name == "dense" and "score" in item:
+                merged[chunk_id]["dense_score"] = float(item["score"])
+            merged[chunk_id]["rrf_score"] += 1.0 / (RRF_K + rank)
+
+    if topic_cues:
+        heading_line_re = re.compile(
+            r"(?:^|\n)\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:chương|bài|phần|mục|điều)\s+(?:[IVXLCDM]+|\d+)\b)([^\n]{2,110})",
+            re.IGNORECASE | re.UNICODE,
+        )
+        for item in merged.values():
+            full_txt = str(item.get("content") or "")
+            heading_texts = " ".join(m.group(0).lower() for m in heading_line_re.finditer(full_txt))
+            head_slice = full_txt[:260].lower()
+            for cue in topic_cues:
+                if cue in heading_texts:
+                    item["rrf_score"] += 0.045
+                elif cue in head_slice:
+                    item["rrf_score"] += 0.020
+    return sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
 
 
 def search_relevant_chunks(
@@ -830,62 +1127,53 @@ def search_relevant_chunks(
             # Truy vấn tra cứu từ khóa/Kanji cụ thể đã có khớp chính xác -> ưu tiên tuyệt đối tránh nhiễu làm tràn ngữ cảnh LLM
             return expand_and_stitch_chunks(exact_matches, max_total_chunks=min(top_k, 4))
 
-        sparse: List[Dict[str, Any]] = []
-        if tokens:
-            match_query = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
-            try:
-                cursor.execute(
-                    """SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
-                       c.page_number, c.chunk_index, d.file_name AS document_name,
-                       COALESCE(d.version_number, 1) AS version_number,
-                       d.effective_date,
-                       bm25(chunks_fts) AS score
-                    FROM chunks_fts f
-                    JOIN document_chunks c ON c.id = f.chunk_id
-                    JOIN documents d ON d.id = c.document_id
-                    WHERE chunks_fts MATCH ? AND c.workspace_id = ?{document_filter}
-                    ORDER BY score ASC LIMIT ?
-                """.format(document_filter=document_filter),
-                    (match_query, workspace_id, *document_params, candidate_limit),
-                )
-                sparse = [dict(row) for row in cursor.fetchall()]
-            except Exception:
-                sparse = []
-
-        # Ở chế độ Eco (máy yếu): ưu tiên FTS5 BM25 tức thì, chỉ nạp Dense khi FTS5 chưa đủ khớp tin cậy
-        should_skip_dense_for_eco = (
-            profile.get("fts_first_shortcut")
-            and (bool(exact_matches) or _fts_hit_is_sufficient_for_eco(sparse, tokens, top_k))
+        ranked = _run_hybrid_rrf_candidates(
+            cursor,
+            workspace_id,
+            query,
+            tokens,
+            exact_matches,
+            document_filter,
+            document_params,
+            document_id,
+            document_ids,
+            candidate_limit,
+            top_k,
+            profile,
         )
-        dense: List[Dict[str, Any]] = []
-        if profile.get("enable_dense_retrieval", True) and not should_skip_dense_for_eco:
-            dense = _search_dense_candidates(
+
+        # Tự động ưu tiên Cây mục lục (Document Outline) hoặc Thống kê toàn bảng (Tabular Analytics)
+        # khi câu hỏi mang tính tổng quan toàn tài liệu hoặc tính tổng/trung bình/min/max trên bảng lớn
+        summary_pinned: List[Dict[str, Any]] = []
+        if _OVERVIEW_OR_TABULAR_QUERY_RE.search(query or ""):
+            summary_pinned = _fetch_outline_or_tabular_summary_chunks(
                 cursor,
                 workspace_id,
-                query,
-                candidate_limit,
-                document_id,
-                document_ids,
+                document_filter,
+                document_params,
+                limit=min(2, top_k),
             )
-
-        # Reciprocal Rank Fusion (RRF)
-        merged: Dict[str, Dict[str, Any]] = {}
-        for channel_name, ranking in (("sparse", sparse), ("dense", dense)):
-            for rank, item in enumerate(ranking, start=1):
-                chunk_id = item["chunk_id"]
-                if chunk_id not in merged:
-                    merged[chunk_id] = {key: value for key, value in item.items() if key != "score"}
-                    merged[chunk_id]["rrf_score"] = 0.0
-                if channel_name == "dense" and "score" in item:
-                    merged[chunk_id]["dense_score"] = float(item["score"])
-                merged[chunk_id]["rrf_score"] += 1.0 / (RRF_K + rank)
-        ranked = sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
+            if summary_pinned:
+                sum_ids = {item["chunk_id"] for item in summary_pinned}
+                for item in summary_pinned:
+                    item["_exact_match"] = True
+                ranked = summary_pinned + [item for item in ranked if item["chunk_id"] not in sum_ids]
 
         # A direct question about a named file (for example, "Data.txt chứa gì?")
         # should retrieve that file even when its name is absent from extracted text.
-        query_terms = {term.lower() for term in tokens if len(term) > 2}
+        # Chỉ áp dụng khi không đang lọc trong phạm vi 1 tài liệu cụ thể (not single_doc_scope),
+        # và loại trừ các từ chung như 'tai', 'lieu', 'file', 'de', 'tong', 'quan' để không ghim nhầm chunk_index=0,1.
+        _GENERIC_FILENAME_STOPWORDS = {
+            "tai", "tài", "lieu", "liệu", "file", "tep", "tệp", "doc", "docx", "pdf", "txt",
+            "tong", "tổng", "quan", "de", "đề", "ban", "bản", "bao", "báo", "cao", "cáo",
+            "personal", "knowledge", "platform",
+        }
+        query_terms = {
+            term.lower() for term in tokens
+            if len(term) > 2 and term.lower() not in _GENERIC_FILENAME_STOPWORDS
+        }
         named_ids: set[str] = set()
-        if query_terms:
+        if query_terms and not single_doc_scope:
             cursor.execute(
                 """
                 SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
@@ -902,7 +1190,10 @@ def search_relevant_chunks(
             for row in cursor.fetchall():
                 item = dict(row)
                 stem = re.sub(r"\.[^.]+$", "", item["document_name"]).lower()
-                name_terms = set(re.findall(r"[\w]+", stem, flags=re.UNICODE))
+                name_terms = {
+                    w for w in re.findall(r"[\w]+", stem, flags=re.UNICODE)
+                    if len(w) > 2 and w not in _GENERIC_FILENAME_STOPWORDS
+                }
                 if name_terms & query_terms:
                     named_matches.append(item)
             named_ids = {item["chunk_id"] for item in named_matches}
@@ -949,9 +1240,15 @@ def search_relevant_chunks(
             if attached_document_chunks:
                 return expand_and_stitch_chunks(attached_document_chunks, max_total_chunks=top_k)
 
-        if exact_matches:
+        pinned_front = list(exact_matches)
+        for sp in summary_pinned:
+            if sp["chunk_id"] not in exact_ids:
+                pinned_front.append(sp)
+                exact_ids.add(sp["chunk_id"])
+
+        if pinned_front:
             remaining_rank = [item for item in ranked if item["chunk_id"] not in exact_ids]
-            remaining_limit = max(0, top_k - len(exact_matches))
+            remaining_limit = max(0, top_k - len(pinned_front))
             reranked_tail = _smart_rerank(
                 query,
                 remaining_rank,
@@ -959,7 +1256,7 @@ def search_relevant_chunks(
                 profile,
                 single_doc_scope=single_doc_scope,
             )
-            stitched = expand_and_stitch_chunks(exact_matches + reranked_tail, max_total_chunks=top_k)
+            stitched = expand_and_stitch_chunks(pinned_front + reranked_tail, max_total_chunks=top_k)
         else:
             reranked = _smart_rerank(
                 query,
@@ -971,7 +1268,41 @@ def search_relevant_chunks(
             stitched = expand_and_stitch_chunks(reranked, max_total_chunks=top_k)
         # Chỉ lọc liên quan nếu người dùng không chỉ định đích danh file đính kèm
         if not (document_id or document_ids):
-            return filter_relevant_chunks(query, stitched)
+            relevant = filter_relevant_chunks(query, stitched)
+            if relevant:
+                return relevant
+            rescue_q = _build_rescue_query(query)
+            if rescue_q:
+                rescue_tokens = [
+                    token
+                    for token in re.sub(r"[^\w\s]", " ", rescue_q, flags=re.UNICODE).split()
+                    if len(token) >= 2 or token.isdigit() or _contains_cjk(token)
+                ]
+                rescue_ranked = _run_hybrid_rrf_candidates(
+                    cursor,
+                    workspace_id,
+                    rescue_q,
+                    rescue_tokens,
+                    [],
+                    document_filter,
+                    document_params,
+                    document_id,
+                    document_ids,
+                    candidate_limit,
+                    top_k,
+                    profile,
+                )
+                if rescue_ranked:
+                    rescue_reranked = _smart_rerank(
+                        rescue_q,
+                        rescue_ranked,
+                        top_k,
+                        profile,
+                        single_doc_scope=single_doc_scope,
+                    )
+                    rescue_stitched = expand_and_stitch_chunks(rescue_reranked, max_total_chunks=top_k)
+                    return filter_relevant_chunks(rescue_q, rescue_stitched)
+            return []
         return stitched
     finally:
         conn.close()

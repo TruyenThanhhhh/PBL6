@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import DEFAULT_LLM_MODEL
 from app.database import get_db_connection
+from app.services.hardware_profile_service import get_recommended_keep_alive
 from app.services.llm_service import check_ollama_status, resolve_available_chat_model
 
 _SECTION_HEADING_RE = re.compile(
@@ -284,7 +285,7 @@ async def summarize_diff_with_llm(diff_result: Dict[str, Any], model: str = DEFA
                         {"role": "user", "content": user_prompt},
                     ],
                     "stream": False,
-                    "keep_alive": "30m",
+                    "keep_alive": get_recommended_keep_alive(),
                     "options": {"num_ctx": 3072, "num_predict": 1200, "temperature": 0.25},
                 },
             )

@@ -24,7 +24,7 @@ import { FormField, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { useAuthSession } from "@/hooks/useAuthSession"
 import { useAppStore } from "@/store/app-store"
-import { fetchSystemStatus, updateHardwareProfileApi } from "@/services/api"
+import { fetchSystemStatus, freeSystemMemoryApi, updateHardwareProfileApi } from "@/services/api"
 import { changePassword, logout, updateProfile } from "@/services/auth-service"
 import type { AIMode, HardwareProfileMode } from "@/types"
 
@@ -106,6 +106,7 @@ export function SettingsPage() {
 
   const [checking, setChecking] = useState(false)
   const [savingHwProfile, setSavingHwProfile] = useState(false)
+  const [freeingRam, setFreeingRam] = useState(false)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
 
   const readyDocs = documents.filter((d) => d.status === "ready").length
@@ -168,6 +169,40 @@ export function SettingsPage() {
       })
     } finally {
       setSavingHwProfile(false)
+    }
+  }
+
+  const handleFreeAiMemory = async () => {
+    if (!currentStatus.backendOnline) {
+      toast({
+        title: "Cần kết nối Backend",
+        description: "Máy chủ Backend chưa chạy.",
+        tone: "warning",
+      })
+      return
+    }
+    setFreeingRam(true)
+    try {
+      const res = await freeSystemMemoryApi()
+      if (res.hardwareProfile) {
+        setStatus({
+          ...currentStatus,
+          hardwareProfile: res.hardwareProfile,
+        })
+      }
+      toast({
+        title: "Đã giải phóng RAM AI",
+        description: res.message,
+        tone: "success",
+      })
+    } catch (err) {
+      toast({
+        title: "Không thể giải phóng RAM",
+        description: err instanceof Error ? err.message : String(err),
+        tone: "error",
+      })
+    } finally {
+      setFreeingRam(false)
     }
   }
 
@@ -701,6 +736,22 @@ export function SettingsPage() {
                           </button>
                         )
                       })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-bg-secondary/30 px-3 py-2.5 text-xs">
+                      <span className="text-muted">
+                        Hệ thống tự động giải phóng Embedding / Reranker sau khi nhàn rỗi và điều chỉnh `keep_alive` Ollama. Nếu máy đang gần đầy RAM, bạn có thể dọn ngay:
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        loading={freeingRam}
+                        leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                        onClick={() => void handleFreeAiMemory()}
+                      >
+                        Giải phóng RAM AI ngay
+                      </Button>
                     </div>
                   </>
                 ) : (

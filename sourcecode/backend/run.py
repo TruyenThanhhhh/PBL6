@@ -1,6 +1,10 @@
 import logging
+import os
 import sys
 import warnings
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "4")
 
 try:
     import authlib.deprecate
@@ -21,10 +25,13 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
+    enable_reload = os.getenv("UVICORN_RELOAD", "0").strip() == "1" or "--reload" in sys.argv
     print("\n" + "="*60)
     print("🚀 ĐANG KHỞI ĐỘNG PERSONAL AI KNOWLEDGE PLATFORM...")
     print("📍 URL Giao diện Web: http://localhost:8000")
     print("📍 URL API Swagger Docs: http://localhost:8000/docs")
     print("="*60 + "\n")
 
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+    # Mặc định chạy 1 tiến trình duy nhất (reload=False) để tránh nhân đôi RAM trên máy cá nhân;
+    # bật hot-reload khi dev bằng `python run.py --reload` hoặc `UVICORN_RELOAD=1`.
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=enable_reload)

@@ -240,6 +240,63 @@ async def _fetch_live_weather(
     return None
 
 
+_WEB_STOPWORDS = {
+    "là", "gì", "của", "cho", "với", "về", "trong", "và", "các", "những", "một",
+    "như", "thế", "nào", "tại", "sao", "khi", "để", "bao", "nhiêu", "ở", "đâu",
+    "the", "and", "for", "with", "what", "how", "why", "who", "when", "in", "on",
+}
+
+
+def _select_relevant_web_passages(
+    paragraphs: List[str],
+    query: str = "",
+    max_chars: int = 1800,
+) -> str:
+    """Chắt lọc các đoạn văn giàu thông tin liên quan đến câu hỏi thay vì cắt thô 1500 ký tự đầu."""
+    if not paragraphs:
+        return ""
+    clean_q = re.sub(r"[^\w\s]", " ", (query or "").lower(), flags=re.UNICODE)
+    q_tokens = [tok for tok in clean_q.split() if len(tok) >= 2 and tok not in _WEB_STOPWORDS]
+
+    if not q_tokens:
+        raw = "\n".join(paragraphs)
+        return raw[:max_chars] + ("..." if len(raw) > max_chars else "")
+
+    scored: List[Tuple[float, int, str]] = []
+    for idx, para in enumerate(paragraphs):
+        p_low = para.lower()
+        hits = sum(1 for tok in q_tokens if tok in p_low)
+        intro_bonus = 0.35 if idx == 0 else 0.0
+        density = hits / max(1, len(q_tokens))
+        digit_bonus = (
+            0.15
+            if re.search(r"\d", para)
+            and any(re.search(r"\d", t) or t in {"giá", "mức", "tỷ", "lãi", "năm", "ngày", "bao"} for t in q_tokens)
+            else 0.0
+        )
+        scored.append((density + intro_bonus + digit_bonus, idx, para))
+
+    ranked = sorted(scored, key=lambda item: (item[0], -item[1]), reverse=True)
+    chosen_indices: List[int] = []
+    used = 0
+    for _, idx, para in ranked:
+        if idx in chosen_indices:
+            continue
+        add_len = len(para) + (1 if chosen_indices else 0)
+        if chosen_indices and used + add_len > max_chars:
+            continue
+        chosen_indices.append(idx)
+        used += add_len
+        if used >= max_chars:
+            break
+
+    chosen_indices.sort()
+    selected = "\n".join(paragraphs[idx] for idx in chosen_indices)
+    if len(selected) > max_chars:
+        return selected[:max_chars] + "..."
+    return selected
+
+
 class MainContentExtractor(HTMLParser):
     """Trích xuất văn bản thực tế từ bài viết (bỏ qua script, nav, header, footer, ads)."""
     def __init__(self):
@@ -264,7 +321,7 @@ class MainContentExtractor(HTMLParser):
         elif t in self._ignored_tags:
             self._ignore_depth += 1
         elif self._ignore_depth == 0:
-            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'blockquote', 'article'):
+            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'th', 'pre', 'blockquote', 'article'):
                 self._current_tag = t
                 self._current_text = []
 
@@ -280,9 +337,9 @@ class MainContentExtractor(HTMLParser):
             if self._ignore_depth > 0:
                 self._ignore_depth -= 1
         elif self._ignore_depth == 0:
-            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'blockquote', 'article') and self._current_text:
+            if t in ('p', 'h1', 'h2', 'h3', 'h4', 'li', 'td', 'th', 'pre', 'blockquote', 'article') and self._current_text:
                 line = " ".join("".join(self._current_text).split())
-                if len(line) > 25:
+                if len(line) > 25 and sum(len(p) for p in self.paragraphs) < 12000:
                     self.paragraphs.append(line)
                 self._current_text = []
                 self._current_tag = ""
@@ -293,14 +350,15 @@ class MainContentExtractor(HTMLParser):
         elif self._ignore_depth == 0 and self._current_tag:
             self._current_text.append(data)
 
-    def get_content(self, max_chars: int = 1500) -> str:
-        text = "\n".join(self.paragraphs)
-        if len(text) > max_chars:
-            return text[:max_chars] + "..."
-        return text
+    def get_content(self, max_chars: int = 1800, query: str = "") -> str:
+        return _select_relevant_web_passages(self.paragraphs, query=query, max_chars=max_chars)
 
 
-async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Tuple[Optional[str], Optional[str]]:
+async def _fetch_webpage_content(
+    url: str,
+    timeout: float = 3.5,
+    query: str = "",
+) -> Tuple[Optional[str], Optional[str]]:
     """Tải và cào nội dung chi tiết bài viết thực tế cùng tiêu đề từ trang web đích."""
     if not url or not url.startswith("http"):
         return None, None
@@ -315,7 +373,7 @@ async def _fetch_webpage_content(url: str, timeout: float = 3.5) -> Tuple[Option
             if resp.status_code == 200 and 'text/html' in resp.headers.get('content-type', ''):
                 parser = MainContentExtractor()
                 parser.feed(resp.text)
-                content = parser.get_content(1500)
+                content = parser.get_content(1800, query=query)
                 extracted_title = parser.page_title.strip() if parser.page_title else None
                 return (content if len(content) > 120 else None), extracted_title
     except Exception:
@@ -491,7 +549,7 @@ async def search_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     # Lấy nội dung chi tiết và tiêu đề thực tế của tối đa 3 trang web đầu tiên song song (concurrent I/O)
     scrape_candidates = web_results[:3]
     if scrape_candidates:
-        tasks = [_fetch_webpage_content(item["url"]) for item in scrape_candidates]
+        tasks = [_fetch_webpage_content(item["url"], query=query) for item in scrape_candidates]
         scraped_results = await asyncio.gather(*tasks, return_exceptions=True)
         for item, res in zip(scrape_candidates, scraped_results):
             if isinstance(res, tuple):

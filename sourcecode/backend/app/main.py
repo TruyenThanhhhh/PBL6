@@ -16,28 +16,39 @@ from app.api.auth import router as auth_router
 from app.api.study import router as study_router
 from app.api.research import router as research_router
 from app.config import APP_SECRET_KEY, SESSION_HTTPS_ONLY
-from app.services.hardware_profile_service import get_active_profile_config
+from app.services.embedding_service import maybe_evict_idle_embedding_model
+from app.services.hardware_profile_service import (
+    get_active_profile_config,
+    get_memory_gb,
+    should_warmup_on_startup,
+    trim_process_memory,
+)
 from app.services.llm_service import warmup_ollama_model
+from app.services.reranker_service import maybe_evict_idle_reranker_model
+from app.services.retrieval_service import invalidate_workspace_vector_cache
 
 logger = logging.getLogger(__name__)
 
 
 def _warmup_models():
-    """Tải trước model phù hợp với hồ sơ phần cứng hiện hành để tránh cold-start khi không ở chế độ Eco."""
+    """Chỉ tải trước model khi RAM trống dồi dào để tránh tràn RAM lúc khởi động."""
     if os.getenv("DISABLE_MODEL_WARMUP") == "1":
         return
     profile = get_active_profile_config()
-    if profile.get("warmup_embeddings", True):
+    w_embed, w_rerank, _ = should_warmup_on_startup(profile)
+    avail_ram = float((profile.get("specs") or {}).get("available_ram_gb") or 8.0)
+
+    if w_embed:
         try:
             from app.services.embedding_service import embed_texts
             embed_texts(["warmup"])
-            logger.info("✅ Embedding model (BGE-M3) đã sẵn sàng.")
+            logger.info("✅ Embedding model (BGE-M3 BF16) đã sẵn sàng.")
         except Exception as e:
             logger.warning("⚠️  Embedding warm-up thất bại: %s", e)
     else:
-        logger.info("⚡ Chế độ Eco: Bỏ qua nạp trước BGE-M3 để tiết kiệm RAM.")
+        logger.info("⚡ Tiết kiệm RAM (trống %.1f GB): Chế độ nạp Embedding theo yêu cầu.", avail_ram)
 
-    if profile.get("warmup_reranker", False):
+    if w_rerank:
         try:
             from app.services.reranker_service import rerank_documents
             rerank_documents("warmup", [{"content": "test"}], top_k=1, max_candidates=1)
@@ -46,18 +57,42 @@ def _warmup_models():
             logger.warning("⚠️  Reranker warm-up thất bại: %s", e)
 
 
+async def _memory_watchdog_loop():
+    """Tự động thu hồi RAM từ các model AI nhàn rỗi hoặc khi bộ nhớ hệ thống xuống thấp."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            maybe_evict_idle_reranker_model()
+            maybe_evict_idle_embedding_model()
+            if get_memory_gb()[1] < 3.5:
+                invalidate_workspace_vector_cache()
+                trim_process_memory()
+        except Exception:
+            logger.debug("Memory watchdog iteration error", exc_info=True)
+
+
 # Khởi tạo CSDL SQLite khi server bắt đầu, dọn dẹp khi tắt
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # Warm-up các model AI trong background thread để không block startup
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _warmup_models)
+    watchdog_task = None
     if os.getenv("DISABLE_MODEL_WARMUP") != "1":
+        loop = asyncio.get_event_loop()
         profile = get_active_profile_config()
-        if profile.get("warmup_ollama", False):
+        _, _, w_ollama = should_warmup_on_startup(profile)
+        loop.run_in_executor(None, _warmup_models)
+        if w_ollama:
             asyncio.create_task(warmup_ollama_model())
-    yield
+        watchdog_task = asyncio.create_task(_memory_watchdog_loop())
+    try:
+        yield
+    finally:
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
 
 app = FastAPI(
     title="Personal AI Knowledge Platform API",

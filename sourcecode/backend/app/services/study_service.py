@@ -13,7 +13,7 @@ import httpx
 
 from app.config import DEFAULT_LLM_MODEL, OLLAMA_BASE_URL, OLLAMA_TIMEOUT
 from app.database import get_db_connection
-from app.services.hardware_profile_service import get_active_profile_config
+from app.services.hardware_profile_service import get_active_profile_config, get_recommended_keep_alive
 from app.services.llm_service import check_ollama_status, resolve_available_chat_model
 
 logger = logging.getLogger(__name__)
@@ -471,7 +471,7 @@ async def _call_ollama_chat(
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
-        "keep_alive": "30m",
+        "keep_alive": get_recommended_keep_alive(),
         "options": {
             "temperature": 0.4 if json_mode else 0.7,
             "top_p": 0.9,
@@ -637,7 +637,7 @@ async def stream_ai_summary(
             {"role": "user", "content": user_prompt},
         ],
         "stream": True,
-        "keep_alive": "30m",
+        "keep_alive": get_recommended_keep_alive(),
         "options": {
             "temperature": 0.7,
             "top_p": 0.9,

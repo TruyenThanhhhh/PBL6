@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optiona
 from app.config import DEFAULT_LLM_MODEL
 from app.database import get_db_connection
 from app.services.document_diff_service import compute_document_diff, summarize_diff_with_llm
-from app.services.hardware_profile_service import get_active_profile_config
+from app.services.hardware_profile_service import get_active_profile_config, get_recommended_keep_alive
 from app.services.llm_service import (
     _build_bounded_history_messages,
     _prepare_rag_prompts_and_citations,
@@ -374,7 +374,7 @@ async def _run_compose_document(
                         {"role": "user", "content": compose_user_prompt},
                     ],
                     "stream": True,
-                    "keep_alive": "30m",
+                    "keep_alive": get_recommended_keep_alive(),
                     "options": {
                         "num_ctx": int(profile.get("num_ctx") or 4096),
                         "num_predict": int(profile.get("num_predict") or 2048),
@@ -485,6 +485,73 @@ async def _run_version_diff_action(
     yield "data: [DONE]\n\n"
 
 
+async def _run_export_previous_action(
+    params: Dict[str, Any],
+    workspace_id: str,
+    query: str,
+    model_name: str,
+    history: Optional[List[Dict[str, str]]],
+    collector: Optional[Dict[str, Any]],
+    is_disconnected: Optional[Callable[[], Awaitable[bool]]],
+) -> AsyncGenerator[str, None]:
+    """Đóng gói câu trả lời gần nhất thành tài liệu xuất ngay Word/PDF/Markdown không cần sinh lại LLM."""
+    prev_content = ""
+    for turn in reversed(history or []):
+        if turn.get("role") == "assistant" and str(turn.get("content") or "").strip():
+            raw = str(turn["content"])
+            if "---GỢI Ý TIẾP THEO---" in raw:
+                raw = raw.split("---GỢI Ý TIẾP THEO---")[0]
+            prev_content = raw.strip()
+            break
+
+    if not prev_content:
+        async for evt in _run_compose_document(
+            params=params,
+            workspace_id=workspace_id,
+            query=query,
+            model_name=model_name,
+            context_chunks=[],
+            history=history,
+            collector=collector,
+            is_disconnected=is_disconnected,
+        ):
+            yield evt
+        return
+
+    default_fmt = str(params.get("default_export_format") or "docx")
+    title = _extract_markdown_title(prev_content, "Nội dung tổng hợp AI")
+    doc_md = prev_content if prev_content.lstrip().startswith("#") else f"# {title}\n\n{prev_content}"
+    reply_md = (
+        f"Đã chuẩn bị sẵn tệp xuất từ câu trả lời gần nhất (**{title}**). "
+        f"Nhấn nút tải định dạng **{default_fmt.upper()}**, PDF hoặc Markdown ở thẻ bên dưới."
+    )
+    action_payload = {
+        "action_type": "compose_document",
+        "title": title,
+        "markdown": doc_md,
+        "default_format": default_fmt,
+        "export_formats": ["docx", "pdf", "md"],
+        "summary": f"Chuyển đổi nội dung vừa trả lời · Xuất ngay {default_fmt.upper()}/PDF/MD",
+    }
+    meta = {
+        "citations": [],
+        "model_used": model_name,
+        "engine": "action_export_previous",
+        "stage": "completed",
+        "action_result": action_payload,
+    }
+    yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'delta': reply_md}, ensure_ascii=False)}\n\n"
+    if collector is not None:
+        collector["full_answer"] = reply_md
+        collector["citations"] = []
+        collector["model_used"] = model_name
+        collector["engine"] = "action_export_previous"
+        collector["action_result"] = action_payload
+    yield f"data: {json.dumps({'answer': reply_md, 'done': True, 'action_result': action_payload}, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 async def stream_chat_action(
     action_kind: str,
     params: Dict[str, Any],
@@ -534,5 +601,18 @@ async def stream_chat_action(
             selected_document_id=selected_document_id,
             document_ids=document_ids,
             collector=collector,
+        ):
+            yield evt
+        return
+
+    if action_kind == "export_previous":
+        async for evt in _run_export_previous_action(
+            params=params,
+            workspace_id=workspace_id,
+            query=query,
+            model_name=model_name,
+            history=history,
+            collector=collector,
+            is_disconnected=is_disconnected,
         ):
             yield evt

@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import DEFAULT_LLM_MODEL, OLLAMA_BASE_URL, OLLAMA_TIMEOUT
 from app.database import get_db_connection
-from app.services.hardware_profile_service import get_active_profile_config
+from app.services.hardware_profile_service import get_active_profile_config, get_recommended_keep_alive
 from app.services.llm_service import check_ollama_status, resolve_available_chat_model
 from app.services.retrieval_service import search_relevant_chunks
 from app.services.web_search_service import search_web
@@ -570,7 +570,7 @@ async def stream_research_synthesis(
                 {"role": "user", "content": user_prompt},
             ],
             "stream": True,
-            "keep_alive": "30m",
+            "keep_alive": get_recommended_keep_alive(),
             "options": {
                 "num_ctx": int(budget["num_ctx"]),
                 "num_predict": int(budget["num_predict"]),

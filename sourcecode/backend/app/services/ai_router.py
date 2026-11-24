@@ -56,31 +56,49 @@ def _resolve_routing_modes(mode: str, query: str, include_web: Optional[bool] = 
 
 _FOLLOW_UP_CUE_RE = re.compile(
     r"(?:\b(?:nó|đó|này|ở đâu|khi nào|thế nào|sao lại|còn gì|chi tiết|rõ hơn|tiếp theo|tiếp tục|"
-    r"tại sao|vì sao|như thế nào|giải thích thêm|nữa không)\b|^(?:vậy|thế|còn|ngoài ra)\b)",
+    r"tại sao|vì sao|như thế nào|giải thích thêm|nữa không|ngoại lệ|ngắn gọn|dễ hiểu hơn|ví dụ|trường hợp|rủi ro)\b"
+    r"|^(?:vậy|thế|còn|ngoài ra|tóm lại)\b)",
     re.IGNORECASE | re.UNICODE,
 )
+_ACTION_OR_QUIZ_QUERY_RE = re.compile(
+    r"\b(?:tạo|soạn|sinh|ra|làm|câu\s*hỏi\s*ôn\s*tập|trắc\s*nghiệm|quiz|flashcard|mindmap|sơ\s*đồ\s*tư\s*duy|xuất\s*file)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _sanitize_incoming_query(query: str) -> str:
+    """Làm sạch tiền tố ': ' hoặc '- [1]: ' do các nút gợi ý cũ gửi lên."""
+    return re.sub(r"^\s*(?:[-*•]?\s*(?:\[\d+\])?\s*[:.-]\s*)+", "", (query or "").strip()).strip()
 
 
 def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] = None) -> str:
     """
     Xây dựng câu truy vấn độc lập và giàu ngữ cảnh cho RAG.
-    Chỉ ghép câu hỏi trước khi câu hỏi hiện tại thực sự chứa đại từ/từ nối tiếp,
-    tránh làm nhiễu các truy vấn tra cứu thuật ngữ/Kanji độc lập (vd: '夢').
+    Chỉ ghép câu hỏi trước khi câu hỏi hiện tại thực sự ngắn (<= 7 từ) và chứa đại từ/từ nối tiếp,
+    đồng thời bỏ qua các yêu cầu tạo câu hỏi ôn tập/quiz trước đó để không làm lệch truy xuất.
     """
+    clean_q = _sanitize_incoming_query(query)
+    words = clean_q.split()
+    # Nếu câu hỏi hiện tại đã đủ dài (>= 8 từ) và có chủ ngữ/tân ngữ độc lập thì không ghép câu cũ
+    if len(words) >= 8:
+        return clean_q
+
     history_turns = (history or [])[-8:]
     prior_user_queries = [
-        turn["content"].strip()
+        _sanitize_incoming_query(turn["content"])
         for turn in history_turns
-        if turn.get("role") == "user" and turn.get("content")
+        if turn.get("role") == "user"
+        and turn.get("content")
+        and not _ACTION_OR_QUIZ_QUERY_RE.search(turn["content"])
     ]
     if not prior_user_queries:
-        return query.strip()
+        return clean_q
 
-    q_lower = query.lower().strip()
+    q_lower = clean_q.lower()
     if _FOLLOW_UP_CUE_RE.search(q_lower):
-        return f"{prior_user_queries[-1]} {query}".strip()
+        return f"{prior_user_queries[-1]} {clean_q}".strip()
 
-    return query.strip()
+    return clean_q
 
 
 async def _retrieve_local_sources(
@@ -164,6 +182,7 @@ _STREAM_DELEGATED_INTENTS = frozenset({
     "create_plan",
     "compose_document",
     "version_diff",
+    "export_previous",
     "deep_reasoning",
 })
 
@@ -181,6 +200,7 @@ async def answer_query(
     mode: str = "auto",
     reasoning_mode: Optional[str] = "auto",
 ) -> Dict[str, Any]:
+    query = _sanitize_incoming_query(query)
     history = (history or [])[-8:]
     intent = classify_chat_intent(
         query,
@@ -323,6 +343,7 @@ async def stream_query(
     is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
     reasoning_mode: Optional[str] = "auto",
 ) -> AsyncGenerator[str, None]:
+    query = _sanitize_incoming_query(query)
     history = (history or [])[-8:]
     intent = classify_chat_intent(
         query,
@@ -331,8 +352,15 @@ async def stream_query(
     )
     selected_model = (VISION_MODEL if image_base64 else (model or DEFAULT_LLM_MODEL))
 
-    # 1. Hành động tạo Học liệu hoặc Đối chiếu Phiên bản (không cần RAG chat tiêu chuẩn)
-    if intent.kind in {"create_quiz", "create_flashcards", "create_mindmap", "create_plan", "version_diff"}:
+    # 1. Hành động tạo Học liệu, Đối chiếu Phiên bản hoặc Xuất nhanh câu trả lời trước
+    if intent.kind in {
+        "create_quiz",
+        "create_flashcards",
+        "create_mindmap",
+        "create_plan",
+        "version_diff",
+        "export_previous",
+    }:
         async for chunk in stream_chat_action(
             action_kind=intent.kind,
             params=intent.params,

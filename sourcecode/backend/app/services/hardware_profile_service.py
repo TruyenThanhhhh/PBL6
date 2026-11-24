@@ -1,5 +1,6 @@
 """Nhận diện phần cứng cục bộ và quản lý hồ sơ hiệu năng (Eco / Balanced / Performance)."""
 import ctypes
+import gc
 import logging
 import os
 import subprocess
@@ -226,6 +227,48 @@ def get_active_profile_config(mode_override: Optional[str] = None) -> Dict[str, 
     base["recommended_id"] = recommended_id
     base["specs"] = specs
     return base
+
+
+def get_recommended_keep_alive(profile: Optional[Dict[str, Any]] = None) -> str:
+    """Thời gian giữ model Ollama trong RAM/VRAM theo cấu hình và lượng RAM trống thực tế."""
+    cfg = profile or get_active_profile_config()
+    active_id = str(cfg.get("id") or "balanced").lower()
+    avail_ram = float((cfg.get("specs") or {}).get("available_ram_gb") or 8.0)
+    if active_id == "eco" or avail_ram < 3.5:
+        return "2m"
+    if active_id == "balanced" or avail_ram < 6.5:
+        return "5m"
+    return "15m"
+
+
+def should_warmup_on_startup(profile: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool, bool]:
+    """Chỉ nạp sẵn model khi khởi động nếu RAM khả dụng thực tế đủ dồi dào."""
+    cfg = profile or get_active_profile_config()
+    avail_ram = float((cfg.get("specs") or {}).get("available_ram_gb") or 8.0)
+    w_embed = bool(cfg.get("warmup_embeddings", False)) and avail_ram >= 7.0
+    w_rerank = bool(cfg.get("warmup_reranker", False)) and avail_ram >= 9.0
+    w_ollama = bool(cfg.get("warmup_ollama", False)) and avail_ram >= 6.0
+    return w_embed, w_rerank, w_ollama
+
+
+def trim_process_memory() -> None:
+    """Thu gom rác Python và trả lại các trang bộ nhớ chưa dùng về hệ điều hành."""
+    gc.collect()
+    try:
+        import torch
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    if sys.platform.startswith("win"):
+        try:
+            k32 = ctypes.windll.kernel32
+            ps = ctypes.windll.psapi
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            ps.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
+            ps.EmptyWorkingSet(k32.GetCurrentProcess())
+        except Exception:
+            pass
 
 
 def get_hardware_profile_summary() -> Dict[str, Any]:

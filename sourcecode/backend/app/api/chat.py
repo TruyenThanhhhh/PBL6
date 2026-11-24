@@ -20,11 +20,16 @@ from app.config import (
 )
 from app.database import get_db_connection
 from app.services.ai_router import answer_query, stream_query
+from app.services.embedding_service import unload_embedding_model
 from app.services.hardware_profile_service import (
     get_hardware_profile_summary,
+    get_memory_gb,
     set_selected_profile_mode,
+    trim_process_memory,
 )
-from app.services.llm_service import check_ollama_status, is_vision_model_tag
+from app.services.llm_service import check_ollama_status, is_vision_model_tag, unload_ollama_models
+from app.services.reranker_service import unload_reranker_model
+from app.services.retrieval_service import invalidate_workspace_vector_cache
 from app.services.web_search_service import search_web
 
 router = APIRouter(prefix="/api/v1", tags=["Chat, Streaming & Conversations"])
@@ -182,9 +187,54 @@ async def update_hardware_profile(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/system/free-memory")
+async def free_system_memory(
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Dỡ ngay các model Embedding, Reranker, Vector Cache và Ollama đang chiếm RAM/VRAM."""
+    before_avail = get_memory_gb()[1]
+    freed_rerank = unload_reranker_model(trim_os=False)
+    freed_embed = unload_embedding_model(trim_os=False)
+    invalidate_workspace_vector_cache()
+    unloaded_ollama = await unload_ollama_models()
+    trim_process_memory()
+    after_avail = get_memory_gb()[1]
+    profile = get_hardware_profile_summary()
+    return {
+        "freed_embedding": freed_embed,
+        "freed_reranker": freed_rerank,
+        "unloaded_ollama_models": unloaded_ollama,
+        "available_ram_gb_before": before_avail,
+        "available_ram_gb_after": after_avail,
+        "hardware_profile": profile,
+        "message": (
+            f"Đã giải phóng bộ nhớ AI (RAM trống: {before_avail:.2f} GB → {after_avail:.2f} GB)."
+        ),
+    }
+
+
 # =============================================================================
 # 1. CHAT STREAMING & SYNCHRONOUS QUERY
 # =============================================================================
+
+def _load_recent_history_from_db(conn, session_id: str, limit: int = 8) -> List[Dict[str, str]]:
+    """Tải các lượt hội thoại gần nhất từ SQLite khi client không truyền tường minh `history`."""
+    rows = conn.execute(
+        """
+        SELECT sender, content
+        FROM chat_messages
+        WHERE session_id = ? AND content IS NOT NULL AND TRIM(content) != ''
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (session_id, limit),
+    ).fetchall()
+    turns: List[Dict[str, str]] = []
+    for r in reversed(rows):
+        role = "assistant" if r["sender"] == "assistant" else "user"
+        turns.append({"role": role, "content": str(r["content"])})
+    return turns
+
 
 @router.post("/chat/stream")
 async def stream_chat_knowledge_base(
@@ -197,6 +247,7 @@ async def stream_chat_knowledge_base(
     Đồng thời tự động lưu phiên hội thoại và tin nhắn vào cơ sở dữ liệu SQLite.
     """
     conn = get_db_connection()
+    history_turns: List[Dict[str, str]] = [turn.model_dump() for turn in req.history]
     try:
         _assert_workspace_ownership(conn, req.workspace_id, user["id"])
         conv_id = req.conversation_id or str(uuid.uuid4())
@@ -209,6 +260,8 @@ async def stream_chat_knowledge_base(
             req.model or DEFAULT_LLM_MODEL,
             req.notebook_id,
         )
+        if not history_turns and req.conversation_id:
+            history_turns = _load_recent_history_from_db(conn, conv_id)
 
         user_msg_id = str(uuid.uuid4())
         conn.execute(
@@ -238,7 +291,7 @@ async def stream_chat_knowledge_base(
                 mode=req.mode or "auto",
                 include_web=(req.mode in ["web", "hybrid"]),
                 top_k=req.top_k,
-                history=[turn.model_dump() for turn in req.history],
+                history=history_turns,
                 image_base64=req.image_base64,
                 selected_document_id=req.selected_document_id,
                 document_ids=req.document_ids,
@@ -299,6 +352,7 @@ async def query_knowledge_base(
     Endpoint truy vấn RAG đồng bộ (không streaming), hỗ trợ đa nguồn và đa phương thức.
     """
     conn = get_db_connection()
+    history_turns: List[Dict[str, str]] = [turn.model_dump() for turn in req.history]
     try:
         _assert_workspace_ownership(conn, req.workspace_id, user["id"])
         conv_id = req.conversation_id
@@ -311,6 +365,8 @@ async def query_knowledge_base(
                 req.mode or "auto",
                 req.model or DEFAULT_LLM_MODEL,
             )
+            if not history_turns:
+                history_turns = _load_recent_history_from_db(conn, conv_id)
             user_msg_id = str(uuid.uuid4())
             conn.execute(
                 """
@@ -329,7 +385,7 @@ async def query_knowledge_base(
         model=req.model,
         include_web=(req.web_search or req.mode in ["web", "hybrid"]),
         top_k=req.top_k,
-        history=[turn.model_dump() for turn in req.history],
+        history=history_turns,
         image_base64=req.image_base64,
         selected_document_id=req.selected_document_id,
         document_ids=req.document_ids,
