@@ -875,6 +875,8 @@ def _strip_raw_latex_math(text: str) -> str:
         res = res.replace(k, v)
 
     res = res.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
+    res = re.sub(r"\b(sin|cos|tan|cot|arcsin|arccos|arctan|log)\s*\{([^{}]+)\}", r"\1(\2)", res)
+    res = re.sub(r"\{([A-Za-z0-9αβγθΔπ]{1,3})\}", r"\1", res)
     res = re.sub(r"\^\{2\}|\^2(?![0-9])", "²", res)
     res = re.sub(r"\^\{3\}|\^3(?![0-9])", "³", res)
     res = re.sub(r"\^\{([^{}]+)\}", r"^\1", res)
@@ -1007,7 +1009,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
     text = re.sub(
-        r"\n*\s*Trích dẫn được thực hiện dựa trên thông tin trong tài liệu[^.\n]*\.?\s*$",
+        r"\n*\s*(?:Trích\s+dẫn\s+được\s+thực\s+hiện\s+dựa\s+trên\s+thông\s+tin\s+trong\s+tài\s+liệu|Hãy\s+đối\s+chiếu\s+tài\s+liệu)[^.\n]*\.?\s*$",
         "",
         text,
         flags=re.IGNORECASE | re.UNICODE,

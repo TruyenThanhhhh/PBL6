@@ -1148,6 +1148,7 @@ def _run_hybrid_rrf_candidates(
                     # Thưởng thêm nếu cụm từ khóa xuất hiện ngay trong dòng tiêu đề/mục (vd: '2. HÀM SỐ ĐỒNG BIẾN – NGHỊCH BIẾN')
                     if re.search(rf"(?:^|\n)\s*(?:#{1,4}\s*|\d{{1,2}}\.\s*)[^\n]{{0,30}}{re.escape(ph)}", low_txt):
                         item["rrf_score"] += 0.035
+                        item["_heading_match"] = True
                     if phrase_hits >= 4:
                         break
 
@@ -1329,14 +1330,32 @@ def search_relevant_chunks(
             )
             stitched = expand_and_stitch_chunks(pinned_front + reranked_tail, max_total_chunks=top_k)
         else:
-            reranked = _smart_rerank(
-                query,
-                ranked,
-                top_k,
-                profile,
-                single_doc_scope=single_doc_scope,
+            is_named_section_ask = bool(
+                re.search(
+                    r"^(?:nội\s+dung|tóm\s+tắt|giải\s+thích).{0,25}(?:chương|phần|mục|bài|vấn\s+đề)\b",
+                    query or "",
+                    re.IGNORECASE | re.UNICODE,
+                )
             )
-            stitched = expand_and_stitch_chunks(reranked, max_total_chunks=top_k)
+            heading_matched = [item for item in ranked if item.get("_heading_match")]
+            if is_named_section_ask and heading_matched:
+                reranked = _smart_rerank(
+                    query,
+                    heading_matched,
+                    min(2, top_k),
+                    profile,
+                    single_doc_scope=single_doc_scope,
+                )
+                stitched = expand_and_stitch_chunks(reranked, max_total_chunks=min(2, top_k))
+            else:
+                reranked = _smart_rerank(
+                    query,
+                    ranked,
+                    top_k,
+                    profile,
+                    single_doc_scope=single_doc_scope,
+                )
+                stitched = expand_and_stitch_chunks(reranked, max_total_chunks=top_k)
         # Chỉ lọc liên quan nếu người dùng không chỉ định đích danh file đính kèm
         if not (document_id or document_ids):
             relevant = filter_relevant_chunks(query, stitched)

@@ -522,13 +522,17 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         # Kiểm tra a_1x -> a₁x, \infty -> ∞, \arctan -> arctan và khử công thức lặp cụt đuôi
         math_sub_txt = (
             "Góc giữa hai đường thẳng y = a_1x + b_1 và y = a_2x + b_2 là α = \\arctan|a_1 - a_2|.\n"
+            "Công thức góc: a = tan{α}.\n"
             "Hệ số góc của đường thẳng là: k = (y_2 - y_1)/(x_2 - x_1).\n"
             "Khi x → -\\infty thì không đạt.\n"
-            "k = (y_2 - y_1)/(x_2 - x_1)"
+            "k = (y_2 - y_1)/(x_2 - x_1)\n"
+            "Hãy đối chiếu tài liệu [1] và kết luận trọng tâm chương 3"
         )
         cleaned_sub = _sanitize_rag_output(math_sub_txt, citations_count=1)
         self.assertIn("a₁x", cleaned_sub)
         self.assertIn("a₂x", cleaned_sub)
+        self.assertIn("tan(α)", cleaned_sub)
+        self.assertNotIn("Hãy đối chiếu tài liệu", cleaned_sub)
         self.assertIn("arctan", cleaned_sub)
         self.assertIn("-∞", cleaned_sub)
         self.assertEqual(cleaned_sub.count("y₂ - y₁"), 1)

@@ -54,6 +54,8 @@ function cleanMathDisplay(text: string): string {
     .replace(/\\in\b/g, "∈")
     .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => inner.trim())
     .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> **${inner.trim()}**\n\n`)
+    .replace(/\b(sin|cos|tan|cot|arcsin|arccos|arctan|log)\s*\{([^{}]+)\}/g, "$1($2)")
+    .replace(/\{([A-Za-z0-9αβγθΔπ]{1,3})\}/g, "$1")
     .replace(/\^\{2\}|\^2(?![0-9])/g, "²")
     .replace(/\^\{3\}|\^3(?![0-9])/g, "³")
     .replace(/\^\{([^}]+)\}/g, "^$1")
