@@ -679,6 +679,8 @@ def _build_dynamic_system_prompt(
         "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên; TUYỆT ĐỐI KHÔNG lặp lại nguyên văn câu hỏi ('Câu hỏi của bạn là...', 'Bạn đã hỏi...').\n"
         "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
         "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa/định lý nhiều lần. Luôn tổng hợp các đoạn nguồn liên quan thành MỘT câu trả lời thống nhất duy nhất và chỉ gắn `[1]`, `[2]` ở cuối ý.\n"
+        "- CHỈ TRẢ LỜI ĐÚNG CHỦ ĐỀ ĐƯỢC HỎI: Nếu đoạn trích có lẫn sang mục khác không thuộc câu hỏi (ví dụ hỏi 'Hàm số đồng biến – nghịch biến' nhưng ngữ cảnh có thêm 'Hệ số góc' hoặc 'Vẽ đồ thị parabol'), BỎ QUA hoàn toàn các mục ngoài chủ đề đó, và KHÔNG lặp lại công thức ở cuối câu trả lời.\n"
+        "- KHÔNG chép chuỗi OCR lỗi kiểu `( ) 2 y ax a = ≠` hay `x∈` khi chưa rõ công thức; hãy diễn đạt thành công thức chuẩn (`y = ax² (a ≠ 0)`).\n"
         "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
         "- TUYỆT ĐỐI KHÔNG bịa kiến thức ngoài cấp học/tài liệu (ví dụ: không tự thêm 'đạo hàm' vào tài liệu Toán lớp 9 nếu tài liệu không hề nhắc đến) và KHÔNG mở đầu câu kiểu máy móc ('Tài liệu [1] mô tả...', 'Để đáp lại yêu cầu của bạn...').\n"
         "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó giải đáp ngắn gọn bằng kiến thức chuẩn xác (không gắn [1], [2] giả) hoặc liệt kê nhanh vài mục tiêu biểu dưới dạng gạch đầu dòng sạch."
@@ -859,17 +861,26 @@ def _strip_raw_latex_math(text: str) -> str:
         ("\\Leftrightarrow", "⇔"),
         ("\\Rightarrow", "⇒"),
         ("\\rightarrow", "→"),
+        ("\\infty", "∞"),
+        ("\\arctan", "arctan"),
+        ("\\arcsin", "arcsin"),
+        ("\\arccos", "arccos"),
+        ("\\sin", "sin"),
+        ("\\cos", "cos"),
+        ("\\tan", "tan"),
+        ("\\cot", "cot"),
+        ("\\in", "∈"),
     )
     for k, v in latex_tokens:
         res = res.replace(k, v)
 
     res = res.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
-    res = re.sub(r"\^\{2\}|\^2\b", "²", res)
-    res = re.sub(r"\^\{3\}|\^3\b", "³", res)
+    res = re.sub(r"\^\{2\}|\^2(?![0-9])", "²", res)
+    res = re.sub(r"\^\{3\}|\^3(?![0-9])", "³", res)
     res = re.sub(r"\^\{([^{}]+)\}", r"^\1", res)
     sub_digits = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
     res = re.sub(
-        r"_\{([0-9]+)\}|_([0-9])\b",
+        r"(?<=[a-zA-Z])_\{([0-9]+)\}|(?<=[a-zA-Z])_([0-9])(?![0-9])",
         lambda m: (m.group(1) or m.group(2) or "").translate(sub_digits),
         res,
     )
@@ -1013,9 +1024,16 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
                     dedup_lines.append("")
                 continue
             norm_ln = re.sub(r"\[\d+\]|từ\s+tài\s+liệu\s*\d+|\(\s*tài\s+liệu\s*\d+\s*\)", "", stripped_ln, flags=re.IGNORECASE)
-            norm_ln = re.sub(r"[\s*#:\-–.,;()]+", " ", norm_ln).strip().lower()
-            if len(norm_ln) >= 20:
-                if norm_ln in seen_norm_lines:
+            norm_ln = re.sub(r"[\s*#:\-–.,;()=+/]+", " ", norm_ln).strip().lower()
+            is_heading_or_label = stripped_ln.startswith("#") or stripped_ln.endswith(":")
+            if len(norm_ln) >= 12:
+                is_exact_dup = len(norm_ln) >= 18 and norm_ln in seen_norm_lines
+                is_clipped_dup = (
+                    not is_heading_or_label
+                    and len(norm_ln.split()) >= 5
+                    and any(norm_ln in prev for prev in seen_norm_lines if len(prev) > len(norm_ln))
+                )
+                if is_exact_dup or is_clipped_dup:
                     continue
                 seen_norm_lines.add(norm_ln)
             dedup_lines.append(ln)

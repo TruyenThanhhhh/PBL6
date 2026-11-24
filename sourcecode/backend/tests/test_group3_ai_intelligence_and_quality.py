@@ -519,6 +519,20 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertIn("x₁", deduped_ans)
         self.assertIn("x₂", deduped_ans)
 
+        # Kiểm tra a_1x -> a₁x, \infty -> ∞, \arctan -> arctan và khử công thức lặp cụt đuôi
+        math_sub_txt = (
+            "Góc giữa hai đường thẳng y = a_1x + b_1 và y = a_2x + b_2 là α = \\arctan|a_1 - a_2|.\n"
+            "Hệ số góc của đường thẳng là: k = (y_2 - y_1)/(x_2 - x_1).\n"
+            "Khi x → -\\infty thì không đạt.\n"
+            "k = (y_2 - y_1)/(x_2 - x_1)"
+        )
+        cleaned_sub = _sanitize_rag_output(math_sub_txt, citations_count=1)
+        self.assertIn("a₁x", cleaned_sub)
+        self.assertIn("a₂x", cleaned_sub)
+        self.assertIn("arctan", cleaned_sub)
+        self.assertIn("-∞", cleaned_sub)
+        self.assertEqual(cleaned_sub.count("y₂ - y₁"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

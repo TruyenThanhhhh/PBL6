@@ -1145,6 +1145,9 @@ def _run_hybrid_rrf_candidates(
                 if ph in low_txt:
                     phrase_hits += 1
                     item["rrf_score"] += 0.025
+                    # Thưởng thêm nếu cụm từ khóa xuất hiện ngay trong dòng tiêu đề/mục (vd: '2. HÀM SỐ ĐỒNG BIẾN – NGHỊCH BIẾN')
+                    if re.search(rf"(?:^|\n)\s*(?:#{1,4}\s*|\d{{1,2}}\.\s*)[^\n]{{0,30}}{re.escape(ph)}", low_txt):
+                        item["rrf_score"] += 0.035
                     if phrase_hits >= 4:
                         break
 

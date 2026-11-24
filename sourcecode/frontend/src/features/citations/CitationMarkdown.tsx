@@ -43,12 +43,21 @@ function cleanMathDisplay(text: string): string {
     .replace(/\\Leftrightarrow/g, "⇔")
     .replace(/\\Rightarrow/g, "⇒")
     .replace(/\\rightarrow/g, "→")
+    .replace(/\\infty/g, "∞")
+    .replace(/\\arctan/g, "arctan")
+    .replace(/\\arcsin/g, "arcsin")
+    .replace(/\\arccos/g, "arccos")
+    .replace(/\\sin/g, "sin")
+    .replace(/\\cos/g, "cos")
+    .replace(/\\tan/g, "tan")
+    .replace(/\\cot/g, "cot")
+    .replace(/\\in\b/g, "∈")
     .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => inner.trim())
     .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> **${inner.trim()}**\n\n`)
-    .replace(/\^\{2\}|\^2\b/g, "²")
-    .replace(/\^\{3\}|\^3\b/g, "³")
+    .replace(/\^\{2\}|\^2(?![0-9])/g, "²")
+    .replace(/\^\{3\}|\^3(?![0-9])/g, "³")
     .replace(/\^\{([^}]+)\}/g, "^$1")
-    .replace(/_\{([0-9]+)\}|_([0-9])\b/g, (_m, g1?: string, g2?: string) => {
+    .replace(/(?<=[a-zA-Z])_\{([0-9]+)\}|(?<=[a-zA-Z])_([0-9])(?![0-9])/g, (_m, g1?: string, g2?: string) => {
       const subMap: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉" }
       const raw = g1 || g2 || ""
       return raw.split("").map((ch) => subMap[ch] ?? ch).join("")
