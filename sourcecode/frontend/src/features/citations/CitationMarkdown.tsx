@@ -18,10 +18,11 @@ function cleanMathDisplay(text: string): string {
 }
 
 function withCitationChips(text: string) {
-  // Làm sạch ký hiệu LaTeX thô trước khi chuẩn hóa chip trích dẫn
+  // Làm sạch ký hiệu LaTeX thô và các biến thể trích dẫn lồng tên file từ LLM nhỏ
   const cleaned = cleanMathDisplay(text)
-  // Hỗ trợ [1], [2], [Tài liệu 1], [Tài liệu 2], [Nguồn web 1], [Web 1]
-  return cleaned.replace(/\[(?:Tài liệu |Nguồn web |Web )?(\d+)\]/gi, (_m, n: string) => `[[cite:${n}]]`)
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\]\n"]{2,180}\]?"?/gi, "[[cite:$1]]")
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?/gi, "[[cite:$1]]")
+  return cleaned.replace(/\[(\d{1,3})\]/g, (_m, n: string) => `[[cite:${n}]]`)
 }
 
 function CodeBlockWithCopy({

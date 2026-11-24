@@ -343,6 +343,37 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
             "qwen2.5:3b",
         )
 
+        # 5. Gợi ý theo loại tài liệu & làm sạch trích dẫn lồng tên file / câu lặp lại
+        vocab_chunks = [
+            {
+                "document_name": "3000 TỪ TIẾNG ANH THÔNG DỤNG NHẤT.anhngumshoapdf.pdf",
+                "content": 'allow v. /ə\'lau/ cho phép, để cho\nacknowledge v. /ək\'nɔlidʒ/ công nhận, thừa nhận',
+            }
+        ]
+        vocab_sugs = _build_instant_followup_suggestions(
+            "Lấy các từ vựng đầu tiên",
+            [{"source_type": "document", "document_name": "3000 TỪ TIẾNG ANH THÔNG DỤNG NHẤT.anhngumshoapdf.pdf"}],
+            vocab_chunks,
+        )
+        self.assertEqual(len(vocab_sugs), 3)
+        self.assertFalse(any("ngoại lệ" in s.lower() for s in vocab_sugs))
+        self.assertTrue(any("từ vựng" in s.lower() for s in vocab_sugs))
+
+        noisy_vocab_ans = (
+            'Câu hỏi của bạn là "Điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác không?"\n\n'
+            '[Tài liệu [1]: 3000 TỪ TIẾNG ANH THÔNG DỤNG NHẤT.anhngumshoapdf.pdf (Trang 2)] mô tả các từ như '
+            '"allow v. /ə\'lau/ cho phép, để cho", và '
+            '"[tài liệu [2]]: 3000 TỪ TIẾNG ANH THÔNG DỤNG NHẤT.anhngumshoapdf.pdf (Trang 1)" mô tả các từ như '
+            '"acknowledge v. /ək\'nɔlidʒ/ công nhận, thừa nhận".\n\n'
+            'Nếu bạn cần thêm thông tin cụ thể về điều kiện ngoại lệ, xin vui lòng cung cấp chi tiết hơn.'
+        )
+        sanitized_vocab = _sanitize_rag_output(noisy_vocab_ans, citations_count=2)
+        self.assertNotIn("Câu hỏi của bạn là", sanitized_vocab)
+        self.assertNotIn("3000 TỪ TIẾNG ANH THÔNG DỤNG NHẤT", sanitized_vocab)
+        self.assertNotIn("xin vui lòng cung cấp chi tiết hơn", sanitized_vocab)
+        self.assertIn("[1]", sanitized_vocab)
+        self.assertIn("[2]", sanitized_vocab)
+
 
 if __name__ == "__main__":
     unittest.main()

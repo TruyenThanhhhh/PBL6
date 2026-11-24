@@ -540,11 +540,65 @@ def _build_instant_followup_suggestions(
                 break
 
     doc_name = citations[0].get("document_name") if has_local_citations else None
-    defaults = [
-        f"Có điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác trong {doc_name} không?" if doc_name else "Có trường hợp ngoại lệ hay lưu ý thực tế nào cần chú ý không?",
-        "Hãy tóm tắt các ý chính liên quan thành bảng hoặc gạch đầu dòng ngắn gọn",
-        "Tạo 5 câu hỏi trắc nghiệm nhanh từ nội dung vừa trao đổi",
-    ]
+    sample_raw = "\n".join(str(ch.get("content") or "")[:600] for ch in (context_chunks or [])[:3])
+    sample_folded = f"{_fold_vn(doc_name or '')} {_fold_vn(sample_raw)}"
+
+    is_vocab_doc = bool(
+        re.search(
+            r"\b(?:tu\s+vung|3000\s+tu|tieng\s+anh|tieng\s+nhat|english|vocabulary|mimikara|jlpt|n[1-5]|kanji|hiragana|katakana|phien\s+am)\b",
+            sample_folded,
+        )
+        or (re.search(r"/[^/\n]{2,18}/", sample_raw) and re.search(r"\b(?:n|v|adj|adv|prep|pron)\.", sample_raw))
+    )
+    is_policy_doc = bool(
+        re.search(
+            r"\b(?:quy\s+dinh|dieu\s+khoan|noi\s+quy|hop\s+dong|quy\s+che|luat|nghi\s+dinh|thong\s+tu|hoc\s+bong|che\s+tai|ngoai\s+le|bao\s+luu)\b",
+            sample_folded,
+        )
+    )
+    is_tech_doc = bool(
+        re.search(
+            r"\b(?:api|rag|llm|vector|bm25|pipeline|kien\s+truc|database|sql|python|docker|server|thuat\s+toan|framework|microservice)\b",
+            sample_folded,
+        )
+    )
+    is_numeric_doc = bool(
+        re.search(
+            r"\b(?:doanh\s+thu|chi\s+phi|loi\s+nhuan|lai\s+suat|ngan\s+sach|kpi|bao\s+cao\s+tai\s+chinh)\b|\.xlsx?\b|\.csv\b",
+            sample_folded,
+        )
+    )
+
+    if is_vocab_doc:
+        defaults = [
+            f"Lấy 8 từ vựng tiêu biểu kèm phiên âm, nghĩa và câu ví dụ từ {doc_name}" if doc_name else "Lấy 8 từ vựng tiêu biểu kèm ví dụ minh họa",
+            "Phân biệt cách dùng và đặt câu ví dụ thực tế cho các từ vừa nêu",
+            "Tạo 5 câu hỏi trắc nghiệm ôn tập từ vựng từ nội dung vừa trao đổi",
+        ]
+    elif is_policy_doc:
+        defaults = [
+            f"Có điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác trong {doc_name} không?" if doc_name else "Có trường hợp ngoại lệ hay lưu ý thực tế nào cần chú ý không?",
+            "Hãy tóm tắt các quy định chính thành bảng hoặc gạch đầu dòng ngắn gọn",
+            "Nêu ví dụ tình huống áp dụng cụ thể cho các điều kiện trên",
+        ]
+    elif is_tech_doc:
+        defaults = [
+            f"Phân tích ưu nhược điểm và các thành phần cốt lõi trong {doc_name}" if doc_name else "Phân tích ưu nhược điểm và cách tối ưu kiến trúc vừa nêu",
+            "Sơ đồ hóa quy trình hoạt động từng bước bằng gạch đầu dòng ngắn gọn",
+            "Tóm tắt các công nghệ và thông số chính thành bảng so sánh",
+        ]
+    elif is_numeric_doc:
+        defaults = [
+            f"Tổng hợp các chỉ số và con số nổi bật nhất trong {doc_name}" if doc_name else "Tổng hợp các chỉ số và con số nổi bật nhất từ dữ liệu trên",
+            "So sánh chênh lệch hoặc xu hướng giữa các nhóm dữ liệu liên quan",
+            "Tóm tắt thành bảng số liệu gọn kèm nhận xét chính",
+        ]
+    else:
+        defaults = [
+            "Hãy tóm tắt các ý chính liên quan thành bảng hoặc gạch đầu dòng ngắn gọn",
+            "Giải thích chi tiết hơn kèm ví dụ minh họa cho nội dung vừa trao đổi",
+            "Tạo 5 câu hỏi trắc nghiệm nhanh từ nội dung vừa trao đổi",
+        ]
     for d in defaults:
         if len(suggestions) >= 3:
             break
@@ -622,11 +676,11 @@ def _build_dynamic_system_prompt(
     sections: List[str] = [
         "Bạn là Motivo AI — trợ lý tri thức cá nhân thông minh, diễn đạt tiếng Việt tự nhiên, đầy đủ và chuẩn xác.\n\n"
         "NGUYÊN TẮC TRẢ LỜI:\n"
-        "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên.\n"
+        "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên; TUYỆT ĐỐI KHÔNG lặp lại nguyên văn câu hỏi ('Câu hỏi của bạn là...', 'Bạn đã hỏi...').\n"
         "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
         "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
-        "- TUYỆT ĐỐI KHÔNG mở đầu câu bằng kiểu máy móc như 'Tài liệu [1] mô tả...', 'Trong Tài liệu [2]...', 'Dựa trên tài liệu...'. Hãy trình bày thẳng nội dung kiến thức và chỉ đặt ký hiệu `[1]`, `[2]` ở cuối câu hoặc cuối ý.\n"
-        "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó mới giải đáp bổ sung bằng kiến thức chuẩn xác (không gắn [1], [2] giả)."
+        "- TUYỆT ĐỐI KHÔNG chép tên file, số trang hay cụm '[Tài liệu 1: ... (Trang 2)]' vào nội dung, và KHÔNG mở đầu câu bằng kiểu máy móc ('Tài liệu [1] mô tả...', 'Trong Tài liệu [2]...', 'Dựa trên tài liệu...'). Hãy viết câu tự nhiên, chia gạch đầu dòng gọn gàng nếu có nhiều mục/từ vựng và chỉ đặt ký hiệu `[1]`, `[2]` ở cuối ý.\n"
+        "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó giải đáp ngắn gọn bằng kiến thức chuẩn xác (không gắn [1], [2] giả) hoặc liệt kê nhanh vài mục tiêu biểu dưới dạng gạch đầu dòng sạch."
     ]
 
     if is_short_lookup and not has_web:
@@ -656,8 +710,8 @@ def _build_dynamic_system_prompt(
 
     sections.append(
         "ĐỊNH DẠNG:\n"
-        "- Sử dụng Markdown sạch (tiêu đề `###`, in đậm, gạch đầu dòng). Viết công thức toán bằng chữ/ký hiệu phổ thông sạch sẽ như `150.000.000 × (1 + 0,068)^5 = 208.423.902,12 đồng`; TUYỆT ĐỐI KHÔNG dùng cú pháp LaTeX (`\\boxed{...}`, `\\(...\\)`, `\\[...\\]`) và KHÔNG chép lại tên biến Python.\n"
-        "- Dừng ngay sau khi trả lời xong đầy đủ câu hỏi chính (KHÔNG cần tự viết mục `---GỢI Ý TIẾP THEO---`)."
+        "- Sử dụng Markdown sạch (tiêu đề `###`, in đậm từ khóa, gạch đầu dòng thoáng mắt cho danh sách/từ vựng). Viết công thức toán bằng chữ/ký hiệu phổ thông sạch sẽ như `150.000.000 × (1 + 0,068)^5 = 208.423.902,12 đồng`; TUYỆT ĐỐI KHÔNG dùng cú pháp LaTeX (`\\boxed{...}`, `\\(...\\)`, `\\[...\\]`) và KHÔNG chép lại tên biến Python.\n"
+        "- Dừng ngay sau khi trả lời xong đầy đủ câu hỏi chính; KHÔNG viết câu xã giao thừa ở cuối ('Nếu bạn cần thêm thông tin..., xin vui lòng cung cấp chi tiết hơn.') và KHÔNG viết mục `---GỢI Ý TIẾP THEO---`."
     )
     return "\n\n".join(sections)
 
@@ -675,7 +729,13 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         return ""
     text = answer
 
-    # 0. Gỡ tiêu đề nội bộ nếu model nhỏ lỡ chép từ prompt và làm sạch LaTeX thô
+    # 0. Gỡ tiêu đề nội bộ, câu lặp lại câu hỏi và làm sạch LaTeX thô
+    text = re.sub(
+        r'^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
     text = re.sub(
         r"(?im)^(?:#{1,4}\s*)?(?:KẾT\s*QUẢ\s*ĐÃ\s*KIỂM\s*CHỨNG\s*BẰNG\s*PYTHON\s*SANDBOX[^:\n]*|\[DỮ\s*KIỆN\s*TOÁN\s*HỌC\s*ĐÃ\s*TÍNH\s*SẴN[^\]]*\])\s*:?\s*\n*",
         "",
@@ -689,10 +749,22 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     text = re.sub(r"\^\{([^}]+)\}", r"^\1", text)
     text = re.sub(r"\(\s*\*\*([^*]+)\*\*\s*\)", r"**\1**", text)
 
-    # 1. Chuẩn hóa [Tài liệu 1] / [Nguồn 1] / [Nguồn web 1] / Tài liệu 1 -> [1]
+    # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ... / [Tài liệu 1] / [Nguồn web 1] -> [1]
     text = re.sub(
-        r"\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*(\d{1,3})\s*\]",
+        r'"?\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\]\n"]{2,180}\]?"?',
         r"[\1]",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r'"?\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?',
+        r"[\1]",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r"\[\s*(\d{1,3})\s*\]\s+(?:mô\s+tả|đề\s+cập|nêu|cho\s+biết|liệt\s+kê)\s*(?:các\s+từ\s+như|cụ\s+thể|chi\s+tiết)?\s*",
+        r"Nguồn [\1] nêu ",
         text,
         flags=re.IGNORECASE | re.UNICODE,
     )
@@ -705,6 +777,12 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         r"\(\s*[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*\)",
         r"[\1]",
         text,
+    )
+    text = re.sub(
+        r"\n*\s*Nếu\s+bạn\s+cần\s+thêm\s+thông\s+tin\s+cụ\s+thể[^.\n]{0,180}(?:chi\s+tiết\s+hơn|hỗ\s+trợ\s+thêm|cho\s+tôi\s+biết)[^.\n]*\.?\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
     )
 
     # 2. Xử lý trường hợp model nhỏ viết `[1]: ...` hoặc `[2]: ...` ở đầu dòng như danh sách liệt kê
