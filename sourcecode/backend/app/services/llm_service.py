@@ -1281,12 +1281,28 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         ("S_xq_non-cut", "Sxq(nón cụt)"),
         ("S_tp_non_cut", "Stp(nón cụt)"),
         ("S_tp_non-cut", "Stp(nón cụt)"),
+        ("C_day_tru", "C(hình trụ)"),
+        ("S_xq_tru", "Sxq(hình trụ)"),
         ("V_tru", "V(hình trụ)"),
         ("S_tp_tru", "Stp(hình trụ)"),
         ("chenh_lech_V", "ΔV"),
         ("chenh_lech_phan_tram", "Tỷ lệ chênh lệch"),
+        ("x2_cong_y2", "x² + y²"),
+        ("x²_cong_y²", "x² + y²"),
+        ("x3_tru_y3", "x³ - y³"),
+        ("x³_tru_y³", "x³ - y³"),
+        ("x3_cong_y3", "x³ + y³"),
+        ("x³_cong_y³", "x³ + y³"),
+        ("gia_tri_B", "Giá trị B"),
+        ("gia_tri_A", "Giá trị A"),
+        ("chenh_lech_tu", "Chênh lệch số từ"),
+        ("so_tu_bai₁", "Số từ Bài 1"),
+        ("so_tu_bai₂", "Số từ Bài 2"),
+        ("so_tu_bai_1", "Số từ Bài 1"),
+        ("so_tu_bai_2", "Số từ Bài 2"),
     ):
         text = re.sub(rf"\b{re.escape(py_var)}\b", clean_lbl, text)
+    text = re.sub(r"\bso_tu_bai_(\d+)\b", r"Số từ Bài \1", text)
     text = _strip_raw_latex_math(text)
 
     # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ten_file.pdf -> [1]
@@ -2031,6 +2047,16 @@ async def _stream_ollama_chat(
                     raise RuntimeError(f"Ollama stream status {resp.status_code}: {err_body}")
 
                 yield f"data: {json.dumps({'stage': 'generating', 'stage_label': 'AI đang viết câu trả lời...'}, ensure_ascii=False)}\n\n"
+                pending_buf = ""
+
+                def _clean_stream_chunk(chunk_str: str) -> str:
+                    return re.sub(
+                        r"\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?",
+                        r"[\1]",
+                        chunk_str,
+                        flags=re.IGNORECASE | re.UNICODE,
+                    )
+
                 async for line in resp.aiter_lines():
                     if is_disconnected and await is_disconnected():
                         logger.info("Client disconnected during Ollama stream; cancelling generation")
@@ -2047,9 +2073,20 @@ async def _stream_ollama_chat(
                         delta = chunk_data.get("message", {}).get("content", "")
                         if delta:
                             full_answer += delta
-                            yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            pending_buf += delta
+                            # Buffer nhẹ khi đang mở thẻ '[' (< 48 ký tự) để chuẩn hóa '[Tài liệu 1]' -> '[1]' mượt không bị nháy
+                            if "[" in pending_buf and "]" not in pending_buf.rsplit("[", 1)[-1] and "\n" not in pending_buf.rsplit("[", 1)[-1] and len(pending_buf.rsplit("[", 1)[-1]) < 48:
+                                continue
+                            emit_str = _clean_stream_chunk(pending_buf)
+                            pending_buf = ""
+                            if emit_str:
+                                yield f"data: {json.dumps({'delta': emit_str}, ensure_ascii=False)}\n\n"
                     except Exception:
                         continue
+                if pending_buf:
+                    emit_str = _clean_stream_chunk(pending_buf)
+                    if emit_str:
+                        yield f"data: {json.dumps({'delta': emit_str}, ensure_ascii=False)}\n\n"
 
                 sanitized_answer = _sanitize_rag_output(full_answer, len(citations))
                 if followup_suggestions and "---GỢI Ý TIẾP THEO---" not in sanitized_answer:

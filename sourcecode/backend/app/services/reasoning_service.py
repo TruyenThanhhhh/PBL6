@@ -253,6 +253,18 @@ def _fast_local_reasoning_planner(
                     if re.search(r"x\s*(?:³|\^3)\s*\+\s*y\s*(?:³|\^3)\s*\+\s*3\s*\*?\s*xy", q_low) or re.search(r"x\s*(?:³|\^3)\s*\+\s*3\s*\*?\s*xy\s*\+\s*y\s*(?:³|\^3)", q_low):
                         expressions.append("gia_tri_A = round(x3_cong_y3 + 3 * xy, 6)")
 
+            # 1b) Giải phương trình đại số 1 ẩn tổng quát bằng SymPy trong Sandbox (vd: "Giải phương trình bậc 2 x^2 - 5x + 6 = 0")
+            if not expressions:
+                eq_m = re.search(
+                    r"(?:giải\s+phương\s+trình(?:\s+bậc\s+\d)?|tìm\s+x\s+(?:biết|sao\s+cho)?)\s*[:\-]?\s*([0-9a-zA-Z\s\+\-\*\/\^\(\)\.=²³]{4,70})",
+                    q_clean,
+                    re.IGNORECASE | re.UNICODE,
+                )
+                if eq_m and "=" in eq_m.group(1) and "x" in eq_m.group(1).lower():
+                    eq_str = eq_m.group(1).strip().rstrip(".,;?! ")
+                    eq_safe = eq_str.replace('"', "").replace("'", "")
+                    expressions.append(f'nghiem_x = solve_eq("{eq_safe}", "x")')
+
             # 2) So sánh số lượng từ vựng giữa 2 Bài trong bảng Workbook Excel trực tiếp từ CSDL (không bao giờ lấy nhầm số trong tên file!)
             lesson_nums = re.findall(r"\bbài\s+(\d{1,2})\b", q_low, re.IGNORECASE | re.UNICODE)
             if not expressions and len(lesson_nums) >= 2 and any(k in q_low for k in ("nhiều từ", "bao nhiêu từ", "chênh lệch", "so sánh", "nhieu tu", "chenh lech")) and initial_chunks:

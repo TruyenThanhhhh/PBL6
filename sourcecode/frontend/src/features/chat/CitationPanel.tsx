@@ -17,6 +17,8 @@ import {
   Quote,
   StickyNote,
   Trash2,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react"
 import { Badge, Button, EmptyState, Tooltip } from "@/components/ui"
@@ -61,11 +63,71 @@ export function CitationPanel({
 
   const [expandedRefIds, setExpandedRefIds] = useState<Record<number, boolean>>({})
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [speakingKey, setSpeakingKey] = useState<string | null>(null)
 
   // In-place Context Reader Drawer (xem ngữ cảnh cả trang/chunk kế bên mà không rời Chat)
   const [contextEvidence, setContextEvidence] = useState<EvidenceItem | null>(null)
   const [contextChunks, setContextChunks] = useState<DocumentChunkRecord[]>([])
   const [contextLoading, setContextLoading] = useState(false)
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel()
+      }
+    }
+  }, [])
+
+  const handleToggleSpeak = (key: string, text: string) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      toast({ title: "Trình duyệt chưa hỗ trợ đọc giọng nói offline", tone: "warning" })
+      return
+    }
+    if (speakingKey === key) {
+      window.speechSynthesis.cancel()
+      setSpeakingKey(null)
+      return
+    }
+    window.speechSynthesis.cancel()
+    const cleanSpeech = text
+      .replace(/[#*`>|_[\]]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1800)
+    if (!cleanSpeech) return
+    const utter = new SpeechSynthesisUtterance(cleanSpeech)
+    utter.lang = "vi-VN"
+    utter.rate = 1.05
+    utter.onend = () => setSpeakingKey(null)
+    utter.onerror = () => setSpeakingKey(null)
+    setSpeakingKey(key)
+    window.speechSynthesis.speak(utter)
+  }
+
+  const renderHighlightedChunk = (chunkText: string, snippet?: string) => {
+    const cleanSnip = (snippet || "").replace(/\.\.\.$/, "").trim()
+    if (!cleanSnip || cleanSnip.length < 18) {
+      return <Markdown remarkPlugins={[remarkGfm]}>{chunkText}</Markdown>
+    }
+    const probe = cleanSnip.slice(0, 90)
+    const idx = chunkText.toLowerCase().indexOf(probe.toLowerCase())
+    if (idx === -1) {
+      return <Markdown remarkPlugins={[remarkGfm]}>{chunkText}</Markdown>
+    }
+    const matchEnd = Math.min(chunkText.length, idx + cleanSnip.length)
+    const before = chunkText.slice(0, idx)
+    const hit = chunkText.slice(idx, matchEnd)
+    const after = chunkText.slice(matchEnd)
+    return (
+      <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
+        {before}
+        <mark className="rounded bg-amber-200/85 px-1 py-0.5 font-medium text-[#172B29]">
+          {hit}
+        </mark>
+        {after}
+      </div>
+    )
+  }
 
   useEffect(() => {
     if (activeCitation != null) {
@@ -234,21 +296,43 @@ export function CitationPanel({
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void handleCopyText(`cite-${refId}`, fullText)
-                        }}
-                        title="Chép đoạn trích dẫn"
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
-                      >
-                        {copiedKey === `cite-${refId}` ? (
-                          <Check className="h-3 w-3 text-[#087F73]" />
-                        ) : (
-                          <Copy className="h-3 w-3" />
-                        )}
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleToggleSpeak(`cite-${refId}`, fullText)
+                          }}
+                          title={speakingKey === `cite-${refId}` ? "Dừng đọc" : "Nghe đọc đoạn trích dẫn (Offline)"}
+                          className={cn(
+                            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors",
+                            speakingKey === `cite-${refId}`
+                              ? "bg-[#E8F4F2] text-[#087F73]"
+                              : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
+                          )}
+                        >
+                          {speakingKey === `cite-${refId}` ? (
+                            <VolumeX className="h-3 w-3" />
+                          ) : (
+                            <Volume2 className="h-3 w-3" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void handleCopyText(`cite-${refId}`, fullText)
+                          }}
+                          title="Chép đoạn trích dẫn"
+                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
+                        >
+                          {copiedKey === `cite-${refId}` ? (
+                            <Check className="h-3 w-3 text-[#087F73]" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     {/* Đoạn bằng chứng đầy đủ (không còn bị cắt cụt 200 ký tự!) */}
@@ -484,7 +568,9 @@ export function CitationPanel({
                         ) : null}
                       </div>
                       <div className="markdown-body text-[13.5px] leading-relaxed text-[#172B29]">
-                        <Markdown remarkPlugins={[remarkGfm]}>{chunk.content}</Markdown>
+                        {isTarget
+                          ? renderHighlightedChunk(chunk.content, contextEvidence.snippet)
+                          : <Markdown remarkPlugins={[remarkGfm]}>{chunk.content}</Markdown>}
                       </div>
                     </div>
                   )

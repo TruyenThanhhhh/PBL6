@@ -41,6 +41,58 @@ def _safe_pow(base: Any, exp: Any, mod: Any = None) -> Any:
     return res
 
 
+def _safe_solve_quadratic(a: float, b: float, c: float) -> List[float]:
+    if abs(float(a)) < 1e-12:
+        return [round(-float(c) / float(b), 6)] if abs(float(b)) >= 1e-12 else []
+    delta = float(b) ** 2 - 4.0 * float(a) * float(c)
+    if delta < -1e-12:
+        return []
+    if abs(delta) <= 1e-12:
+        return [round(-float(b) / (2.0 * float(a)), 6)]
+    sq = math.sqrt(delta)
+    r1 = round((-float(b) - sq) / (2.0 * float(a)), 6)
+    r2 = round((-float(b) + sq) / (2.0 * float(a)), 6)
+    return sorted([r1, r2])
+
+
+def _safe_solve_linear_2x2(a1: float, b1: float, c1: float, a2: float, b2: float, c2: float) -> List[float]:
+    det = float(a1) * float(b2) - float(a2) * float(b1)
+    if abs(det) < 1e-12:
+        return []
+    x = round((float(c1) * float(b2) - float(c2) * float(b1)) / det, 6)
+    y = round((float(a1) * float(c2) - float(a2) * float(c1)) / det, 6)
+    return [x, y]
+
+
+def _safe_solve_eq(expr_str: str, var_name: str = "x") -> List[float]:
+    """Giải phương trình đại số 1 ẩn an toàn bằng SymPy (chỉ cho phép ký tự toán học chuẩn)."""
+    raw = str(expr_str or "").strip()
+    vname = str(var_name or "x").strip()
+    if not raw or len(raw) > 120 or not re.fullmatch(r"[A-Za-z]", vname):
+        raise ValueError("Biểu thức phương trình không hợp lệ.")
+    norm = _normalize_math_expression(raw).replace("^", "**")
+    if not re.fullmatch(r"[0-9A-Za-z\s\+\-\*\/\(\)\.=]+", norm):
+        raise ValueError("Phương trình chứa ký tự không được phép.")
+    norm = re.sub(rf"(\d)\s*({re.escape(vname)})\b", r"\1*\2", norm)
+    import sympy as sp
+    sym = sp.Symbol(vname, real=True)
+    if "=" in norm:
+        lhs_s, rhs_s = norm.split("=", 1)
+        eq = sp.sympify(lhs_s, locals={vname: sym}) - sp.sympify(rhs_s, locals={vname: sym})
+    else:
+        eq = sp.sympify(norm, locals={vname: sym})
+    sols = sp.solve(eq, sym)
+    out: List[float] = []
+    for s in sols[:8]:
+        try:
+            fval = float(s.evalf())
+            if not math.isnan(fval) and not math.isinf(fval):
+                out.append(int(round(fval)) if abs(fval - round(fval)) < 1e-9 else round(fval, 6))
+        except Exception:
+            continue
+    return sorted(set(out))
+
+
 _SAFE_FUNCTIONS: Dict[str, Any] = {
     "abs": abs,
     "round": round,
@@ -49,6 +101,9 @@ _SAFE_FUNCTIONS: Dict[str, Any] = {
     "sum": sum,
     "len": len,
     "pow": _safe_pow,
+    "solve_quadratic": _safe_solve_quadratic,
+    "solve_linear_2x2": _safe_solve_linear_2x2,
+    "solve_eq": _safe_solve_eq,
     "int": int,
     "float": float,
     "bool": bool,

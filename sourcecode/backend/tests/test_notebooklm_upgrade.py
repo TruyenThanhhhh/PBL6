@@ -462,6 +462,19 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
         self.assertFalse(_is_safe_public_http_url("http://169.254.169.254/latest/meta-data"))
         self.assertTrue(_is_safe_public_http_url("https://vi.wikipedia.org/wiki/Python"))
 
+        # 6. SymPy general equation solver & Sandbox variable cleanup
+        sb_eq = evaluate_python_sandbox({}, ['nghiem = solve_eq("x^2 - 5x + 6 = 0", "x")'])
+        self.assertTrue(sb_eq["ok"], sb_eq.get("error"))
+        self.assertEqual(sb_eq["final_result"], [2, 3])
+
+        sb_lin = evaluate_python_sandbox({}, ["xy_sol = solve_linear_2x2(1, 1, 5, 1, -1, 1)"])
+        self.assertTrue(sb_lin["ok"], sb_lin.get("error"))
+        self.assertEqual(sb_lin["final_result"], [3.0, 2.0])
+
+        cleaned_vars = _sanitize_rag_output("so_tu_bai_1: 136, so_tu_bai_2: 116, chenh_lech_tu: 20", 1)
+        self.assertIn("Số từ Bài 1: 136", cleaned_vars)
+        self.assertIn("Chênh lệch số từ: 20", cleaned_vars)
+
 
 if __name__ == "__main__":
     unittest.main()

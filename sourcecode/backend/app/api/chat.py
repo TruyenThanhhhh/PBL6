@@ -218,11 +218,11 @@ async def free_system_memory(
 # 1. CHAT STREAMING & SYNCHRONOUS QUERY
 # =============================================================================
 
-def _load_recent_history_from_db(conn, session_id: str, limit: int = 8) -> List[Dict[str, str]]:
-    """Tải các lượt hội thoại gần nhất từ SQLite khi client không truyền tường minh `history`."""
+def _load_recent_history_from_db(conn, session_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Tải các lượt hội thoại gần nhất kèm chunk_refs trích dẫn từ SQLite để khóa ngữ cảnh câu hỏi nối tiếp."""
     rows = conn.execute(
         """
-        SELECT sender, content
+        SELECT sender, content, citations_json
         FROM chat_messages
         WHERE session_id = ? AND content IS NOT NULL AND TRIM(content) != ''
         ORDER BY created_at DESC, rowid DESC
@@ -230,11 +230,94 @@ def _load_recent_history_from_db(conn, session_id: str, limit: int = 8) -> List[
         """,
         (session_id, limit),
     ).fetchall()
-    turns: List[Dict[str, str]] = []
+    turns: List[Dict[str, Any]] = []
     for r in reversed(rows):
         role = "assistant" if r["sender"] == "assistant" else "user"
-        turns.append({"role": role, "content": str(r["content"])})
+        turn_obj: Dict[str, Any] = {"role": role, "content": str(r["content"])}
+        if role == "assistant" and r["citations_json"]:
+            try:
+                raw_cits = json.loads(r["citations_json"]) or []
+                refs = [
+                    {"document_id": c["document_id"], "chunk_index": c["chunk_index"]}
+                    for c in raw_cits
+                    if isinstance(c, dict) and c.get("document_id") and c.get("chunk_index") is not None
+                ][:4]
+                if refs:
+                    turn_obj["chunk_refs"] = refs
+            except Exception:
+                pass
+        turns.append(turn_obj)
     return turns
+
+
+class CloudConfigUpdateRequest(BaseModel):
+    provider: Literal["gemini", "openai"] = "gemini"
+    model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=120)
+    api_key: Optional[str] = Field(default=None, max_length=300)
+    enabled: bool = True
+
+
+def _get_cloud_config_raw() -> Dict[str, Any]:
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'cloud_byok_config'").fetchone()
+        if row and row["value"]:
+            return json.loads(row["value"])
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return {"provider": "gemini", "model": "gemini-2.5-flash", "api_key": "", "enabled": False}
+
+
+@router.get("/system/cloud-config")
+async def get_cloud_byok_config(user: Dict[str, Any] = Depends(get_current_user)):
+    cfg = _get_cloud_config_raw()
+    raw_key = str(cfg.get("api_key") or "")
+    masked = f"{raw_key[:4]}...{raw_key[-4:]}" if len(raw_key) >= 10 else ("***" if raw_key else "")
+    return {
+        "provider": cfg.get("provider", "gemini"),
+        "model": cfg.get("model", "gemini-2.5-flash"),
+        "enabled": bool(cfg.get("enabled") and raw_key),
+        "has_api_key": bool(raw_key),
+        "masked_api_key": masked,
+    }
+
+
+@router.put("/system/cloud-config")
+async def update_cloud_byok_config(
+    req: CloudConfigUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    current = _get_cloud_config_raw()
+    final_key = current.get("api_key", "") if req.api_key is None else req.api_key.strip()
+    new_cfg = {
+        "provider": req.provider,
+        "model": req.model.strip(),
+        "api_key": final_key,
+        "enabled": bool(req.enabled and final_key),
+    }
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('cloud_byok_config', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (json.dumps(new_cfg, ensure_ascii=False),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    masked = f"{final_key[:4]}...{final_key[-4:]}" if len(final_key) >= 10 else ("***" if final_key else "")
+    return {
+        "provider": new_cfg["provider"],
+        "model": new_cfg["model"],
+        "enabled": new_cfg["enabled"],
+        "has_api_key": bool(final_key),
+        "masked_api_key": masked,
+    }
 
 
 @router.post("/chat/stream")

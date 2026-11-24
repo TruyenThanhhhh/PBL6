@@ -115,9 +115,78 @@ def _build_retrieval_query(query: str, history: Optional[list[Dict[str, str]]] =
 
     q_lower = clean_q.lower()
     if has_anaphora or _FOLLOW_UP_CUE_RE.search(q_lower):
-        return f"{prior_user_queries[-1]} {clean_q}".strip()
+        # Bổ sung thêm tiêu đề/câu mở đầu của lượt trả lời trước khi có đại từ hồi chỉ ('chương này', 'bài này', 'ở trên')
+        # để định vị chính xác mục đang bàn (vd 'nội dung chương 9' + 'hai đường thẳng cắt nhau thỏa mãn điều kiện K')
+        extra_topic = ""
+        if has_anaphora:
+            for turn in reversed(history_turns):
+                if turn.get("role") == "assistant" and turn.get("content"):
+                    first_sent = re.split(r"[\n.!?]", str(turn["content"]).strip())[0][:120].strip()
+                    if first_sent and not _ACTION_OR_QUIZ_QUERY_RE.search(first_sent):
+                        extra_topic = first_sent
+                    break
+        parts = [prior_user_queries[-1], extra_topic, clean_q]
+        return " ".join(p for p in parts if p).strip()
 
     return clean_q
+
+
+def _fetch_pinned_history_chunks(
+    workspace_id: str,
+    history: Optional[list[Dict[str, Any]]],
+    max_chunks: int = 4,
+) -> List[Dict[str, Any]]:
+    """Lấy trực tiếp các chunk trích dẫn từ lượt trả lời gần nhất khi người dùng hỏi nối tiếp ('chương này', 'bước 3 của bài này')."""
+    if not history:
+        return []
+    refs: List[tuple[str, int]] = []
+    for turn in reversed(history[-4:]):
+        if turn.get("role") == "assistant" and turn.get("chunk_refs"):
+            for item in (turn.get("chunk_refs") or [])[:3]:
+                if isinstance(item, dict) and item.get("document_id") and item.get("chunk_index") is not None:
+                    doc_id = str(item["document_id"])
+                    c_idx = int(item["chunk_index"])
+                    refs.append((doc_id, c_idx))
+                    refs.append((doc_id, c_idx + 1))
+            if refs:
+                break
+    if not refs:
+        return []
+
+    from app.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        grouped: Dict[str, List[int]] = {}
+        for d_id, c_idx in refs:
+            grouped.setdefault(d_id, []).append(c_idx)
+        where_parts = []
+        params: List[Any] = [workspace_id]
+        for d_id, idxs in grouped.items():
+            uniq = sorted(set(idxs))
+            ph = ",".join("?" for _ in uniq)
+            where_parts.append(f"(c.document_id = ? AND c.chunk_index IN ({ph}))")
+            params.append(d_id)
+            params.extend(uniq)
+        rows = conn.execute(
+            f"""
+            SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+                   c.page_number, c.chunk_index, d.file_name AS document_name,
+                   COALESCE(d.version_number, 1) AS version_number, d.effective_date
+            FROM document_chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.workspace_id = ? AND ({" OR ".join(where_parts)})
+            ORDER BY c.document_id, c.chunk_index ASC
+            LIMIT ?
+            """,
+            (*params, max_chunks),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        for c in out:
+            if "page_label" not in c and c.get("page_number") is not None:
+                c["page_label"] = f"Trang {c['page_number']}"
+        return out
+    finally:
+        conn.close()
 
 
 def _build_workspace_inventory_chunks(
@@ -212,6 +281,12 @@ async def _retrieve_local_sources(
         inv_chunks = await run_in_threadpool(_build_workspace_inventory_chunks, workspace_id, document_ids)
         if inv_chunks:
             return inv_chunks
+
+    # 0b. Nếu là câu hỏi hồi chỉ trực tiếp ('chương này', 'bài này', 'bước 3 ở trên') và lịch sử có chunk_refs -> ghim thẳng nguồn lượt trước
+    if history and _ANAPHORIC_REF_RE.search(query or ""):
+        pinned = await run_in_threadpool(_fetch_pinned_history_chunks, workspace_id, history, 4)
+        if pinned:
+            return pinned
 
     # 1. Kiểm tra xem có đang hỏi về một Bài/Chương/Lab cụ thể không
     sec_intent = detect_section_intent(query, history)
