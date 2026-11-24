@@ -121,7 +121,8 @@ _EXPORT_PREVIOUS_ASCII_RE = re.compile(
 
 _DEEP_REASONING_RE = re.compile(
     r"(?:"
-    r"\b(?:áp\s*dụng\s*công\s*thức|giải\s*bài(?:\s*toán|\s*tập)?|tính\s*(?:giá\s*trị|tổng|tiền|lãi|lương|thuế|diện\s*tích|thể\s*tích|vận\s*tốc|xác\s*suất|trung\s*bình|tỷ\s*lệ|kết\s*quả|chênh\s*lệch|tăng\s*trưởng|biên\s*lợi\s*nhuận)|thay\s*số\s*vào)\b"
+    r"\b(?:áp\s*dụng\s*công\s*thức|giải\s*bài(?:\s*toán|\s*tập)?|tính\s*(?:giá\s*trị|tổng|tiền|lãi|lương|thuế|diện\s*tích|thể\s*tích|đường\s*sinh|chu\s*vi|bán\s*kính|chiều\s*cao|đường\s*cao|khoảng\s*cách|vận\s*tốc|xác\s*suất|trung\s*bình|tỷ\s*lệ|kết\s*quả|chênh\s*lệch|tăng\s*trưởng|biên\s*lợi\s*nhuận)|thay\s*số\s*vào)\b"
+    r"|(?:(?:tính|giải|tìm)\b.{0,80}(?:\d+(?:[.,]\d+)?\s*(?:cm|mm|dm|m|km|kg|g|%|đồng|triệu|tỷ)).{0,60}(?:\d+(?:[.,]\d+)?\s*(?:cm|mm|dm|m|km|kg|g|%|đồng|triệu|tỷ)))"
     r"|\b(?:nếu\s+.{5,60}\s+thì\s+(?:xử\s*lý|tính|áp\s*dụng|quyết\s*định|vi\s*phạm|được\s*không|có\s*bị|thế\s*nào|ra\s*sao))\b"
     r"|\b(?:giả\s*sử|tình\s*huống\s+(?:sau|này|trên)|có\s*vi\s*phạm\s+(?:quy\s*định|điều\s*khoản)|tự\s*suy\s*luận|suy\s*luận\s*sâu|phân\s*tích\s*sâu|đối\s*chiếu\s*(?:quy\s*định|điều\s*khoản)|có\s*rủi\s*ro|đánh\s*giá\s*rủi\s*ro|phân\s*tích\s*(?:nguyên\s*nhân|tác\s*động|hệ\s*quả|ưu\s*nhược\s*điểm|rủi\s*ro)|điểm\s*bất\s*lợi|có\s*hợp\s*lệ|đủ\s*điều\s*kiện)\b"
     r"|\b(?:nguyên\s*nhân\s*gốc\s*rễ|tối\s*ưu\s*(?:kiến\s*trúc|hiệu\s*năng|bộ\s*nhớ|truy\s*vấn)|đánh\s*đổi\s*(?:kỹ\s*thuật|hiệu\s*năng)|kiểm\s*tra\s*tính\s*hợp\s*lệ|có\s*đúng\s*quy\s*định|phát\s*hiện\s*(?:mâu\s*thuẫn|sai\s*sót|lỗ\s*hổng|thiếu\s*sót|nhầm\s*lẫn)|soát\s*lỗi|phản\s*biện|điểm\s*hòa\s*vốn|nên\s*chọn\s*(?:phương\s*án|kiến\s*trúc|công\s*nghệ)\s*nào|chiến\s*lược\s*tối\s*ưu)\b"
@@ -132,7 +133,8 @@ _DEEP_REASONING_RE = re.compile(
 )
 _DEEP_REASONING_ASCII_RE = re.compile(
     r"(?:"
-    r"\b(?:ap\s*dung\s*cong\s*thuc|giai\s*bai(?:\s*toan|\s*tap)?|tinh\s*(?:gia\s*tri|tong|tien|lai|luong|thue|dien\s*tich|the\s*tich|van\s*toc|xac\s*suat|trung\s*binh|ty\s*le|ket\s*qua|chenh\s*lech|tang\s*truong|bien\s*loi\s*nhuan)|thay\s*so\s*vao)\b"
+    r"\b(?:ap\s*dung\s*cong\s*thuc|giai\s*bai(?:\s*toan|\s*tap)?|tinh\s*(?:gia\s*tri|tong|tien|lai|luong|thue|dien\s*tich|the\s*tich|duong\s*sinh|chu\s*vi|ban\s*kinh|chieu\s*cao|duong\s*cao|khoang\s*cach|van\s*toc|xac\s*suat|trung\s*binh|ty\s*le|ket\s*qua|chenh\s*lech|tang\s*truong|bien\s*loi\s*nhuan)|thay\s*so\s*vao)\b"
+    r"|(?:(?:tinh|giai|tim)\b.{0,80}(?:\d+(?:[.,]\d+)?\s*(?:cm|mm|dm|m|km|kg|g|%|dong|trieu|ty)).{0,60}(?:\d+(?:[.,]\d+)?\s*(?:cm|mm|dm|m|km|kg|g|%|dong|trieu|ty)))"
     r"|\b(?:neu\s+.{5,60}\s+thi\s+(?:xu\s*ly|tinh|ap\s*dung|quyet\s*dinh|vi\s*pham|duoc\s*khong|co\s*bi|the\s*nao|ra\s*sao))\b"
     r"|\b(?:gia\s*su|tinh\s*huong\s+(?:sau|nay|tren)|co\s*vi\s*pham\s+(?:quy\s*dinh|dieu\s*khoan)|tu\s*suy\s*luan|suy\s*luan\s*sau|phan\s*tich\s*sau|doi\s*chieu\s*(?:quy\s*dinh|dieu\s*khoan)|co\s*rui\s*ro|danh\s*gia\s*rui\s*ro|phan\s*tich\s*(?:nguyen\s*nhan|tac\s*dong|he\s*qua|uu\s*nhuoc\s*diem|rui\s*ro)|diem\s*bat\s*loi|co\s*hop\s*le|du\s*dieu\s*kien)\b"
     r"|\b(?:nguyen\s*nhan\s*goc\s*re|toi\s*uu\s*(?:kien\s*truc|hieu\s*nang|bo\s*nho|truy\s*van)|danh\s*doi\s*(?:ky\s*thuat|hieu\s*nang)|kiem\s*tra\s*tinh\s*hop\s*le|co\s*dung\s*quy\s*dinh|phat\s*hien\s*(?:mau\s*thuan|sai\s*sot|lo\s*hong|thieu\s*sot|nham\s*lan)|soat\s*loi|phan\s*bien|diem\s*hoa\s*von|nen\s*chon\s*(?:phuong\s*an|kien\s*truc|cong\s*nghe)\s*nao|chien\s*luoc\s*toi\s*uu)\b"

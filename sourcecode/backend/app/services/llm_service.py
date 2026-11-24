@@ -193,12 +193,27 @@ def _clean_history_turn_content(role: str, raw_content: str) -> str:
     return content.strip()
 
 
+_STANDALONE_FOLLOWUP_RE = re.compile(
+    r"(?:\b(?:nội\s*dung\s*(?:vừa\s*nêu|ở\s*trên)|ý\s*trên|câu\s*(?:trên|vừa\s*rồi)|bước\s*\d+\s*vừa\s*rồi|"
+    r"vừa\s*rồi|vừa\s*nêu|vừa\s*nói|ở\s*trên|tiếp\s*theo|chi\s*tiết\s*hơn|giải\s*thích\s*thêm|ví\s*dụ\s*thêm|còn\s+.{1,25}\s+thì\s+sao)\b"
+    r"|^(?:vậy|thế|còn|ngoài\s*ra|cụ\s*thể\s*là)\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def _build_bounded_history_messages(
     history: Optional[List[Dict[str, str]]],
     max_turns: int = 4,
     max_tokens: Optional[int] = None,
+    current_query: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """Giữ lịch sử hội thoại cô đọng, sạch khuôn mẫu nhiễu trong ngân sách token."""
+    """Giữ lịch sử hội thoại cô đọng, sạch khuôn mẫu nhiễu và tránh rò chủ đề cũ khi người dùng hỏi bài toán/chủ đề mới độc lập."""
+    if current_query:
+        q_clean = current_query.strip()
+        words = q_clean.split()
+        # Nếu câu hỏi mới đã dài & độc lập (không có đại từ/từ nối tiếp với lượt trước), không bơm chủ đề cũ vào LLM nhỏ
+        if len(words) >= 8 and not _STANDALONE_FOLLOWUP_RE.search(q_clean):
+            return []
     if max_tokens is None:
         _, max_tokens, _, _ = _resolve_llm_runtime_budget()
     selected: List[Dict[str, str]] = []
@@ -991,6 +1006,32 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         flags=re.IGNORECASE | re.UNICODE,
     )
     text = re.sub(
+        r"\*{1,2}\s*(\[\d{1,3}\])\s*\*{0,2}",
+        r"\1",
+        text,
+    )
+    text = re.sub(
+        r"(?m)^\s*\*{1,2}\s*(?=\[\d{1,3}\])",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\n*\s*(?:Trích\s+dẫn\s+được\s+thực\s+hiện\s+dựa\s+trên\s+thông\s+tin|Hãy\s+đối\s+chiếu\s+tài\s+liệu)[^.\n]*\.?\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r"\b(?:từ|theo|trong|ở)\s+[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*[:.]?\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\b[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s*:\s*",
+        "",
+        text,
+    )
+    text = re.sub(
         r"\b(?:Trong\s+)?[Tt]ài\s+liệu\s*\[?(\d{1,2})\]?\s+(?:mô\s+tả|đề\s+cập|nêu|cho\s+biết)\s*(?:rằng|cụ\s+thể|chi\s+tiết)?\s*(?:về\s+)?",
         r"",
         text,
@@ -1445,7 +1486,7 @@ async def generate_rag_answer(
     ollama_status = await check_ollama_status()
     model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64, task_tier=task_tier)
     _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
-    history_messages = _build_bounded_history_messages(history)
+    history_messages = _build_bounded_history_messages(history, current_query=query)
 
     # 1. Chitchat
     if is_conversational_query(query) and not image_base64:
@@ -1678,7 +1719,7 @@ async def stream_rag_answer(
     ollama_status = await check_ollama_status()
     model_name, model_available = _resolve_model_for_chat(model_name, ollama_status, image_base64, task_tier=task_tier)
     _, _, num_ctx, max_predict = _resolve_llm_runtime_budget()
-    history_messages = _build_bounded_history_messages(history)
+    history_messages = _build_bounded_history_messages(history, current_query=query)
 
     # 1. Chitchat stream
     if is_conversational_query(query) and not image_base64:

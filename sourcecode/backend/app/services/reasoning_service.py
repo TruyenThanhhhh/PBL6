@@ -226,10 +226,10 @@ def _fast_local_reasoning_planner(
 
             if has_frustum:
                 rad_m = re.search(
-                    r"bán\s+kính[^0-9]{0,35}(\d+(?:[.,]\d+)?)\s*(?:cm|m|dm|mm)?\s*(?:và|,)\s*(\d+(?:[.,]\d+)?)",
+                    r"bán\s+kính(?:\s*(?:2|hai)\s+đáy)?[^0-9\n]{0,35}?(\d+(?:[.,]\d+)?)\s*(?:cm|m|dm|mm)?\s*(?:và|,|;)\s*(\d+(?:[.,]\d+)?)",
                     q_low,
                 )
-                h_m = re.search(r"chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                h_m = re.search(r"chiều\s+cao\s*(?:h\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
                 if rad_m and h_m:
                     r1 = float(rad_m.group(1).replace(",", "."))
                     r2 = float(rad_m.group(2).replace(",", "."))
@@ -769,6 +769,7 @@ async def stream_autonomous_reasoning(
     s1, s2, s3, s4 = domain_templates.get(domain, domain_templates["general"])
     synth_system = (
         "Bạn là Chuyên gia Phân tích & Suy luận Tri thức AI đa lĩnh vực. "
+        "Chỉ giải đúng bài toán/chủ đề hiện tại (bỏ qua hoàn toàn nội dung các chương/hình khác không liên quan nằm chung trang tài liệu hay hội thoại trước). "
         "Hãy trình bày câu trả lời ĐÚNG MỘT LẦN theo đúng 4 mục mạch lạc sau (KHÔNG lặp lại mục Kết luận 2 lần, KHÔNG chép câu hỏi hay dòng nhãn hệ thống):\n"
         f"{s1}{s2}{s3}{s4}{verify_directive}"
     )
@@ -790,7 +791,7 @@ async def stream_autonomous_reasoning(
     }
 
     if ollama_status.get("running") and model_available:
-        history_messages = _build_bounded_history_messages(history)
+        history_messages = _build_bounded_history_messages(history, current_query=query)
         local_collector: Dict[str, Any] = {}
         est_tokens = _estimate_tokens(synth_system) + _estimate_tokens(synth_user) + sum(
             _estimate_tokens(m.get("content", "")) for m in history_messages

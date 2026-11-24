@@ -16,13 +16,16 @@ import app.database as db_mod  # noqa: E402
 import app.services.document_service as doc_mod  # noqa: E402
 import app.services.retrieval_service as ret_mod  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.intent_service import classify_chat_intent  # noqa: E402
 from app.services.llm_service import (  # noqa: E402
+    _build_bounded_history_messages,
     _prepare_rag_prompts_and_citations,
     _sanitize_rag_output,
     _strip_raw_latex_math,
     decode_symbol_pua_text,
     select_optimal_chat_model,
 )
+from app.services.reasoning_service import _fast_local_reasoning_planner  # noqa: E402
 
 
 class NotebookLMUpgradeTestCase(unittest.TestCase):
@@ -103,6 +106,31 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
         cleaned_dup = _sanitize_rag_output(dup_heading_raw, citations_count=1)
         self.assertEqual(cleaned_dup.count("### Điều kiện góc phần tư I"), 1)
         self.assertNotIn("đã được giải đáp qua các tài liệu", cleaned_dup)
+
+        # Kiểm tra câu hỏi bài toán hình nón cụt ('bán kính 2 đáy lần lượt là 15cm và 10cm') đi đúng Python Sandbox & không rò history Chương 9
+        frustum_q = (
+            "Cho hình nón cụt có bán kính 2 đáy lần lượt là 15cm và 10cm, chiều cao 24cm. "
+            "Tính đường sinh, diện tích xung quanh, diện tích toàn phần và thể tích của hình nón cụt đó."
+        )
+        it = classify_chat_intent(frustum_q, reasoning_mode="auto")
+        self.assertEqual(it.kind, "deep_reasoning")
+        plan = _fast_local_reasoning_planner(frustum_q, [])
+        self.assertTrue(plan["needs_calculation"])
+        self.assertEqual(plan["variables"].get("R_nc"), 15.0)
+        self.assertEqual(plan["variables"].get("r_nc"), 10.0)
+        self.assertEqual(plan["variables"].get("h_nc"), 24.0)
+
+        ch9_history = [
+            {"role": "user", "content": "Nội dung chương 9"},
+            {"role": "assistant", "content": "Chương 9: Hai đường thẳng cắt nhau thỏa mãn điều kiện K"},
+        ]
+        self.assertEqual(_build_bounded_history_messages(ch9_history, current_query=frustum_q), [])
+        self.assertTrue(_build_bounded_history_messages(ch9_history, current_query="Giải thích thêm bước 2 vừa rồi"))
+
+        broken_bold = "**[1] 3. Hình nón – Hình nón cụt:\ntừ Tài liệu 3: Sxq = π(R+r)l"
+        cleaned_broken = _sanitize_rag_output(broken_bold, citations_count=2)
+        self.assertNotIn("**[1]", cleaned_broken)
+        self.assertNotIn("Tài liệu 3", cleaned_broken)
 
     def test_guide_decoded_chunks_rebuild_and_chat_latency_persistence(self):
         with patch.dict(os.environ, {"DISABLE_MODEL_WARMUP": "1"}), \
