@@ -456,7 +456,7 @@ def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
     total_pages = len(doc)
 
     for i, page in enumerate(doc):
-        extracted = (page.get_text("text") or "").strip()
+        extracted = (page.get_text("text", sort=True) or page.get_text("text") or "").strip()
         if extracted:
             from app.services.llm_service import decode_symbol_pua_text
             page_texts[i + 1] = decode_symbol_pua_text(extracted)

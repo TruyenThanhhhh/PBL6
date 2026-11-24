@@ -1167,6 +1167,109 @@ def _run_hybrid_rrf_candidates(
     return sorted(merged.values(), key=lambda item: item["rrf_score"], reverse=True)
 
 
+def _collect_named_section_chunks(
+    cursor: Any,
+    start_chunk: Dict[str, Any],
+    query: str,
+    max_chunks: int = 5,
+    max_chars: int = 5200,
+) -> List[Dict[str, Any]]:
+    """
+    Khi người dùng hỏi đích danh tên một Mục/Chương/Phần (vd: '9. HAI ĐƯỜNG THẲNG...'),
+    lấy trọn vẹn phần thân của mục đó qua các trang/chunk kế tiếp và tự động cắt dừng
+    ngay trước tiêu đề mục đồng cấp hoặc cấp lớn hơn kế tiếp (vd dừng trước '10. ...').
+    """
+    doc_id = start_chunk.get("document_id")
+    start_idx = start_chunk.get("chunk_index")
+    if not doc_id or start_idx is None:
+        return [start_chunk]
+
+    cursor.execute(
+        """
+        SELECT c.id AS chunk_id, c.document_id, c.workspace_id, c.content,
+               c.page_number, c.chunk_index, d.file_name AS document_name,
+               COALESCE(d.version_number, 1) AS version_number,
+               d.effective_date
+        FROM document_chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.document_id = ? AND c.chunk_index >= ? AND c.chunk_index <= ?
+        ORDER BY c.chunk_index ASC
+        """,
+        (doc_id, int(start_idx), int(start_idx) + max_chunks - 1),
+    )
+    seq_rows = [dict(r) for r in cursor.fetchall()]
+    if not seq_rows:
+        return [start_chunk]
+
+    phrases = _extract_content_phrases(query)
+    num_m = re.search(r"\b(\d{1,2})\b", query or "")
+    q_num = num_m.group(1) if num_m else None
+
+    # Xác định dòng tiêu đề mở đầu mục trong chunk đầu tiên để cắt bỏ phần đuôi mục trước nếu nằm chung chunk
+    first_lines = (seq_rows[0].get("content") or "").splitlines()
+    start_line_idx = 0
+    started_num: Optional[int] = int(q_num) if q_num else None
+    heading_pat = re.compile(
+        r"^\s*(?:#{1,4}\s*)?(?:(\d{1,2})\s*\.\s+|(?:VẤN\s+ĐỀ|CHƯƠNG|PHẦN|BÀI)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b)",
+        re.IGNORECASE | re.UNICODE,
+    )
+    for i, ln in enumerate(first_lines):
+        low_ln = ln.lower()
+        hm = heading_pat.match(ln)
+        if hm and ((q_num and hm.group(1) == q_num) or sum(1 for ph in phrases if ph in low_ln) >= (1 if len(phrases) <= 1 else 2)):
+            start_line_idx = i
+            if hm.group(1):
+                started_num = int(hm.group(1))
+            break
+
+    def _is_next_major_heading(ln: str) -> bool:
+        s = ln.strip()
+        if not s:
+            return False
+        if re.match(r"^(?:VẤN\s+ĐỀ|CHƯƠNG|PHẦN)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b", s, re.IGNORECASE | re.UNICODE):
+            return True
+        m_num = re.match(r"^(\d{1,2})\s*\.\s+[A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠƯẠ-Ỹ]", s, re.UNICODE)
+        if m_num:
+            cand_num = int(m_num.group(1))
+            if started_num is not None:
+                return cand_num != started_num and cand_num >= started_num + 1
+            return True
+        return False
+
+    collected: List[Dict[str, Any]] = []
+    total_chars = 0
+    for seq_pos, row in enumerate(seq_rows):
+        lines = (row.get("content") or "").splitlines()
+        if seq_pos == 0 and start_line_idx > 0:
+            lines = lines[start_line_idx:]
+
+        kept_lines: List[str] = []
+        hit_boundary = False
+        for ln_pos, ln in enumerate(lines):
+            # Ở chunk đầu tiên, bỏ qua chính dòng tiêu đề mở đầu khi kiểm tra ranh giới dừng
+            if not (seq_pos == 0 and ln_pos == 0) and _is_next_major_heading(ln):
+                hit_boundary = True
+                break
+            kept_lines.append(ln)
+
+        piece = "\n".join(kept_lines).strip()
+        if piece:
+            if collected and total_chars + len(piece) > max_chars:
+                break
+            row_copy = dict(row)
+            row_copy["content"] = piece
+            row_copy["_exact_match"] = True
+            if row_copy.get("page_number") is not None:
+                row_copy["page_label"] = f"Trang {row_copy['page_number']}"
+            collected.append(row_copy)
+            total_chars += len(piece)
+
+        if hit_boundary or total_chars >= max_chars:
+            break
+
+    return collected or [start_chunk]
+
+
 def search_relevant_chunks(
     workspace_id: str,
     query: str,
@@ -1343,14 +1446,20 @@ def search_relevant_chunks(
             )
             heading_matched = [item for item in ranked if item.get("_heading_match")]
             if is_named_section_ask and heading_matched:
-                reranked = _smart_rerank(
+                best_heading_chunk = _smart_rerank(
                     query,
                     heading_matched,
-                    min(2, top_k),
+                    1,
                     profile,
                     single_doc_scope=single_doc_scope,
+                )[0]
+                stitched = _collect_named_section_chunks(
+                    cursor,
+                    best_heading_chunk,
+                    query,
+                    max_chunks=min(5, top_k + 2),
+                    max_chars=5200,
                 )
-                stitched = expand_and_stitch_chunks(reranked, max_total_chunks=min(2, top_k))
             else:
                 reranked = _smart_rerank(
                     query,

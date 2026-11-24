@@ -680,6 +680,7 @@ def _build_dynamic_system_prompt(
         "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
         "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa/định lý nhiều lần. Luôn tổng hợp các đoạn nguồn liên quan thành MỘT câu trả lời thống nhất duy nhất và chỉ gắn `[1]`, `[2]` ở cuối ý.\n"
         "- CHỈ TRẢ LỜI ĐÚNG CHỦ ĐỀ ĐƯỢC HỎI: Nếu đoạn trích có lẫn sang mục khác không thuộc câu hỏi (ví dụ hỏi 'Hàm số đồng biến – nghịch biến' nhưng ngữ cảnh có thêm 'Hệ số góc' hoặc 'Vẽ đồ thị parabol'), BỎ QUA hoàn toàn các mục ngoài chủ đề đó, và KHÔNG lặp lại công thức ở cuối câu trả lời.\n"
+        "- KHI TRÌNH BÀY NỘI DUNG MỘT CHƯƠNG / MỤC TRONG TÀI LIỆU: Chỉ trình bày đầy đủ các bước, trường hợp (a, b, c...), công thức và ví dụ CÓ THẬT trong tài liệu; TUYỆT ĐỐI KHÔNG tự bịa thêm ví dụ minh họa hoặc tự giải hệ phương trình bên ngoài khi người dùng không yêu cầu cho ví dụ mới.\n"
         "- KHÔNG chép chuỗi OCR lỗi kiểu `( ) 2 y ax a = ≠` hay `x∈` khi chưa rõ công thức; hãy diễn đạt thành công thức chuẩn (`y = ax² (a ≠ 0)`).\n"
         "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
         "- TUYỆT ĐỐI KHÔNG bịa kiến thức ngoài cấp học/tài liệu (ví dụ: không tự thêm 'đạo hàm' vào tài liệu Toán lớp 9 nếu tài liệu không hề nhắc đến) và KHÔNG mở đầu câu kiểu máy móc ('Tài liệu [1] mô tả...', 'Để đáp lại yêu cầu của bạn...').\n"
@@ -736,7 +737,7 @@ _SYMBOL_PUA_MAP = str.maketrans({
     "\uf044": "Δ",
     "\uf05b": "[",
     "\uf05d": "]",
-    "\uf05e": "^",
+    "\uf05e": "⊥",
     "\uf061": "α",
     "\uf062": "β",
     "\uf067": "γ",
@@ -761,6 +762,7 @@ _SYMBOL_PUA_MAP = str.maketrans({
     "\uf0b4": "×",
     "\uf0b8": "÷",
     "\uf0b9": "≠",
+    "\uf0ba": "≡",
     "\uf0bb": "≈",
     "\uf0ce": "∈",
     "\uf0cf": "∉",

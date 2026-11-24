@@ -538,6 +538,49 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertIn("-∞", cleaned_sub)
         self.assertEqual(cleaned_sub.count("y₂ - y₁"), 1)
 
+        # 9. Kiểm tra đọc nối tiếp trọn vẹn mục 9 (a..f) qua nhiều chunk và tự dừng trước mục 10
+        conn = db_mod.get_db_connection()
+        try:
+            cur = conn.cursor()
+            sec_doc = "doc-sec9"
+            cur.execute(
+                "INSERT INTO documents (id, workspace_id, file_name, file_type, file_size, file_path, total_chunks, status, total_pages, is_latest) VALUES (?, 'default', 'toan9_sec.pdf', 'pdf', 500, 'toan9_sec.pdf', 3, 'indexed', 20, 1)",
+                (sec_doc,),
+            )
+            sec_chunks = [
+                (17, "8. VỊ TRÍ TƯƠNG ĐỐI: Cắt nhau a1 != a2.\n9. HAI ĐƯỜNG THẲNG CẮT NHAU THOẢ MÃN ĐIỀU KIỆN K\nPhương pháp chung: Bước 1 Tìm m."),
+                (18, "a) Thuộc góc phần tư I: x > 0, y > 0.\nb) Cắt nhau trên Ox: A ≡ B."),
+                (19, "f) Cắt nhau tại điểm tọa độ nguyên.\n10. LẬP PHƯƠNG TRÌNH ĐƯỜNG THẲNG:\nĐi qua hai điểm A, B."),
+            ]
+            for idx, (pg, txt) in enumerate(sec_chunks):
+                cid = f"sec9-{idx}"
+                cur.execute(
+                    "INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content, token_count) VALUES (?, ?, 'default', ?, ?, ?, 40)",
+                    (cid, sec_doc, idx, pg, txt),
+                )
+                cur.execute(
+                    "INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content) VALUES (?, ?, 'default', ?)",
+                    (cid, sec_doc, txt),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with patch("app.services.retrieval_service.embed_texts", side_effect=_zero_embed), \
+             patch("app.services.retrieval_service.rerank_documents", side_effect=lambda q, docs, limit, **kw: docs[:limit]):
+            sec9_hits = search_relevant_chunks(
+                "default",
+                "nội dung của chương 9 . HAI ĐƯỜNG THẲNG CẮT NHAU THOẢ MÃN ĐIỀU KIỆN K",
+                document_id="doc-sec9",
+                top_k=4,
+            )
+            joined_sec9 = "\n".join(c["content"] for c in sec9_hits)
+            self.assertIn("9. HAI ĐƯỜNG THẲNG CẮT NHAU", joined_sec9)
+            self.assertIn("a) Thuộc góc phần tư I", joined_sec9)
+            self.assertIn("f) Cắt nhau tại điểm tọa độ nguyên", joined_sec9)
+            self.assertNotIn("8. VỊ TRÍ TƯƠNG ĐỐI", joined_sec9)
+            self.assertNotIn("10. LẬP PHƯƠNG TRÌNH", joined_sec9)
+
 
 if __name__ == "__main__":
     unittest.main()
