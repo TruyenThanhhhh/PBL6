@@ -508,10 +508,11 @@ async def stream_autonomous_reasoning(
             f"{st['target'] or 'Bước'} = {_format_human_number(st['value'])}"
             for st in sandbox_res.get("steps", [])
         ]
+        raw_suffix = f" ({final_raw})" if str(final_raw) != final_human else ""
         sandbox_block = (
             "\n\n[DỮ KIỆN TOÁN HỌC ĐÃ TÍNH SẴN BẰNG HỆ THỐNG]:\n"
             f"- Các giá trị chính xác đã tính: {'; '.join(step_pairs)}\n"
-            f"- Đáp số cuối cùng chính xác tuyệt đối: {final_human}.\n"
+            f"- Đáp số cuối cùng chính xác tuyệt đối: {final_human}{raw_suffix}.\n"
             "(Hãy dùng đúng các con số này trong bài giải; KHÔNG tự nhân nhẩm khác số liệu này, KHÔNG viết tên biến Python hay dòng nhãn trên)."
         )
 

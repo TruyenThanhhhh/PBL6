@@ -206,8 +206,8 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertNotIn("[9]", audited)
         self.assertIn("[1]", audited)
         self.assertIn("[2]", audited)
-        self.assertIn("1123600", audited)
-        self.assertIn("1123600", extra_delta)
+        self.assertIn("1.123.600", audited)
+        self.assertIn("1.123.600", extra_delta)
         self.assertIn("loại bỏ 1 trích dẫn", detail)
 
     def test_export_previous_intent_and_db_history_fallback(self):
