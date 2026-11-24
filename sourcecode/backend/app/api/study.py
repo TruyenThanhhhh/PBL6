@@ -43,6 +43,10 @@ class StudyQuizRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     difficulty: str = Field(default="medium", pattern="^(easy|medium|hard)$")
     question_count: int = Field(default=5, ge=1, le=20)
+    quiz_style: str = Field(
+        default="auto",
+        pattern="^(auto|vocabulary|concept|application|mixed)$",
+    )
     focus_prompt: Optional[str] = None
     model: Optional[str] = None
 
@@ -155,19 +159,24 @@ async def create_study_summary_stream(
 @router.post("/quiz")
 async def create_study_quiz(
     req: StudyQuizRequest,
+    request: Request,
     user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
 ):
     """
-    Sinh bài trắc nghiệm trắc nghiệm nhiều lựa chọn (Multiple Choice) bằng AI kèm lời giải thích.
+    Sinh bài trắc nghiệm nhiều lựa chọn (Multiple Choice) bằng AI kèm lời giải thích và hướng dẫn trọng tâm.
     """
-    return await generate_ai_quiz(
-        workspace_id=req.workspace_id,
-        document_id=req.document_id,
-        document_ids=req.document_ids,
-        difficulty=req.difficulty,
-        question_count=req.question_count,
-        focus_prompt=req.focus_prompt,
-        model=req.model or DEFAULT_LLM_MODEL,
+    return await _run_until_disconnect(
+        request,
+        generate_ai_quiz(
+            workspace_id=req.workspace_id,
+            document_id=req.document_id,
+            document_ids=req.document_ids,
+            difficulty=req.difficulty,
+            question_count=req.question_count,
+            quiz_style=req.quiz_style,
+            focus_prompt=req.focus_prompt,
+            model=req.model or DEFAULT_LLM_MODEL,
+        ),
     )
 
 

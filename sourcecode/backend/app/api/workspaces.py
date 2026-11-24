@@ -116,7 +116,7 @@ async def create_workspace(req: WorkspaceCreateRequest, user: Dict[str, Any] = D
         ws = _fetch_workspace_with_counts(conn, workspace_id)
     finally:
         conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    schedule_workspace_embedding(workspace_id)
     return {"workspace": ws}
 
 
@@ -142,7 +142,7 @@ async def update_workspace(
         ws = _fetch_workspace_with_counts(conn, workspace_id)
     finally:
         conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    schedule_workspace_embedding(workspace_id)
     return {"workspace": ws}
 
 
@@ -261,7 +261,7 @@ async def create_notebook(
     conn.commit()
     row = conn.execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
     conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    schedule_workspace_embedding(workspace_id)
     return {"notebook": dict(row)}
 
 
@@ -280,7 +280,7 @@ async def delete_notebook(notebook_id: str, user: Dict[str, Any] = Depends(get_c
     conn.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
     conn.commit()
     conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, ws_id)
+    schedule_workspace_embedding(ws_id)
     return {"message": "Đã xóa notebook"}
 
 
@@ -411,7 +411,7 @@ async def delete_document(document_id: str, user: Dict[str, Any] = Depends(get_c
         invalidate_workspace_vector_cache(ws_id)
     except Exception:
         pass
-    await run_in_threadpool(upsert_workspace_embedding, ws_id)
+    schedule_workspace_embedding(ws_id)
     return {"message": "Đã xóa tài liệu thành công"}
 
 
@@ -671,7 +671,7 @@ async def create_note(
     conn.commit()
     row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
     conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, workspace_id)
+    schedule_workspace_embedding(workspace_id)
     return {"note": dict(row)}
 
 
@@ -690,7 +690,7 @@ async def delete_note(note_id: str, user: Dict[str, Any] = Depends(get_current_u
     conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     conn.commit()
     conn.close()
-    await run_in_threadpool(upsert_workspace_embedding, ws_id)
+    schedule_workspace_embedding(ws_id)
     return {"message": "Đã xóa ghi chú"}
 
 

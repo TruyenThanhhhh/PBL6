@@ -260,12 +260,15 @@ export interface QuizAttempt {
   wrongQuestionIds: string[]
 }
 
+export type QuizStyle = "auto" | "vocabulary" | "concept" | "application" | "mixed"
+
 export interface Quiz {
   id: string
   workspaceId: string
   documentId: string | null
   documentName?: string | null
   focusPrompt?: string
+  quizStyle?: QuizStyle
   title: string
   difficulty: "easy" | "medium" | "hard"
   questions: QuizQuestion[]

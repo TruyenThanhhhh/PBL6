@@ -379,12 +379,31 @@ def upsert_workspace_embedding(workspace_id: str) -> bool:
             and existing["source_text"] == profile_text
         ):
             return True
+    except Exception:
+        logger.exception("Failed to read workspace profile for %s", workspace_id)
+        return False
+    finally:
+        conn.close()
 
+    # Đóng kết nối SQLite trước khi suy luận model BGE-M3 (tránh giữ lock/handle DB trong lúc tải model)
+    try:
         vectors = embed_texts([profile_text])
         if not vectors:
             return False
         vec = vectors[0]
-        conn.execute(
+    except Exception:
+        logger.exception("Failed to compute workspace embedding for %s", workspace_id)
+        return False
+
+    conn_write = get_db_connection()
+    try:
+        exists_ws = conn_write.execute(
+            "SELECT 1 FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if not exists_ws:
+            return False
+        conn_write.execute(
             """
             INSERT INTO workspace_embeddings (workspace_id, model, dimensions, source_text, vector, updated_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -397,13 +416,13 @@ def upsert_workspace_embedding(workspace_id: str) -> bool:
             """,
             (workspace_id, EMBEDDING_MODEL, len(vec), profile_text, pack_vector(vec)),
         )
-        conn.commit()
+        conn_write.commit()
         return True
     except Exception:
         logger.exception("Failed to upsert workspace embedding for %s", workspace_id)
         return False
     finally:
-        conn.close()
+        conn_write.close()
 
 
 async def generate_and_apply_workspace_metadata(

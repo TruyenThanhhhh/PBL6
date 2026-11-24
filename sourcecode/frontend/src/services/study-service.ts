@@ -7,6 +7,7 @@ import type {
   Notebook,
   Quiz,
   QuizQuestion,
+  QuizStyle,
   StudyTask,
 } from "@/types"
 import { useAppStore } from "@/store/app-store"
@@ -91,6 +92,7 @@ export async function generateStudyQuizAsync(
   questionCount: number,
   focusPrompt?: string,
   signal?: AbortSignal,
+  quizStyle: QuizStyle = "auto",
 ): Promise<Quiz> {
   const sourceLabel = ctx.document?.fileName ?? ctx.notebook?.name ?? "Toàn bộ workspace"
   const cleanFocus = focusPrompt?.trim() || undefined
@@ -104,6 +106,7 @@ export async function generateStudyQuizAsync(
           : null,
         difficulty,
         question_count: questionCount,
+        quiz_style: quizStyle,
         focus_prompt: cleanFocus,
         model: getPreferredLlmModel(),
       },
@@ -116,6 +119,7 @@ export async function generateStudyQuizAsync(
         documentId: ctx.document?.id ?? null,
         documentName: ctx.document?.fileName ?? null,
         focusPrompt: cleanFocus,
+        quizStyle: res.quiz_style ?? quizStyle,
         title: res.title || `Quiz · ${cleanFocus || sourceLabel}`,
         difficulty: res.difficulty || difficulty,
         questions: res.questions.map((q, idx) => ({

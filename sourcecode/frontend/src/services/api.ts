@@ -128,9 +128,18 @@ export async function freeSystemMemoryApi(): Promise<{
   }
 }
 
+function normalizeBackendTimestamp(raw: unknown, fallback: string): string {
+  const s = typeof raw === "string" ? raw.trim() : ""
+  if (!s) return fallback
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s)) {
+    return `${s.replace(" ", "T")}Z`
+  }
+  return s
+}
+
 export function mapBackendWorkspace(w: Record<string, unknown>): Workspace {
-  const createdAt = String(w.created_at ?? nowIso())
-  const updatedAt = String(w.updated_at ?? createdAt)
+  const createdAt = normalizeBackendTimestamp(w.created_at, nowIso())
+  const updatedAt = normalizeBackendTimestamp(w.updated_at, createdAt)
   return {
     id: String(w.id),
     name: String(w.name ?? "Workspace mới"),
@@ -154,15 +163,27 @@ export async function createWorkspaceApi(
   description = "",
   category = "Chung",
 ): Promise<Workspace> {
-  const data = await request<{ workspace: Record<string, unknown> }>(
-    "/api/v1/workspaces",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description, category }),
-    },
-  )
-  return mapBackendWorkspace(data.workspace)
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 15000)
+  try {
+    const data = await request<{ workspace: Record<string, unknown> }>(
+      "/api/v1/workspaces",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description, category }),
+        signal: controller.signal,
+      },
+    )
+    return mapBackendWorkspace(data.workspace)
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Yêu cầu tạo Workspace quá thời gian chờ (15s). Vui lòng thử lại.")
+    }
+    throw err
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 export async function updateWorkspaceApi(
@@ -776,12 +797,15 @@ export async function streamAiSummaryApi(
   }
 }
 
+export type QuizStyleApi = "auto" | "vocabulary" | "concept" | "application" | "mixed"
+
 export interface StudyQuizPayload {
   workspace_id: string
   document_id?: string | null
   document_ids?: string[] | null
   difficulty?: "easy" | "medium" | "hard"
   question_count?: number
+  quiz_style?: QuizStyleApi
   focus_prompt?: string | null
   model?: string
 }
@@ -797,6 +821,7 @@ export interface StudyQuizCitationPayload {
 export interface StudyQuizResponse {
   title: string
   difficulty: "easy" | "medium" | "hard"
+  quiz_style?: QuizStyleApi
   questions: Array<{
     id: string
     prompt: string

@@ -386,7 +386,8 @@ class WorkspaceAITestCase(unittest.TestCase):
         self.assertNotIn("Tổng hợp 2 tài liệu:", desc)
         self.assertEqual(desc, "Tài liệu học từ vựng và mẫu câu tiếng Nhật trình độ JLPT N3.")
 
-    def test_study_summary_history_save_list_filter_and_delete(self):
+    @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)
+    def test_study_summary_history_save_list_filter_and_delete(self, _mock_ws_emb):
         ws_id = self.client.post("/api/v1/workspaces", json={"name": "WS Summary"}, headers=self.user_a_headers).json()["workspace"]["id"]
 
         # Lưu 1 bản tóm tắt (kể cả document_id không tồn tại phải fallback doc_id=None thay vì lỗi FK)
@@ -455,7 +456,8 @@ class WorkspaceAITestCase(unittest.TestCase):
         ).json()["artifacts"]
         self.assertEqual(after_del, [])
 
-    def test_quiz_artifact_patch_persists_attempts_and_isolation(self):
+    @patch("app.services.workspace_ai_service.embed_texts", side_effect=_fake_topic_embed)
+    def test_quiz_artifact_patch_persists_attempts_and_isolation(self, _mock_ws_emb):
         ws_id = self.client.post(
             "/api/v1/workspaces", json={"name": "WS Quiz"}, headers=self.user_a_headers
         ).json()["workspace"]["id"]

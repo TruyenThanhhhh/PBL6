@@ -19,7 +19,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { ConfirmDialog } from "@/components/common/NameDialog"
-import { Badge, Button, Input, Select } from "@/components/ui"
+import { Badge, Button, Select, Textarea } from "@/components/ui"
 import {
   deleteStudyArtifactApi,
   fetchStudyArtifactsApi,
@@ -31,7 +31,7 @@ import { generateStudyQuizAsync, type StudySourceContext } from "@/services/stud
 import { useAppStore } from "@/store/app-store"
 import { cn } from "@/utils/cn"
 import { formatDateTime, nowIso, relativeTime, uid } from "@/utils/format"
-import type { KnowledgeDocument, Quiz, QuizAttempt, QuizQuestion } from "@/types"
+import type { KnowledgeDocument, Quiz, QuizAttempt, QuizQuestion, QuizStyle } from "@/types"
 
 const LETTERS = ["A", "B", "C", "D", "E"]
 const DIFFICULTY_LABEL: Record<Quiz["difficulty"], string> = {
@@ -39,6 +39,16 @@ const DIFFICULTY_LABEL: Record<Quiz["difficulty"], string> = {
   medium: "Vừa",
   hard: "Khó",
 }
+
+const QUIZ_STYLE_LABEL: Record<QuizStyle, string> = {
+  auto: "Tự động tối ưu",
+  vocabulary: "Từ vựng & Thuật ngữ",
+  concept: "Khái niệm & Lý thuyết",
+  application: "Tình huống & Vận dụng",
+  mixed: "Tổng hợp đa dạng",
+}
+
+const VALID_QUIZ_STYLES: QuizStyle[] = ["auto", "vocabulary", "concept", "application", "mixed"]
 
 function formatDuration(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds))
@@ -62,12 +72,16 @@ function mapArtifactToQuiz(record: StudyArtifactRecord): Quiz | null {
       ? (data.answers as Record<string, number>)
       : {}
 
+  const styleRaw = String(data.quizStyle ?? "auto") as QuizStyle
+  const quizStyle: QuizStyle = VALID_QUIZ_STYLES.includes(styleRaw) ? styleRaw : "auto"
+
   return {
     id: record.id,
     workspaceId: record.workspace_id,
     documentId: record.document_id ?? null,
     documentName: typeof data.documentName === "string" ? data.documentName : null,
     focusPrompt: typeof data.focusPrompt === "string" ? data.focusPrompt : undefined,
+    quizStyle,
     title: record.title || "Bài kiểm tra Quiz",
     difficulty,
     questions: rawQuestions,
@@ -85,6 +99,7 @@ function buildQuizArtifactPayload(quiz: Quiz) {
   return {
     documentName: quiz.documentName ?? null,
     focusPrompt: quiz.focusPrompt ?? "",
+    quizStyle: quiz.quizStyle ?? "auto",
     difficulty: quiz.difficulty,
     questions: quiz.questions,
     answers: quiz.answers,
@@ -279,11 +294,41 @@ export function QuizSection({
 
   // Form tạo Quiz
   const [focusPrompt, setFocusPrompt] = useState("")
+  const [quizStyle, setQuizStyle] = useState<QuizStyle>("auto")
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium")
   const [questionCount, setQuestionCount] = useState<number>(10)
   const [timeLimitMinutes, setTimeLimitMinutes] = useState<number>(0)
   const [isGenerating, setIsGenerating] = useState(false)
   const quizAbortRef = useRef<AbortController | null>(null)
+
+  const selectedDocumentObj = useMemo(
+    () => (selectedDocId ? documents.find((d) => d.id === selectedDocId) ?? null : null),
+    [selectedDocId, documents],
+  )
+
+  const suggestedFocusChips = useMemo(() => {
+    const targetDocs = selectedDocumentObj ? [selectedDocumentObj] : documents
+    const joinedNames = targetDocs.map((d) => d.fileName.toLowerCase()).join(" ")
+    const isVocabLike =
+      /(?:tu[-_\s]?vung|thuat[-_\s]?ngu|vocab|minato|mimikara|jlpt|ielts|toeic|kanji|english|tieng[-_\s]?anh|tieng[-_\s]?nhat)/.test(
+        joinedNames,
+      ) || targetDocs.some((d) => d.fileType === "xlsx" || d.fileType === "xls" || d.fileType === "csv")
+
+    if (isVocabLike) {
+      return [
+        "Kiểm tra nghĩa tiếng Việt của các từ vựng / thuật ngữ trọng tâm",
+        "Cho nghĩa tiếng Việt và chọn đúng thuật ngữ / từ gốc tương ứng",
+        "Tập trung các thuật ngữ chỉ người, thiết bị hoặc khái niệm dễ nhầm lẫn",
+        "Đặt câu hỏi tình huống vận dụng thuật ngữ vào ngữ cảnh thực tế",
+      ]
+    }
+    return [
+      "Bám sát các định nghĩa, khái niệm và luận điểm cốt lõi trong bài",
+      "Tạo câu hỏi tình huống vận dụng thực tế thay vì hỏi học thuộc lòng",
+      "So sánh và phân biệt các khái niệm, quy tắc hoặc thông số dễ nhầm",
+      "Tập trung kiểm tra công thức, quy trình các bước và lưu ý quan trọng",
+    ]
+  }, [selectedDocumentObj, documents])
 
   // Danh sách bộ đề
   const [listFilter, setListFilter] = useState<"all" | "todo" | "done">("all")
@@ -470,6 +515,7 @@ export function QuizSection({
         questionCount,
         usedFocus,
         controller.signal,
+        quizStyle,
       )
       if (controller.signal.aborted) return
 
@@ -734,6 +780,9 @@ export function QuizSection({
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-bold text-[#172B29]">{activeQuiz.title}</h2>
               <Badge tone="neutral">{DIFFICULTY_LABEL[activeQuiz.difficulty]}</Badge>
+              {activeQuiz.quizStyle && activeQuiz.quizStyle !== "auto" ? (
+                <Badge tone="neutral">{QUIZ_STYLE_LABEL[activeQuiz.quizStyle]}</Badge>
+              ) : null}
               {activeQuiz.isMock ? <Badge tone="neutral">Mô phỏng</Badge> : null}
             </div>
             <p className="text-xs text-[#647C79]">
@@ -741,6 +790,11 @@ export function QuizSection({
               {activeQuiz.documentName || "Toàn bộ tài liệu workspace"} ·{" "}
               {attempts.length} lần làm
             </p>
+            {activeQuiz.focusPrompt ? (
+              <p className="text-[11.5px] text-[#087F73] font-medium">
+                Yêu cầu cho AI: &ldquo;{activeQuiz.focusPrompt}&rdquo;
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1139,29 +1193,22 @@ export function QuizSection({
         </div>
       </div>
 
-      {/* Form tạo bộ câu hỏi mới được nhóm thành khung rõ ràng (1 nút CTA duy nhất) */}
+      {/* Form tạo bộ câu hỏi mới được nhóm thành khung rõ ràng (có mô tả yêu cầu AI & kiểu kiểm tra) */}
       <div className="rounded-2xl border border-[#DCE7E4] bg-[#FBFDFC] p-5 space-y-4">
-        <h3 className="text-sm font-bold text-[#172B29]">Tạo bộ câu hỏi mới</h3>
-
-        <div className="space-y-1.5">
-          <label
-            htmlFor="quiz-focus-input"
-            className="block text-xs font-medium text-[#647C79]"
-          >
-            Chủ đề (không bắt buộc)
-          </label>
-          <Input
-            id="quiz-focus-input"
-            value={focusPrompt}
-            disabled={isGenerating}
-            onChange={(e) => setFocusPrompt(e.target.value)}
-            placeholder="VD: Ngữ pháp JLPT N3, chương 2..."
-            className="bg-white"
-          />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-[#172B29]">Thiết lập bộ câu hỏi mới</h3>
+            <p className="mt-0.5 text-[11.5px] text-[#647C79]">
+              Chọn tài liệu, kiểu kiểm tra và mô tả trọng tâm để AI biên soạn đề sát nhu cầu ôn tập của bạn.
+            </p>
+          </div>
+          {selectedDocumentObj ? (
+            <Badge tone="neutral">{selectedDocumentObj.fileName}</Badge>
+          ) : null}
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="space-y-1.5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="space-y-1.5 lg:col-span-2">
             <label
               htmlFor="quiz-doc-select"
               className="block text-xs font-medium text-[#647C79]"
@@ -1186,6 +1233,28 @@ export function QuizSection({
 
           <div className="space-y-1.5">
             <label
+              htmlFor="quiz-style-select"
+              className="block text-xs font-medium text-[#647C79]"
+            >
+              Kiểu câu hỏi
+            </label>
+            <Select
+              id="quiz-style-select"
+              disabled={isGenerating}
+              value={quizStyle}
+              onChange={(e) => setQuizStyle(e.target.value as QuizStyle)}
+              className="bg-white text-xs"
+            >
+              <option value="auto">Tự động theo tài liệu</option>
+              <option value="vocabulary">Từ vựng &amp; Thuật ngữ</option>
+              <option value="concept">Khái niệm &amp; Lý thuyết</option>
+              <option value="application">Tình huống &amp; Vận dụng</option>
+              <option value="mixed">Tổng hợp đa dạng</option>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label
               htmlFor="quiz-difficulty-select"
               className="block text-xs font-medium text-[#647C79]"
             >
@@ -1198,83 +1267,158 @@ export function QuizSection({
               onChange={(e) => setDifficulty(e.target.value as typeof difficulty)}
               className="bg-white text-xs"
             >
-              <option value="easy">Dễ</option>
-              <option value="medium">Vừa</option>
-              <option value="hard">Khó</option>
+              <option value="easy">Dễ (Nhận biết)</option>
+              <option value="medium">Vừa (Thông hiểu)</option>
+              <option value="hard">Khó (Vận dụng)</option>
             </Select>
           </div>
 
-          <div className="space-y-1.5">
-            <label
-              htmlFor="quiz-count-select"
-              className="block text-xs font-medium text-[#647C79]"
-            >
-              Số câu hỏi
-            </label>
-            <Select
-              id="quiz-count-select"
-              disabled={isGenerating}
-              value={String(questionCount)}
-              onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="bg-white text-xs"
-            >
-              <option value="3">3 câu</option>
-              <option value="5">5 câu</option>
-              <option value="10">10 câu</option>
-              <option value="15">15 câu</option>
-              <option value="20">20 câu</option>
-            </Select>
-          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5">
+              <label
+                htmlFor="quiz-count-select"
+                className="block text-xs font-medium text-[#647C79]"
+              >
+                Số câu
+              </label>
+              <Select
+                id="quiz-count-select"
+                disabled={isGenerating}
+                value={String(questionCount)}
+                onChange={(e) => setQuestionCount(Number(e.target.value))}
+                className="bg-white text-xs"
+              >
+                <option value="3">3 câu</option>
+                <option value="5">5 câu</option>
+                <option value="10">10 câu</option>
+                <option value="15">15 câu</option>
+                <option value="20">20 câu</option>
+              </Select>
+            </div>
 
-          <div className="space-y-1.5">
-            <label
-              htmlFor="quiz-timer-select"
-              className="block text-xs font-medium text-[#647C79]"
-            >
-              Giới hạn thời gian
-            </label>
-            <Select
-              id="quiz-timer-select"
-              disabled={isGenerating}
-              value={String(timeLimitMinutes)}
-              onChange={(e) => setTimeLimitMinutes(Number(e.target.value))}
-              className="bg-white text-xs"
-            >
-              <option value="0">Không giới hạn</option>
-              <option value="5">5 phút</option>
-              <option value="10">10 phút</option>
-              <option value="15">15 phút</option>
-              <option value="30">30 phút</option>
-            </Select>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="quiz-timer-select"
+                className="block text-xs font-medium text-[#647C79]"
+              >
+                Thời gian
+              </label>
+              <Select
+                id="quiz-timer-select"
+                disabled={isGenerating}
+                value={String(timeLimitMinutes)}
+                onChange={(e) => setTimeLimitMinutes(Number(e.target.value))}
+                className="bg-white text-xs"
+              >
+                <option value="0">Tự do</option>
+                <option value="5">5 phút</option>
+                <option value="10">10 phút</option>
+                <option value="15">15 phút</option>
+                <option value="30">30 phút</option>
+              </Select>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-1">
-          {isGenerating ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              leftIcon={<X className="h-3.5 w-3.5" />}
-              onClick={() => {
-                quizAbortRef.current?.abort()
-                quizAbortRef.current = null
-                setIsGenerating(false)
-                toast({ title: "Đã hủy tạo Quiz AI", tone: "info" })
-              }}
+        {/* Mô tả chi tiết yêu cầu của người dùng cho AI */}
+        <div className="rounded-xl border border-[#DCE7E4] bg-white p-3.5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label
+              htmlFor="quiz-focus-input"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[#172B29]"
             >
-              Hủy
+              <Sparkles className="h-3.5 w-3.5 text-[#087F73]" />
+              <span>Mô tả yêu cầu tạo Quiz cho AI (không bắt buộc)</span>
+            </label>
+            {focusPrompt.trim() ? (
+              <button
+                type="button"
+                disabled={isGenerating}
+                onClick={() => setFocusPrompt("")}
+                className="text-[11px] font-medium text-[#647C79] hover:text-[#172B29] disabled:opacity-50"
+              >
+                Xóa mô tả
+              </button>
+            ) : null}
+          </div>
+
+          <Textarea
+            id="quiz-focus-input"
+            rows={2}
+            value={focusPrompt}
+            disabled={isGenerating}
+            onChange={(e) => setFocusPrompt(e.target.value)}
+            placeholder="VD: Chỉ hỏi các thuật ngữ về nhạc cụ và người biểu diễn; hỏi từ tiếng Anh sang nghĩa tiếng Việt; ưu tiên phân biệt các từ dễ nhầm lẫn..."
+            className="min-h-[60px] resize-y border-[#E2ECE9] bg-[#FBFDFC] text-xs leading-relaxed focus:bg-white"
+          />
+
+          <div className="space-y-1">
+            <span className="block text-[11px] font-medium text-[#647C79]">
+              Gợi ý nhanh (chạm để điền):
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {suggestedFocusChips.map((chip) => {
+                const isSelected = focusPrompt.trim() === chip
+                return (
+                  <button
+                    key={chip}
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setFocusPrompt(isSelected ? "" : chip)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors text-left",
+                      isSelected
+                        ? "border-[#087F73] bg-[#F0FDFA] text-[#087F73]"
+                        : "border-[#DCE7E4] bg-[#F8FBFA] text-[#4F6865] hover:border-[#087F73]/50 hover:text-[#087F73]",
+                      isGenerating && "opacity-50 cursor-not-allowed",
+                    )}
+                  >
+                    + {chip}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          {isGenerating ? (
+            <p className="text-xs font-medium text-[#087F73] animate-pulse">
+              AI đang lọc nhiễu tài liệu, trích xuất nội dung trọng tâm và biên soạn {questionCount} câu hỏi...
+            </p>
+          ) : (
+            <span className="text-[11.5px] text-[#647C79]">
+              Mỗi câu hỏi đều có giải thích chi tiết và trích dẫn trang tài liệu gốc để đối chiếu.
+            </span>
+          )}
+
+          <div className="flex items-center gap-2 ml-auto">
+            {isGenerating ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                leftIcon={<X className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  quizAbortRef.current?.abort()
+                  quizAbortRef.current = null
+                  setIsGenerating(false)
+                  toast({ title: "Đã hủy tạo Quiz AI", tone: "info" })
+                }}
+              >
+                Hủy
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+              loading={isGenerating}
+              onClick={() => void runGenerateQuiz()}
+              className="bg-[#087F73] hover:bg-[#076b61] text-white"
+            >
+              {isGenerating ? "Đang biên soạn đề..." : "Tạo Quiz AI"}
             </Button>
-          ) : null}
-          <Button
-            size="sm"
-            leftIcon={<Sparkles className="h-3.5 w-3.5" />}
-            loading={isGenerating}
-            onClick={() => void runGenerateQuiz()}
-            className="bg-[#087F73] hover:bg-[#076b61] text-white"
-          >
-            {isGenerating ? "Đang tạo Quiz..." : "Tạo Quiz AI"}
-          </Button>
+          </div>
         </div>
       </div>
 
@@ -1356,10 +1500,18 @@ export function QuizSection({
                       <h4 className="text-sm font-bold text-[#172B29]">{q.title}</h4>
                       <p className="text-xs text-[#647C79]">
                         {q.questions.length} câu · Độ khó {DIFFICULTY_LABEL[q.difficulty].toLowerCase()}{" "}
+                        {q.quizStyle && q.quizStyle !== "auto"
+                          ? `· ${QUIZ_STYLE_LABEL[q.quizStyle]} `
+                          : ""}
                         · {q.documentName || "Toàn bộ workspace"}
                         {q.timeLimitMinutes ? ` · ${q.timeLimitMinutes} phút` : ""}
                         {attempts.length > 0 ? ` · ${attempts.length} lần làm` : ""}
                       </p>
+                      {q.focusPrompt ? (
+                        <p className="line-clamp-1 text-[11px] text-[#087F73]">
+                          Yêu cầu: &ldquo;{q.focusPrompt}&rdquo;
+                        </p>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-col items-end gap-1 shrink-0">
