@@ -1,8 +1,13 @@
 import type {
   AIMode,
+  ChatActionArtifact,
   ChatMessage,
+  Citation,
   Conversation,
+  HardwareProfileMode,
+  HardwareProfileSummary,
   KnowledgeDocument,
+  ResearchProject,
   SearchHit,
   SystemStatus,
   Workspace,
@@ -30,18 +35,96 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+function mapHardwareProfile(raw: Record<string, unknown> | undefined): HardwareProfileSummary | undefined {
+  if (!raw) return undefined
+  const specsRaw = (raw.specs ?? {}) as Record<string, unknown>
+  const profilesRaw = Array.isArray(raw.profiles) ? (raw.profiles as Array<Record<string, unknown>>) : []
+  return {
+    activeId: (String(raw.active_id ?? "balanced") as HardwareProfileSummary["activeId"]),
+    activeLabel: String(raw.active_label ?? "Cân bằng"),
+    selectedMode: (String(raw.selected_mode ?? "auto") as HardwareProfileMode),
+    recommendedId: (String(raw.recommended_id ?? "balanced") as HardwareProfileSummary["recommendedId"]),
+    specs: {
+      cpuCount: Number(specsRaw.cpu_count ?? 4),
+      totalRamGb: Number(specsRaw.total_ram_gb ?? 8),
+      availableRamGb: Number(specsRaw.available_ram_gb ?? 4),
+      gpuName: specsRaw.gpu_name ? String(specsRaw.gpu_name) : null,
+      gpuVramMb: Number(specsRaw.gpu_vram_mb ?? 0),
+      hasDedicatedGpu: Boolean(specsRaw.has_dedicated_gpu),
+    },
+    profiles: profilesRaw.map((p) => ({
+      id: String(p.id ?? "balanced") as HardwareProfileSummary["activeId"],
+      label: String(p.label ?? ""),
+      description: String(p.description ?? ""),
+      topK: Number(p.top_k ?? 4),
+      numCtx: Number(p.num_ctx ?? 4096),
+      rerankEnabled: Boolean(p.rerank_enabled),
+      ftsFirstShortcut: Boolean(p.fts_first_shortcut),
+      maxReasoningSteps: Number(p.max_reasoning_steps ?? 3),
+      preferredModels: Array.isArray(p.preferred_models) ? p.preferred_models.map(String) : [],
+    })),
+  }
+}
+
 export async function fetchSystemStatus(): Promise<SystemStatus> {
   const data = await request<{
     status: string
-    ollama?: { running?: boolean; available_models?: string[]; message?: string }
+    ollama?: {
+      running?: boolean
+      available_models?: string[]
+      vision_available?: boolean
+      message?: string
+    }
+    hardware_profile?: Record<string, unknown>
   }>("/api/v1/status")
   return {
     backendOnline: true,
     ollamaRunning: Boolean(data.ollama?.running),
     ollamaModels: data.ollama?.available_models ?? [],
+    visionAvailable: Boolean(data.ollama?.vision_available),
     internetOnline: navigator.onLine,
     usingMock: false,
     message: data.ollama?.message ?? "Backend đang phản hồi.",
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+  }
+}
+
+export async function updateHardwareProfileApi(mode: HardwareProfileMode): Promise<{
+  hardwareProfile?: HardwareProfileSummary
+  message: string
+}> {
+  const data = await request<{
+    hardware_profile?: Record<string, unknown>
+    message?: string
+  }>("/api/v1/system/hardware-profile", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  })
+  return {
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+    message: String(data.message ?? "Đã cập nhật hồ sơ hiệu năng."),
+  }
+}
+
+export async function freeSystemMemoryApi(): Promise<{
+  hardwareProfile?: HardwareProfileSummary
+  unloadedOllamaModels: string[]
+  message: string
+}> {
+  const data = await request<{
+    hardware_profile?: Record<string, unknown>
+    unloaded_ollama_models?: string[]
+    message?: string
+  }>("/api/v1/system/free-memory", {
+    method: "POST",
+  })
+  return {
+    hardwareProfile: mapHardwareProfile(data.hardware_profile),
+    unloadedOllamaModels: Array.isArray(data.unloaded_ollama_models)
+      ? data.unloaded_ollama_models.map(String)
+      : [],
+    message: String(data.message ?? "Đã giải phóng bộ nhớ các model AI."),
   }
 }
 
@@ -183,8 +266,36 @@ export async function fetchDocuments(workspaceId: string): Promise<KnowledgeDocu
       totalChunks: Number(d.total_chunks ?? 0),
       pageCount: Number(d.total_chunks ?? 0) > 0 ? Math.max(1, Math.ceil(Number(d.total_chunks) / 4)) : 0,
       extractedText: "",
+      versionGroupId: d.version_group_id ? String(d.version_group_id) : undefined,
+      versionNumber: d.version_number != null ? Number(d.version_number) : 1,
+      isLatest: d.is_latest != null ? Boolean(d.is_latest) : true,
+      supersededBy: d.superseded_by ? String(d.superseded_by) : null,
+      effectiveDate: d.effective_date ? String(d.effective_date) : null,
       mock: false,
     } satisfies KnowledgeDocument
+  })
+}
+
+export async function diffWorkspaceDocumentsApi(
+  workspaceId: string,
+  payload: { oldDocumentId?: string | null; newDocumentId?: string | null; includeAiSummary?: boolean },
+): Promise<{
+  ok: boolean
+  similarity_percent: number
+  total_changes: number
+  changes: Array<{ kind: string; before: string; after: string }>
+  markdown: string
+  old_document: Record<string, unknown>
+  new_document: Record<string, unknown>
+}> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/diff`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      old_document_id: payload.oldDocumentId ?? undefined,
+      new_document_id: payload.newDocumentId ?? undefined,
+      include_ai_summary: payload.includeAiSummary ?? true,
+    }),
   })
 }
 
@@ -203,6 +314,9 @@ export function uploadDocumentWithProgress(
   options?: {
     notebookId?: string | null
     deferMetadata?: boolean
+    replaceDocumentId?: string | null
+    effectiveDate?: string | null
+    autoVersion?: boolean
     onProgress?: (percent: number) => void
     signal?: AbortSignal
   },
@@ -256,6 +370,15 @@ export function uploadDocumentWithProgress(
     }
     if (options?.deferMetadata) {
       form.append("defer_metadata", "true")
+    }
+    if (options?.replaceDocumentId) {
+      form.append("replace_document_id", options.replaceDocumentId)
+    }
+    if (options?.effectiveDate) {
+      form.append("effective_date", options.effectiveDate)
+    }
+    if (options?.autoVersion) {
+      form.append("auto_version", "true")
     }
     xhr.send(form)
   })
@@ -313,7 +436,10 @@ export async function fetchConversationMessages(conversationId: string): Promise
     content: String(m.content ?? ""),
     createdAt: String(m.createdAt ?? nowIso()),
     citations: (m.citations as any[]) ?? [],
+    actionArtifact: (m.actionArtifact as ChatActionArtifact | undefined) ?? undefined,
     modeUsed: m.modeUsed as AIMode | undefined,
+    latencySeconds: m.latencySeconds != null ? Number(m.latencySeconds) : undefined,
+    modelId: m.modelId ? String(m.modelId) : undefined,
     streaming: false,
     isMock: false,
   }))
@@ -346,9 +472,11 @@ export interface ChatResult {
     page_label?: string
     chunk_index?: number
     snippet?: string
+    full_text?: string
   }>
   model_used?: string
   engine?: string
+  latency_seconds?: number
 }
 
 export async function queryChat(payload: {
@@ -438,8 +566,10 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
         documentId: c.document_id ?? null,
         documentName: docName,
         pageNumber: c.page_number ?? null,
+        pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
         chunkIndex: c.chunk_index ?? null,
         snippet: c.snippet ?? "",
+        fullText: c.full_text ?? c.snippet ?? "",
         sourceKind: (c.document_id ? "local" : mode === "web" ? "web" : "local") as "local" | "web",
         url,
       }
@@ -447,6 +577,7 @@ export function mapChatResult(result: ChatResult, mode: AIMode) {
     modeRequested: mode,
     modeUsed: mode === "auto" ? "local" : mode,
     engine: result.engine,
+    latencySeconds: result.latency_seconds,
     fallbackReason: undefined as string | undefined,
   }
 }
@@ -494,6 +625,51 @@ export async function fetchDocumentDetail(
   documentId: string,
 ): Promise<{ document: DocumentChunksApiResponse["document"] }> {
   return request<{ document: DocumentChunksApiResponse["document"] }>(`/api/v1/documents/${documentId}`)
+}
+
+export interface DocumentGuideResponse {
+  document_id: string
+  file_name: string
+  file_type: string
+  total_pages: number
+  total_chunks: number
+  doc_category: string
+  has_legacy_pua?: boolean
+  summary: string
+  outline: string[]
+  suggested_questions: string[]
+}
+
+export async function fetchDocumentGuideApi(documentId: string): Promise<DocumentGuideResponse> {
+  return request<DocumentGuideResponse>(`/api/v1/documents/${documentId}/guide`)
+}
+
+export async function rebuildDocumentApi(documentId: string): Promise<{
+  document_id: string
+  file_name: string
+  total_pages: number
+  total_chunks: number
+  rebuilt: boolean
+}> {
+  return request(`/api/v1/documents/${documentId}/rebuild`, {
+    method: "POST",
+  })
+}
+
+export async function saveWorkspaceNoteApi(
+  workspaceId: string,
+  payload: {
+    title: string
+    content: string
+    notebook_id?: string | null
+    document_id?: string | null
+  },
+): Promise<{ note: Record<string, unknown> }> {
+  return request<{ note: Record<string, unknown> }>(`/api/v1/workspaces/${workspaceId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
 }
 
 // ==========================================
@@ -837,4 +1013,135 @@ export async function exportStudyDocumentApi(payload: {
     body: JSON.stringify(payload),
   })
   return res.blob()
+}
+
+function mapResearchProjectRecord(raw: Record<string, unknown>): ResearchProject {
+  const rawCitations = Array.isArray(raw.citations) ? (raw.citations as Citation[]) : undefined
+  return {
+    id: String(raw.id ?? ""),
+    workspaceId: String(raw.workspaceId ?? raw.workspace_id ?? ""),
+    notebookId: raw.notebookId ? String(raw.notebookId) : null,
+    title: String(raw.title ?? "Nghiên cứu mới"),
+    question: String(raw.question ?? ""),
+    documentIds: Array.isArray(raw.documentIds) ? raw.documentIds.map(String) : [],
+    allowWeb: Boolean(raw.allowWeb),
+    mode: (String(raw.mode ?? "local") as AIMode),
+    status: (String(raw.status ?? "completed") as ResearchProject["status"]),
+    step: Number(raw.step ?? 5),
+    report: String(raw.report ?? ""),
+    citations: rawCitations,
+    isMock: Boolean(raw.isMock ?? false),
+    createdAt: String(raw.createdAt ?? nowIso()),
+    updatedAt: String(raw.updatedAt ?? nowIso()),
+  }
+}
+
+export async function fetchResearchProjectsApi(workspaceId: string): Promise<ResearchProject[]> {
+  const data = await request<{ projects?: Array<Record<string, unknown>> }>(
+    `/api/v1/workspaces/${workspaceId}/research`,
+  )
+  return (data.projects ?? []).map(mapResearchProjectRecord)
+}
+
+export async function streamResearchProjectApi(
+  workspaceId: string,
+  payload: {
+    project_id?: string
+    notebook_id?: string | null
+    title?: string
+    question: string
+    document_ids?: string[]
+    allow_web?: boolean
+    mode?: AIMode
+    model?: string
+  },
+  callbacks: {
+    onMeta?: (project: ResearchProject) => void
+    onStep?: (step: number, label: string, detail?: string) => void
+    onCitations?: (citations: Citation[]) => void
+    onDelta?: (deltaText: string) => void
+    onDone?: (project: ResearchProject) => void
+  },
+  signal?: AbortSignal,
+): Promise<ResearchProject | null> {
+  const res = await authorizedFetch(`/api/v1/workspaces/${workspaceId}/research/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!res.body) {
+    throw new Error("Không nhận được luồng phản hồi từ dịch vụ Research.")
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finalProject: ResearchProject | null = null
+
+  const processLine = (rawLine: string) => {
+    const trimmed = rawLine.trim()
+    if (!trimmed.startsWith("data:")) return
+    const cleaned = trimmed.slice(5).trim()
+    if (!cleaned || cleaned === "[DONE]") return
+    try {
+      const evt = JSON.parse(cleaned) as {
+        type?: string
+        project?: Record<string, unknown>
+        step?: number
+        label?: string
+        detail?: string
+        citations?: Citation[]
+        content?: string
+      }
+      if (evt.type === "meta" && evt.project) {
+        callbacks.onMeta?.(mapResearchProjectRecord(evt.project))
+      } else if (evt.type === "step" && typeof evt.step === "number") {
+        callbacks.onStep?.(evt.step, String(evt.label ?? ""), evt.detail)
+      } else if (evt.type === "citations" && Array.isArray(evt.citations)) {
+        callbacks.onCitations?.(evt.citations)
+      } else if (evt.type === "delta" && typeof evt.content === "string") {
+        callbacks.onDelta?.(evt.content)
+      } else if (evt.type === "done" && evt.project) {
+        finalProject = mapResearchProjectRecord(evt.project)
+        callbacks.onDone?.(finalProject)
+      }
+    } catch {
+      // ignore malformed SSE heartbeat
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() ?? ""
+    for (const line of lines) {
+      processLine(line)
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) {
+    processLine(buffer)
+  }
+  return finalProject
+}
+
+export async function updateResearchProjectApi(
+  projectId: string,
+  payload: { title?: string; report?: string },
+): Promise<ResearchProject> {
+  const data = await request<{ project: Record<string, unknown> }>(`/api/v1/research/${projectId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return mapResearchProjectRecord(data.project)
+}
+
+export async function deleteResearchProjectApi(projectId: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/api/v1/research/${projectId}`, {
+    method: "DELETE",
+  })
 }

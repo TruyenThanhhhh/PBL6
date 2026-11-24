@@ -1,9 +1,12 @@
 import type {
   AIMode,
+  ChatActionArtifact,
   ChatMessage,
   Citation,
   Conversation,
   KnowledgeDocument,
+  ReasoningMode,
+  ReasoningStepTrace,
 } from "@/types"
 import { queryChat, type ChatResult } from "@/services/api"
 import { authHeaders } from "@/services/auth-service"
@@ -72,16 +75,28 @@ export interface AIModelOption {
 
 export const AI_MODEL_OPTIONS: AIModelOption[] = [
   {
-    id: "qwen2.5:3b",
-    label: "Nhanh & Nhẹ (Qwen 2.5)",
+    id: "auto",
+    label: "Tự động (Thông minh)",
     provider: "ollama-local",
-    description: "Phản hồi nhanh cho các câu hỏi tra cứu hàng ngày.",
+    description: "Tự chọn model tối ưu theo phần cứng và độ khó câu hỏi.",
+  },
+  {
+    id: "gemma3:4b",
+    label: "Gemma 3 4B · Tiếng Việt chuẩn & Vision",
+    provider: "ollama-local",
+    description: "Diễn đạt tiếng Việt tự nhiên, không rò tiếng Trung/Hàn, hỗ trợ đọc ảnh trực tiếp và vừa khít 4GB VRAM.",
+  },
+  {
+    id: "qwen2.5:3b",
+    label: "Nhanh & Nhẹ (Qwen 3B · Eco)",
+    provider: "ollama-local",
+    description: "Tối ưu cho máy yếu/4GB VRAM — phản hồi rất nhanh.",
   },
   {
     id: "qwen2.5:7b",
-    label: "Chi tiết & Sâu (Qwen 7B)",
+    label: "Chính xác sâu (Qwen 7B)",
     provider: "ollama-local",
-    description: "Độ chính xác cao hơn khi tổng hợp tài liệu dài.",
+    description: "Chất lượng ngôn ngữ & suy luận cao hơn cho tài liệu phức tạp.",
   },
   {
     id: "llama3.2:3b",
@@ -137,6 +152,14 @@ export const CHAT_PROMPT_SUGGESTIONS: ChatPromptSuggestion[] = [
   },
 ]
 
+export interface StreamProgressPayload {
+  stage?: string
+  stageLabel?: string
+  citations?: Citation[]
+  reasoningStep?: ReasoningStepTrace
+  actionArtifact?: ChatActionArtifact | null
+}
+
 /**
  * Interface chuẩn cho yêu cầu gửi tin nhắn AI Chat
  */
@@ -147,12 +170,51 @@ export interface SendChatRequest {
   attachedDocumentIds?: string[]
   query: string
   mode: AIMode
+  reasoningMode?: ReasoningMode
   modelId: string
   backendOnline: boolean
   contextDocuments?: KnowledgeDocument[]
   selectedDocumentId?: string
+  history?: Array<{ role: "user" | "assistant"; content: string }>
+  imageBase64?: string
+  imageMimeType?: "image/png" | "image/jpeg" | "image/webp"
   signal?: AbortSignal
   onStreamChunk?: (partialContent: string) => void
+  onStreamProgress?: (progress: StreamProgressPayload) => void
+}
+
+export function mapBackendCitations(rawCitations: ChatResult["citations"] = []): Citation[] {
+  return rawCitations.map((c, i) => {
+    const rawName = c.document_name ?? (c as any).title
+    let docName = rawName
+    const url =
+      (c as any).url ??
+      (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined)
+    if (!docName || docName.toLowerCase() === "nguồn web" || docName.toLowerCase() === "web") {
+      if (url) {
+        try {
+          docName = new URL(url).hostname.replace(/^www\./, "")
+        } catch {
+          docName = "Nguồn Web"
+        }
+      } else {
+        docName = c.document_id ? "Tài liệu" : "Nguồn Web"
+      }
+    }
+
+    return {
+      refId: c.ref_id ?? i + 1,
+      documentId: c.document_id ?? null,
+      documentName: docName,
+      pageNumber: c.page_number ?? null,
+      pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
+      chunkIndex: c.chunk_index ?? null,
+      snippet: c.snippet ?? "",
+      fullText: c.full_text ?? (c as any).fullText ?? c.snippet ?? "",
+      sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
+      url,
+    }
+  })
 }
 
 /**
@@ -182,7 +244,7 @@ export function getModeDescriptor(mode: AIMode): AIModeDescriptor {
  */
 async function tryStreamOrQueryBackend(
   req: SendChatRequest,
-): Promise<{ result: ChatResult; streamed: boolean }> {
+): Promise<{ result: ChatResult & { action_result?: ChatActionArtifact | null; reasoning_steps?: ReasoningStepTrace[] }; streamed: boolean }> {
   try {
     const res = await fetch(`${API_BASE}/api/v1/chat/stream`, {
       method: "POST",
@@ -199,7 +261,11 @@ async function tryStreamOrQueryBackend(
         query: req.query,
         model: req.modelId,
         mode: req.mode,
+        reasoning_mode: req.reasoningMode ?? "auto",
         selected_document_id: req.selectedDocumentId ?? undefined,
+        history: req.history?.length ? req.history.slice(-10) : undefined,
+        image_base64: req.imageBase64 ?? undefined,
+        image_mime_type: req.imageMimeType ?? undefined,
       }),
       signal: req.signal,
     })
@@ -213,43 +279,86 @@ async function tryStreamOrQueryBackend(
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let accumulated = ""
+      let lineBuffer = ""
       let citations: ChatResult["citations"] = []
+      let actionResult: ChatActionArtifact | null = null
+      const reasoningSteps: ReasoningStepTrace[] = []
       let engine = "backend_stream"
       let modelUsed = req.modelId
+      let latencySeconds: number | undefined
+
+      const processSseLine = (rawLine: string) => {
+        const trimmed = rawLine.trim()
+        if (!trimmed) return
+        const cleaned = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed
+        if (!cleaned || cleaned === "[DONE]") return
+        try {
+          const parsed = JSON.parse(cleaned) as {
+            delta?: string
+            answer?: string
+            citations?: ChatResult["citations"]
+            engine?: string
+            model_used?: string
+            latency_seconds?: number
+            stage?: string
+            stage_label?: string
+            reasoning_step?: ReasoningStepTrace
+            action_result?: ChatActionArtifact | null
+          }
+          let hasProgress = false
+          if (Array.isArray(parsed.citations)) {
+            citations = parsed.citations
+            hasProgress = true
+          }
+          if (parsed.reasoning_step) {
+            reasoningSteps.push(parsed.reasoning_step)
+            hasProgress = true
+          }
+          if (parsed.action_result) {
+            actionResult = parsed.action_result
+            hasProgress = true
+          }
+          if (parsed.stage || parsed.stage_label) {
+            hasProgress = true
+          }
+          if (hasProgress) {
+            req.onStreamProgress?.({
+              stage: parsed.stage,
+              stageLabel: parsed.stage_label,
+              citations: Array.isArray(parsed.citations) ? mapBackendCitations(parsed.citations) : undefined,
+              reasoningStep: parsed.reasoning_step,
+              actionArtifact: parsed.action_result ?? undefined,
+            })
+          }
+          if (typeof parsed.delta === "string") {
+            accumulated += parsed.delta
+            req.onStreamChunk?.(accumulated)
+          } else if (typeof parsed.answer === "string") {
+            accumulated = parsed.answer
+            req.onStreamChunk?.(accumulated)
+          }
+          if (parsed.engine) engine = parsed.engine
+          if (parsed.model_used) modelUsed = parsed.model_used
+          if (typeof parsed.latency_seconds === "number") latencySeconds = parsed.latency_seconds
+        } catch {
+          accumulated += cleaned
+          req.onStreamChunk?.(accumulated)
+        }
+      }
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunkText = decoder.decode(value, { stream: true })
-        const lines = chunkText.split("\n").filter((l) => l.trim().length > 0)
+        lineBuffer += decoder.decode(value, { stream: true })
+        const lines = lineBuffer.split("\n")
+        lineBuffer = lines.pop() ?? ""
         for (const rawLine of lines) {
-          const cleaned = rawLine.startsWith("data:") ? rawLine.slice(5).trim() : rawLine.trim()
-          if (cleaned === "[DONE]") continue
-          try {
-            const parsed = JSON.parse(cleaned) as {
-              delta?: string
-              answer?: string
-              citations?: ChatResult["citations"]
-              engine?: string
-              model_used?: string
-            }
-            if (typeof parsed.delta === "string") {
-              accumulated += parsed.delta
-              req.onStreamChunk?.(accumulated)
-            } else if (typeof parsed.answer === "string") {
-              accumulated = parsed.answer
-              req.onStreamChunk?.(accumulated)
-            }
-            if (Array.isArray(parsed.citations)) {
-              citations = parsed.citations
-            }
-            if (parsed.engine) engine = parsed.engine
-            if (parsed.model_used) modelUsed = parsed.model_used
-          } catch {
-            accumulated += cleaned
-            req.onStreamChunk?.(accumulated)
-          }
+          processSseLine(rawLine)
         }
+      }
+      lineBuffer += decoder.decode()
+      if (lineBuffer.trim()) {
+        processSseLine(lineBuffer)
       }
 
       return {
@@ -258,6 +367,9 @@ async function tryStreamOrQueryBackend(
           citations,
           engine,
           model_used: modelUsed,
+          latency_seconds: latencySeconds,
+          action_result: actionResult,
+          reasoning_steps: reasoningSteps,
         },
         streamed: true,
       }
@@ -284,6 +396,10 @@ async function tryStreamOrQueryBackend(
       query: req.query,
       model: req.modelId,
       mode: req.mode,
+      reasoning_mode: req.reasoningMode ?? "auto",
+      history: req.history?.length ? req.history.slice(-10) : undefined,
+      image_base64: req.imageBase64 ?? undefined,
+      image_mime_type: req.imageMimeType ?? undefined,
     }),
     signal: req.signal,
   })
@@ -540,36 +656,13 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
   }
 
   // Luôn thử gọi backend thật trước
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now()
   try {
     const { result } = await tryStreamOrQueryBackend(req)
-    const citations: Citation[] = (result.citations ?? []).map((c, i) => {
-      const rawName = c.document_name ?? (c as any).title
-      let docName = rawName
-      const url = (c as any).url ?? (c.document_id ? undefined : c.document_name?.startsWith("http") ? c.document_name : undefined)
-      if (!docName || docName.toLowerCase() === "nguồn web" || docName.toLowerCase() === "web") {
-        if (url) {
-          try {
-            docName = new URL(url).hostname.replace(/^www\./, "")
-          } catch {
-            docName = "Nguồn Web"
-          }
-        } else {
-          docName = c.document_id ? "Tài liệu" : "Nguồn Web"
-        }
-      }
-
-      return {
-        refId: c.ref_id ?? i + 1,
-        documentId: c.document_id ?? null,
-        documentName: docName,
-        pageNumber: c.page_number ?? null,
-        pageLabel: c.page_label ?? (c.page_number != null ? `Trang ${c.page_number}` : null),
-        chunkIndex: c.chunk_index ?? null,
-        snippet: c.snippet ?? "",
-        sourceKind: (c.document_id ? "local" : "web") as "local" | "web",
-        url,
-      }
-    })
+    const citations: Citation[] = mapBackendCitations(result.citations ?? [])
+    const fallbackElapsed = Number(
+      (((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt) / 1000).toFixed(2),
+    )
 
     return {
       message: {
@@ -582,8 +675,11 @@ export async function sendChatMessageService(req: SendChatRequest): Promise<Send
         modeUsed: req.mode === "auto" ? "local" : req.mode,
         modelId: result.model_used ?? req.modelId,
         engine: result.engine ?? "backend_rag",
+        latencySeconds: result.latency_seconds ?? fallbackElapsed,
         isMock: false,
         streaming: false,
+        reasoningSteps: result.reasoning_steps?.length ? result.reasoning_steps : undefined,
+        actionArtifact: result.action_result ?? undefined,
         attachedDocumentIds: req.attachedDocumentIds,
         notebookScopeId: req.notebookScopeId ?? null,
       },

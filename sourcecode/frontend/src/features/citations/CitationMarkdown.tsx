@@ -1,12 +1,89 @@
-import { useState, type ReactNode } from "react"
+import { cloneElement, isValidElement, useState, type ReactNode } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Check, Copy } from "lucide-react"
 import { useAppStore } from "@/store/app-store"
 
-function withCitationChips(text: string) {
-  // Hỗ trợ [1], [2], [Tài liệu 1], [Tài liệu 2], [Nguồn web 1], [Web 1]
-  return text.replace(/\[(?:Tài liệu |Nguồn web |Web )?(\d+)\]/gi, (_m, n: string) => `[[cite:${n}]]`)
+function cleanMathDisplay(text: string): string {
+  let res = text
+    .replace(/\\boxed\{([^{}]+)\}/g, "**$1**")
+    .replace(/\\text\{([^{}]+)\}/g, "$1")
+    .replace(/\\(?:left|right)\b/g, "")
+
+  for (let i = 0; i < 4; i++) {
+    const prev = res
+    res = res
+      .replace(/\\sqrt\{([^{}]+)\}/g, (_m, inner: string) => {
+        const clean = inner.trim()
+        return /^[\w.,]+$/.test(clean) ? `√${clean}` : `√(${clean})`
+      })
+      .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, (_m, num: string, den: string) => {
+        const n = num.trim()
+        const d = den.trim()
+        const nFmt = /^[\w.()√π]+$/.test(n) ? n : `(${n})`
+        const dFmt = /^[\w.()√π]+$/.test(d) ? d : `(${d})`
+        return `${nFmt}/${dFmt}`
+      })
+    if (res === prev) break
+  }
+
+  return res
+    .replace(/\\times/g, "×")
+    .replace(/\\cdot/g, "·")
+    .replace(/\\%/g, "%")
+    .replace(/\\pi/g, "π")
+    .replace(/\\approx/g, "≈")
+    .replace(/\\pm/g, "±")
+    .replace(/\\leq?/g, "≤")
+    .replace(/\\geq?/g, "≥")
+    .replace(/\\neq?/g, "≠")
+    .replace(/\\Delta/g, "Δ")
+    .replace(/\\alpha/g, "α")
+    .replace(/\\beta/g, "β")
+    .replace(/\\Leftrightarrow/g, "⇔")
+    .replace(/\\Rightarrow/g, "⇒")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\\infty/g, "∞")
+    .replace(/\\arctan/g, "arctan")
+    .replace(/\\arcsin/g, "arcsin")
+    .replace(/\\arccos/g, "arccos")
+    .replace(/\\sin/g, "sin")
+    .replace(/\\cos/g, "cos")
+    .replace(/\\tan/g, "tan")
+    .replace(/\\cot/g, "cot")
+    .replace(/\\in\b/g, "∈")
+    .replace(/\\perp/g, "⊥")
+    .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => inner.trim())
+    .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> **${inner.trim()}**\n\n`)
+    .replace(/\b(sin|cos|tan|cot|arcsin|arccos|arctan|log)\s*\{([^{}]+)\}/g, "$1($2)")
+    .replace(/\{([A-Za-z0-9αβγθΔπ]{1,3})\}/g, "$1")
+    .replace(/\^\{2\}|\^2(?![0-9])/g, "²")
+    .replace(/\^\{3\}|\^3(?![0-9])/g, "³")
+    .replace(/\^\{([^}]+)\}/g, "^$1")
+    .replace(/(?<=[a-zA-Z])_\{([0-9]+)\}|(?<=[a-zA-Z])_([0-9])(?![0-9])/g, (_m, g1?: string, g2?: string) => {
+      const subMap: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉" }
+      const raw = g1 || g2 || ""
+      return raw.split("").map((ch) => subMap[ch] ?? ch).join("")
+    })
+    .replace(/_\{([^}]+)\}/g, "($1)")
+    .replace(/\(\s+([^()\n]{2,80}?)\s+\)/g, "($1)")
+}
+
+function withCitationChips(text: string, maxCitationRef?: number) {
+  // Gỡ heading rỗng kiểu '### **[1]' hoặc '**[1]' chưa đóng trước khi chuyển chip trích dẫn
+  const normalizedHeading = text
+    .replace(/^#{1,4}\s*\*{0,2}\s*\[(?:Tài liệu |Nguồn(?:\s*web)? |Web )?(\d{1,3})\]\*{0,2}\s*$/gim, "")
+    .replace(/^(\*{1,2})\[(\d{1,3})\](?!\*{1,2})\s*$/gm, "[$2]")
+  // Làm sạch ký hiệu LaTeX thô và chỉ chuẩn hóa thẻ đóng ngoặc ']' thật sự (không nuốt văn bản sau dấu ':')
+  const cleaned = cleanMathDisplay(normalizedHeading)
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*[:\-]\s*[^\]\n"]{2,160}\]"?/gi, "[$1]")
+    .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?/gi, "[$1]")
+  const cap = typeof maxCitationRef === "number" ? maxCitationRef : 25
+  return cleaned.replace(/(?<![A-Za-z0-9_])\[(\d{1,3})\]/g, (full, n: string) => {
+    const num = Number(n)
+    if (cap <= 0 || num < 1 || num > cap) return full
+    return `[[cite:${n}]]`
+  })
 }
 
 function CodeBlockWithCopy({
@@ -58,9 +135,15 @@ function CodeBlockWithCopy({
   )
 }
 
-export function CitationMarkdown({ content }: { content: string }) {
+export function CitationMarkdown({
+  content,
+  citationCount,
+}: {
+  content: string
+  citationCount?: number
+}) {
   const setActive = useAppStore((s) => s.setActiveCitation)
-  const prepared = withCitationChips(content)
+  const prepared = withCitationChips(content, citationCount)
 
   return (
     <div className="markdown-body text-[15px] leading-7 text-ink">
@@ -69,6 +152,27 @@ export function CitationMarkdown({ content }: { content: string }) {
         components={{
           p({ children }) {
             return <p>{renderNodes(children, setActive)}</p>
+          },
+          h1({ children }) {
+            return <h1>{renderNodes(children, setActive)}</h1>
+          },
+          h2({ children }) {
+            return <h2>{renderNodes(children, setActive)}</h2>
+          },
+          h3({ children }) {
+            return <h3>{renderNodes(children, setActive)}</h3>
+          },
+          h4({ children }) {
+            return <h4>{renderNodes(children, setActive)}</h4>
+          },
+          strong({ children }) {
+            return <strong>{renderNodes(children, setActive)}</strong>
+          },
+          em({ children }) {
+            return <em>{renderNodes(children, setActive)}</em>
+          },
+          blockquote({ children }) {
+            return <blockquote>{renderNodes(children, setActive)}</blockquote>
           },
           li({ children }) {
             return <li>{renderNodes(children, setActive)}</li>
@@ -110,6 +214,9 @@ export function CitationMarkdown({ content }: { content: string }) {
 function renderNodes(children: ReactNode, setActive: (n: number) => void): ReactNode {
   return flatten(children).map((child, i) => {
     if (typeof child === "string") return replaceCites(child, setActive, i)
+    if (isValidElement<{ children?: ReactNode }>(child) && child.props?.children !== undefined) {
+      return cloneElement(child, { key: child.key ?? `el-${i}` }, renderNodes(child.props.children, setActive))
+    }
     return child
   })
 }

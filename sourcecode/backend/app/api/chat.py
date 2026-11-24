@@ -2,10 +2,11 @@ import base64
 import binascii
 import json
 import logging
+import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,7 +21,16 @@ from app.config import (
 )
 from app.database import get_db_connection
 from app.services.ai_router import answer_query, stream_query
-from app.services.llm_service import check_ollama_status
+from app.services.embedding_service import unload_embedding_model
+from app.services.hardware_profile_service import (
+    get_hardware_profile_summary,
+    get_memory_gb,
+    set_selected_profile_mode,
+    trim_process_memory,
+)
+from app.services.llm_service import check_ollama_status, is_vision_model_tag, unload_ollama_models
+from app.services.reranker_service import unload_reranker_model
+from app.services.retrieval_service import invalidate_workspace_vector_cache
 from app.services.web_search_service import search_web
 
 router = APIRouter(prefix="/api/v1", tags=["Chat, Streaming & Conversations"])
@@ -32,12 +42,27 @@ class ChatTurn(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
 
 
+def _validate_image_fields(image_base64: Optional[str], image_mime_type: Optional[str]) -> None:
+    if image_base64:
+        if not image_mime_type:
+            raise ValueError("Thiếu loại ảnh")
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Ảnh gửi lên không hợp lệ") from exc
+        if len(raw) > 5 * 1024 * 1024:
+            raise ValueError("Ảnh tối đa 5 MB")
+    elif image_mime_type:
+        raise ValueError("Thiếu dữ liệu ảnh")
+
+
 class ChatQueryRequest(BaseModel):
     workspace_id: str = "default"
     conversation_id: Optional[str] = None
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
+    reasoning_mode: Optional[Literal["auto", "fast", "deep"]] = "auto"
     web_search: bool = False
     top_k: int = Field(default=8, ge=1, le=30)
     selected_document_id: Optional[str] = Field(default=None, max_length=100)
@@ -48,17 +73,7 @@ class ChatQueryRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_image_payload(self):
-        if self.image_base64:
-            if not self.image_mime_type:
-                raise ValueError("Thiếu loại ảnh")
-            try:
-                raw = base64.b64decode(self.image_base64, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise ValueError("Ảnh gửi lên không hợp lệ") from exc
-            if len(raw) > 5 * 1024 * 1024:
-                raise ValueError("Ảnh tối đa 5 MB")
-        elif self.image_mime_type:
-            raise ValueError("Thiếu dữ liệu ảnh")
+        _validate_image_fields(self.image_base64, self.image_mime_type)
         return self
 
 
@@ -71,10 +86,16 @@ class ChatStreamRequest(BaseModel):
     query: str = Field(min_length=1, max_length=12000)
     model: Optional[str] = None
     mode: Optional[Literal["auto", "local", "web", "hybrid"]] = "auto"
+    reasoning_mode: Optional[Literal["auto", "fast", "deep"]] = "auto"
     top_k: int = Field(default=8, ge=1, le=30)
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
-    image_base64: Optional[str] = None
+    image_base64: Optional[str] = Field(default=None, max_length=7_000_000)
     image_mime_type: Optional[Literal["image/png", "image/jpeg", "image/webp"]] = None
+
+    @model_validator(mode="after")
+    def validate_image_payload(self):
+        _validate_image_fields(self.image_base64, self.image_mime_type)
+        return self
 
 
 class ConversationCreateRequest(BaseModel):
@@ -126,16 +147,70 @@ def _ensure_conversation_record(
         )
 
 
+class HardwareProfileUpdateRequest(BaseModel):
+    mode: Literal["auto", "eco", "balanced", "performance"]
+
+
 @router.get("/status")
 async def get_system_status():
     ollama_info = await check_ollama_status()
+    hardware_profile = get_hardware_profile_summary()
+    available_models = ollama_info.get("available_models") or []
     return {
         "status": "online",
         "database": "SQLite FTS5 Local",
-        "ollama": ollama_info,
-        "dense_retrieval": {"enabled": ENABLE_DENSE_RETRIEVAL, "model": EMBEDDING_MODEL},
+        "ollama": {
+            **ollama_info,
+            "vision_available": any(is_vision_model_tag(str(m)) for m in available_models),
+        },
+        "dense_retrieval": {
+            "enabled": ENABLE_DENSE_RETRIEVAL,
+            "model": EMBEDDING_MODEL,
+            "rerank_enabled": hardware_profile["runtime"]["rerank_enabled"],
+            "fts_first_shortcut": hardware_profile["runtime"]["fts_first_shortcut"],
+        },
+        "hardware_profile": hardware_profile,
         "web_search_enabled": WEB_SEARCH_ENABLED,
         "google_auth_enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+    }
+
+
+@router.patch("/system/hardware-profile")
+async def update_hardware_profile(
+    req: HardwareProfileUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Chuyển đổi hồ sơ hiệu năng AI (Auto / Eco / Balanced / Performance)."""
+    try:
+        profile = set_selected_profile_mode(req.mode)
+        return {"hardware_profile": profile, "message": f"Đã chuyển sang chế độ {profile['active_label']}"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/system/free-memory")
+async def free_system_memory(
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Dỡ ngay các model Embedding, Reranker, Vector Cache và Ollama đang chiếm RAM/VRAM."""
+    before_avail = get_memory_gb()[1]
+    freed_rerank = unload_reranker_model(trim_os=False)
+    freed_embed = unload_embedding_model(trim_os=False)
+    invalidate_workspace_vector_cache()
+    unloaded_ollama = await unload_ollama_models()
+    trim_process_memory()
+    after_avail = get_memory_gb()[1]
+    profile = get_hardware_profile_summary()
+    return {
+        "freed_embedding": freed_embed,
+        "freed_reranker": freed_rerank,
+        "unloaded_ollama_models": unloaded_ollama,
+        "available_ram_gb_before": before_avail,
+        "available_ram_gb_after": after_avail,
+        "hardware_profile": profile,
+        "message": (
+            f"Đã giải phóng bộ nhớ AI (RAM trống: {before_avail:.2f} GB → {after_avail:.2f} GB)."
+        ),
     }
 
 
@@ -143,9 +218,112 @@ async def get_system_status():
 # 1. CHAT STREAMING & SYNCHRONOUS QUERY
 # =============================================================================
 
+def _load_recent_history_from_db(conn, session_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Tải các lượt hội thoại gần nhất kèm chunk_refs trích dẫn từ SQLite để khóa ngữ cảnh câu hỏi nối tiếp."""
+    rows = conn.execute(
+        """
+        SELECT sender, content, citations_json
+        FROM chat_messages
+        WHERE session_id = ? AND content IS NOT NULL AND TRIM(content) != ''
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (session_id, limit),
+    ).fetchall()
+    turns: List[Dict[str, Any]] = []
+    for r in reversed(rows):
+        role = "assistant" if r["sender"] == "assistant" else "user"
+        turn_obj: Dict[str, Any] = {"role": role, "content": str(r["content"])}
+        if role == "assistant" and r["citations_json"]:
+            try:
+                raw_cits = json.loads(r["citations_json"]) or []
+                refs = [
+                    {"document_id": c["document_id"], "chunk_index": c["chunk_index"]}
+                    for c in raw_cits
+                    if isinstance(c, dict) and c.get("document_id") and c.get("chunk_index") is not None
+                ][:4]
+                if refs:
+                    turn_obj["chunk_refs"] = refs
+            except Exception:
+                pass
+        turns.append(turn_obj)
+    return turns
+
+
+class CloudConfigUpdateRequest(BaseModel):
+    provider: Literal["gemini", "openai"] = "gemini"
+    model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=120)
+    api_key: Optional[str] = Field(default=None, max_length=300)
+    enabled: bool = True
+
+
+def _get_cloud_config_raw() -> Dict[str, Any]:
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'cloud_byok_config'").fetchone()
+        if row and row["value"]:
+            return json.loads(row["value"])
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return {"provider": "gemini", "model": "gemini-2.5-flash", "api_key": "", "enabled": False}
+
+
+@router.get("/system/cloud-config")
+async def get_cloud_byok_config(user: Dict[str, Any] = Depends(get_current_user)):
+    cfg = _get_cloud_config_raw()
+    raw_key = str(cfg.get("api_key") or "")
+    masked = f"{raw_key[:4]}...{raw_key[-4:]}" if len(raw_key) >= 10 else ("***" if raw_key else "")
+    return {
+        "provider": cfg.get("provider", "gemini"),
+        "model": cfg.get("model", "gemini-2.5-flash"),
+        "enabled": bool(cfg.get("enabled") and raw_key),
+        "has_api_key": bool(raw_key),
+        "masked_api_key": masked,
+    }
+
+
+@router.put("/system/cloud-config")
+async def update_cloud_byok_config(
+    req: CloudConfigUpdateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    current = _get_cloud_config_raw()
+    final_key = current.get("api_key", "") if req.api_key is None else req.api_key.strip()
+    new_cfg = {
+        "provider": req.provider,
+        "model": req.model.strip(),
+        "api_key": final_key,
+        "enabled": bool(req.enabled and final_key),
+    }
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('cloud_byok_config', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (json.dumps(new_cfg, ensure_ascii=False),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    masked = f"{final_key[:4]}...{final_key[-4:]}" if len(final_key) >= 10 else ("***" if final_key else "")
+    return {
+        "provider": new_cfg["provider"],
+        "model": new_cfg["model"],
+        "enabled": new_cfg["enabled"],
+        "has_api_key": bool(final_key),
+        "masked_api_key": masked,
+    }
+
+
 @router.post("/chat/stream")
 async def stream_chat_knowledge_base(
     req: ChatStreamRequest,
+    request: Request,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     """
@@ -153,6 +331,7 @@ async def stream_chat_knowledge_base(
     Đồng thời tự động lưu phiên hội thoại và tin nhắn vào cơ sở dữ liệu SQLite.
     """
     conn = get_db_connection()
+    history_turns: List[Dict[str, str]] = [turn.model_dump() for turn in req.history]
     try:
         _assert_workspace_ownership(conn, req.workspace_id, user["id"])
         conv_id = req.conversation_id or str(uuid.uuid4())
@@ -165,6 +344,8 @@ async def stream_chat_knowledge_base(
             req.model or DEFAULT_LLM_MODEL,
             req.notebook_id,
         )
+        if not history_turns and req.conversation_id:
+            history_turns = _load_recent_history_from_db(conn, conv_id)
 
         user_msg_id = str(uuid.uuid4())
         conn.execute(
@@ -183,7 +364,9 @@ async def stream_chat_knowledge_base(
         "citations": [],
         "model_used": req.model or DEFAULT_LLM_MODEL,
         "engine": "ollama_local",
+        "latency_seconds": None,
     }
+    started_at = time.perf_counter()
 
     async def sse_event_stream():
         try:
@@ -194,27 +377,43 @@ async def stream_chat_knowledge_base(
                 mode=req.mode or "auto",
                 include_web=(req.mode in ["web", "hybrid"]),
                 top_k=req.top_k,
-                history=[turn.model_dump() for turn in req.history],
+                history=history_turns,
                 image_base64=req.image_base64,
                 selected_document_id=req.selected_document_id,
                 document_ids=req.document_ids,
                 collector=collector,
+                is_disconnected=request.is_disconnected,
+                reasoning_mode=req.reasoning_mode or "auto",
             ):
+                if chunk.strip() == "data: [DONE]":
+                    elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
+                    collector["latency_seconds"] = elapsed
+                    tail_payload = {
+                        "latency_seconds": elapsed,
+                        "model_used": collector.get("model_used", req.model or DEFAULT_LLM_MODEL),
+                        "engine": collector.get("engine", "ollama_local"),
+                    }
+                    yield f"data: {json.dumps(tail_payload, ensure_ascii=False)}\n\n"
                 yield chunk
         finally:
             full_ans = collector.get("full_answer", "")
             citations = collector.get("citations", [])
+            action_res = collector.get("action_result")
             asst_model = collector.get("model_used", req.model or DEFAULT_LLM_MODEL)
+            elapsed = collector.get("latency_seconds")
+            if elapsed is None:
+                elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
             if full_ans:
                 db = get_db_connection()
                 try:
                     asst_msg_id = str(uuid.uuid4())
+                    action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
                     db.execute(
                         """
-                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, mode_used)
-                        VALUES (?, ?, 'assistant', ?, ?, ?)
+                        INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used)
+                        VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
                         """,
-                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), req.mode or "auto"),
+                        (asst_msg_id, conv_id, full_ans, json.dumps(citations, ensure_ascii=False), action_json, req.mode or "auto", elapsed, asst_model),
                     )
                     db.execute(
                         """
@@ -251,6 +450,7 @@ async def query_knowledge_base(
     Endpoint truy vấn RAG đồng bộ (không streaming), hỗ trợ đa nguồn và đa phương thức.
     """
     conn = get_db_connection()
+    history_turns: List[Dict[str, str]] = [turn.model_dump() for turn in req.history]
     try:
         _assert_workspace_ownership(conn, req.workspace_id, user["id"])
         conv_id = req.conversation_id
@@ -263,6 +463,8 @@ async def query_knowledge_base(
                 req.mode or "auto",
                 req.model or DEFAULT_LLM_MODEL,
             )
+            if not history_turns:
+                history_turns = _load_recent_history_from_db(conn, conv_id)
             user_msg_id = str(uuid.uuid4())
             conn.execute(
                 """
@@ -275,34 +477,43 @@ async def query_knowledge_base(
     finally:
         conn.close()
 
+    started_at = time.perf_counter()
     result = await answer_query(
         workspace_id=req.workspace_id,
         query=req.query,
         model=req.model,
         include_web=(req.web_search or req.mode in ["web", "hybrid"]),
         top_k=req.top_k,
-        history=[turn.model_dump() for turn in req.history],
+        history=history_turns,
         image_base64=req.image_base64,
         selected_document_id=req.selected_document_id,
         document_ids=req.document_ids,
         mode=req.mode or "auto",
+        reasoning_mode=req.reasoning_mode or "auto",
     )
+    elapsed = round(max(0.01, time.perf_counter() - started_at), 2)
+    result["latency_seconds"] = elapsed
 
     if req.conversation_id and result.get("answer"):
         conn = get_db_connection()
         try:
             asst_msg_id = str(uuid.uuid4())
+            action_res = result.get("action_result")
+            action_json = json.dumps(action_res, ensure_ascii=False) if action_res else None
             conn.execute(
                 """
-                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, mode_used)
-                VALUES (?, ?, 'assistant', ?, ?, ?)
+                INSERT INTO chat_messages (id, session_id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used)
+                VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asst_msg_id,
                     req.conversation_id,
                     result["answer"],
                     json.dumps(result.get("citations", []), ensure_ascii=False),
+                    action_json,
                     req.mode or "auto",
+                    elapsed,
+                    result.get("model_used"),
                 ),
             )
             conn.execute(
@@ -475,7 +686,7 @@ def get_conversation_messages(
 
         rows = conn.execute(
             """
-            SELECT id, sender, content, citations_json, mode_used, latency_seconds, created_at
+            SELECT id, sender, content, citations_json, action_json, mode_used, latency_seconds, model_used, created_at
             FROM chat_messages
             WHERE session_id = ?
             ORDER BY created_at ASC
@@ -489,6 +700,10 @@ def get_conversation_messages(
                 citations = json.loads(r["citations_json"]) if r["citations_json"] else []
             except Exception:
                 citations = []
+            try:
+                action_result = json.loads(r["action_json"]) if r["action_json"] else None
+            except Exception:
+                action_result = None
             formatted_citations = []
             for idx, c in enumerate(citations):
                 formatted_citations.append({
@@ -496,8 +711,10 @@ def get_conversation_messages(
                     "documentId": c.get("document_id"),
                     "documentName": c.get("document_name") or c.get("title") or "Tài liệu",
                     "pageNumber": c.get("page_number"),
+                    "pageLabel": c.get("page_label") or (f"Trang {c['page_number']}" if c.get("page_number") is not None else None),
                     "chunkIndex": c.get("chunk_index"),
                     "snippet": c.get("snippet", ""),
+                    "fullText": c.get("full_text") or c.get("snippet", ""),
                     "sourceKind": "local" if c.get("document_id") else "web",
                     "url": c.get("url"),
                 })
@@ -508,6 +725,9 @@ def get_conversation_messages(
                 "content": r["content"],
                 "createdAt": r["created_at"],
                 "citations": formatted_citations,
+                **({"actionArtifact": action_result} if action_result else {}),
+                **({"latencySeconds": r["latency_seconds"]} if r["latency_seconds"] is not None else {}),
+                **({"modelId": r["model_used"]} if r["model_used"] else {}),
                 "modeUsed": r["mode_used"] or "auto",
                 "streaming": False,
             })

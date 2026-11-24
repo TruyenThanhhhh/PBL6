@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Dict
+from typing import Dict, Optional
 from app.config import DATABASE_PATH, DATA_DIR, UPLOAD_DIR
 
 
@@ -132,6 +132,11 @@ def init_db() -> None:
         total_chunks INTEGER DEFAULT 0,
         status TEXT NOT NULL,
         error_message TEXT,
+        version_group_id TEXT,
+        version_number INTEGER DEFAULT 1,
+        is_latest INTEGER DEFAULT 1,
+        superseded_by TEXT,
+        effective_date TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
     );
@@ -142,6 +147,11 @@ def init_db() -> None:
         "content_hash": "TEXT",
         "total_pages": "INTEGER DEFAULT 1",
         "error_message": "TEXT",
+        "version_group_id": "TEXT",
+        "version_number": "INTEGER DEFAULT 1",
+        "is_latest": "INTEGER DEFAULT 1",
+        "superseded_by": "TEXT",
+        "effective_date": "TEXT",
     })
 
     cursor.execute("""
@@ -215,6 +225,7 @@ def init_db() -> None:
         content TEXT NOT NULL,
         mode_used TEXT,
         citations_json TEXT,
+        action_json TEXT,
         latency_seconds REAL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
@@ -223,7 +234,9 @@ def init_db() -> None:
 
     _ensure_columns(cursor, "chat_messages", {
         "mode_used": "TEXT",
+        "action_json": "TEXT",
         "latency_seconds": "REAL",
+        "model_used": "TEXT",
     })
 
     cursor.execute("""
@@ -275,11 +288,22 @@ def init_db() -> None:
         status TEXT DEFAULT 'draft',
         selected_doc_ids TEXT,
         report_markdown TEXT DEFAULT '',
+        mode TEXT DEFAULT 'local',
+        allow_web INTEGER DEFAULT 0,
+        step INTEGER DEFAULT 0,
+        citations_json TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
     );
     """)
+
+    _ensure_columns(cursor, "research_projects", {
+        "mode": "TEXT DEFAULT 'local'",
+        "allow_web": "INTEGER DEFAULT 0",
+        "step": "INTEGER DEFAULT 0",
+        "citations_json": "TEXT",
+    })
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS user_activities (
@@ -292,6 +316,14 @@ def init_db() -> None:
     );
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     # =========================================================================
     # 5. CHỈ MỤC TĂNG TỐC TRUY VẤN (INDEXES)
     # =========================================================================
@@ -300,6 +332,8 @@ def init_db() -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_workspace ON documents(workspace_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_notebook ON documents(notebook_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_hash ON documents(workspace_id, content_hash);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_version_group ON documents(workspace_id, version_group_id, version_number);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_latest ON documents(workspace_id, is_latest);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON document_chunks(document_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON document_chunks(workspace_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON chat_sessions(workspace_id);")
@@ -311,3 +345,34 @@ def init_db() -> None:
 
     conn.commit()
     conn.close()
+
+
+def get_app_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Đọc cấu hình hệ thống lưu trong SQLite."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    except sqlite3.Error:
+        return default
+    finally:
+        conn.close()
+
+
+def set_app_setting(key: str, value: str) -> None:
+    """Lưu cấu hình hệ thống vào SQLite."""
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()

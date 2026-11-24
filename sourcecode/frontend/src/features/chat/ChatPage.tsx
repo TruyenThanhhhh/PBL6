@@ -3,14 +3,21 @@ import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowUpRight,
   BookOpen,
+  Brain,
   Check,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
   Compass,
   Copy,
+  Cpu,
   FileQuestion,
   FileText,
+  GitCompare,
   GraduationCap,
   Layers,
   MoreHorizontal,
+  PanelLeftOpen,
   PanelRightOpen,
   Pencil,
   Plus,
@@ -18,6 +25,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  StickyNote,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -25,6 +33,7 @@ import {
   Calendar,
 } from "lucide-react"
 import { InlineEdit } from "@/components/common/InlineEdit"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { ConfirmDialog, NameDialog } from "@/components/common/NameDialog"
 import {
   Alert,
@@ -40,8 +49,11 @@ import {
   createConversationApi,
   deleteConversationApi,
   fetchConversationMessages,
+  fetchSystemStatus,
   renameConversationApi,
   saveStudyArtifactApi,
+  saveWorkspaceNoteApi,
+  updateHardwareProfileApi,
 } from "@/services/api"
 import { getAuthToken } from "@/services/auth-service"
 import {
@@ -57,10 +69,21 @@ import {
 } from "@/services/study-service"
 import { useAppStore } from "@/store/app-store"
 import { formatDate, nowIso, uid } from "@/utils/format"
-import type { AIMode, ChatMessage, Conversation } from "@/types"
+import type {
+  AIMode,
+  ChatImageAttachment,
+  ChatMessage,
+  Conversation,
+  Flashcard,
+  HardwareProfileMode,
+  QuizQuestion,
+  ReasoningMode,
+  ReasoningStepTrace,
+} from "@/types"
 import { cn } from "@/utils/cn"
 import { ModeSelector } from "./ModeSelector"
 import { CitationPanel } from "./CitationPanel"
+import { NotebookSourcesPane } from "./NotebookSourcesPane"
 import { ChatComposer } from "./ChatComposer"
 
 function parseMessageSuggestions(rawContent: string): { mainContent: string; suggestions: string[] } {
@@ -105,6 +128,8 @@ export function ChatPage() {
   const setConversationMessages = useAppStore((s) => s.setConversationMessages)
 
   const saveNote = useAppStore((s) => s.saveNote)
+  const notes = useAppStore((s) => s.notes)
+  const deleteNote = useAppStore((s) => s.deleteNote)
   const upsertQuiz = useAppStore((s) => s.upsertQuiz)
   const upsertFlashcardDeck = useAppStore((s) => s.upsertFlashcardDeck)
   const addStudyTask = useAppStore((s) => s.addStudyTask)
@@ -115,6 +140,7 @@ export function ChatPage() {
   const setCitationOpen = useAppStore((s) => s.setCitationOpen)
   const setActiveCitation = useAppStore((s) => s.setActiveCitation)
   const status = useAppStore((s) => s.status)
+  const setStatus = useAppStore((s) => s.setStatus)
   const toast = useAppStore((s) => s.toast)
   const webSearchEnabled = useAppStore((s) => s.webSearchEnabled)
   const confirmBeforeExternal = useAppStore((s) => s.confirmBeforeExternal)
@@ -124,10 +150,16 @@ export function ChatPage() {
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null)
+  const [pinnedMsgIds, setPinnedMsgIds] = useState<Record<string, boolean>>({})
   const [feedbackMap, setFeedbackMap] = useState<Record<string, "up" | "down">>({})
+  const [sourcesOpen, setSourcesOpen] = useState(true)
+  const [rightTab, setRightTab] = useState<"citations" | "notes">("citations")
+  const [switchingProfile, setSwitchingProfile] = useState(false)
 
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
   const [attachedDocIds, setAttachedDocIds] = useState<string[]>([])
+  const [attachedImage, setAttachedImage] = useState<ChatImageAttachment | null>(null)
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("auto")
 
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
@@ -147,6 +179,11 @@ export function ChatPage() {
   const workspaceDocuments = useMemo(
     () => documents.filter((d) => d.workspaceId === currentWsId),
     [documents, currentWsId],
+  )
+
+  const workspaceNotes = useMemo(
+    () => notes.filter((n) => n.workspaceId === currentWsId),
+    [notes, currentWsId],
   )
 
   const wsConversations = useMemo(
@@ -394,21 +431,24 @@ export function ChatPage() {
 
   const sendQuery = async (queryText: string, regenerateAssistantId?: string) => {
     const trimmed = queryText.trim()
-    if (!trimmed || busy) return
+    const currentImage = regenerateAssistantId ? null : attachedImage
+    if ((!trimmed && !currentImage) || busy) return
+    const effectiveQuery =
+      trimmed || "Hãy đọc, mô tả và phân tích nội dung trong hình ảnh đính kèm."
 
     let activeConv = conversation
     if (!activeConv) {
       if (getAuthToken()) {
         try {
-          activeConv = await createConversationApi(currentWsId, trimmed.slice(0, 68))
+          activeConv = await createConversationApi(currentWsId, effectiveQuery.slice(0, 68))
           useAppStore.setState((s) => ({
             conversations: [activeConv!, ...s.conversations],
           }))
         } catch {
-          activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+          activeConv = createConversation(currentWsId, effectiveQuery.slice(0, 68))
         }
       } else {
-        activeConv = createConversation(currentWsId, trimmed.slice(0, 68))
+        activeConv = createConversation(currentWsId, effectiveQuery.slice(0, 68))
       }
       navigate(`/chat/${activeConv.id}`, { replace: true })
     }
@@ -422,22 +462,38 @@ export function ChatPage() {
     }
 
     const convId = activeConv.id
+    const regenIdx = regenerateAssistantId
+      ? activeConv.messages.findIndex((m) => m.id === regenerateAssistantId)
+      : activeConv.messages.length
+    const validBase = (regenIdx >= 0 ? activeConv.messages.slice(0, regenIdx) : activeConv.messages).filter(
+      (m) => !m.error && !m.streaming && Boolean(m.content?.trim()),
+    )
+    const priorMessages =
+      regenerateAssistantId && validBase.length > 0 && validBase[validBase.length - 1].role === "user"
+        ? validBase.slice(0, -1)
+        : validBase
+    const recentHistory = priorMessages.slice(-8).map((m) => ({
+      role: m.role,
+      content: m.content.slice(0, 6000),
+    }))
 
     if (!regenerateAssistantId) {
       appendMessage(convId, {
         id: uid("msg"),
         role: "user",
-        content: trimmed,
+        content: effectiveQuery,
         createdAt: nowIso(),
         citations: [],
         modeRequested: mode,
+        imageDataUrl: currentImage?.dataUrl,
         attachedDocumentIds: scopedAttachedDocIds.length ? [...scopedAttachedDocIds] : undefined,
         notebookScopeId: selectedNotebookId,
       })
       if (activeConv.title === "Cuộc trò chuyện mới") {
-        void handleRenameConversation(convId, trimmed.slice(0, 68))
+        void handleRenameConversation(convId, effectiveQuery.slice(0, 68))
       }
       setInput("")
+      setAttachedImage(null)
     }
 
     const assistantId = regenerateAssistantId ?? uid("msg")
@@ -466,6 +522,7 @@ export function ChatPage() {
     setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
+    const collectedSteps: ReasoningStepTrace[] = []
 
     try {
       const { message } = await sendChatMessageService({
@@ -473,12 +530,29 @@ export function ChatPage() {
         workspaceId: currentWsId,
         notebookScopeId: selectedNotebookId,
         attachedDocumentIds: attachedDocIds,
-        query: trimmed,
+        query: effectiveQuery,
         mode,
+        reasoningMode,
         modelId: localLlmModel,
         backendOnline: status.backendOnline,
         contextDocuments: workspaceDocuments,
+        history: recentHistory,
+        imageBase64: currentImage?.base64,
+        imageMimeType: currentImage?.mimeType,
         signal: controller.signal,
+        onStreamProgress: ({ stage, stageLabel, citations: earlyCitations, reasoningStep, actionArtifact }) => {
+          if (reasoningStep) {
+            collectedSteps.push(reasoningStep)
+          }
+          updateMessage(convId, assistantId, {
+            ...(earlyCitations ? { citations: earlyCitations } : {}),
+            ...(stage ? { progressStage: stage } : {}),
+            ...(stageLabel ? { progressLabel: stageLabel } : {}),
+            ...(reasoningStep ? { reasoningSteps: [...collectedSteps] } : {}),
+            ...(actionArtifact ? { actionArtifact } : {}),
+            streaming: true,
+          })
+        },
         onStreamChunk: (partial) => {
           updateMessage(convId, assistantId, {
             content: partial,
@@ -487,9 +561,45 @@ export function ChatPage() {
         },
       })
 
+      if (message.actionArtifact?.action_type === "create_quiz" && message.actionArtifact.quiz) {
+        const qData = message.actionArtifact.quiz
+        upsertQuiz({
+          id: String(qData.id ?? message.actionArtifact.artifact_id ?? uid("quiz")),
+          workspaceId: currentWsId,
+          documentId: (qData.documentId as string | null) ?? null,
+          documentName: (qData.documentName as string | null) ?? null,
+          title: String(qData.title ?? message.actionArtifact.title ?? "Quiz AI"),
+          difficulty: (qData.difficulty as "easy" | "medium" | "hard") || "medium",
+          questions: (qData.questions as QuizQuestion[]) || [],
+          answers: {},
+          submitted: false,
+          createdAt: nowIso(),
+          attempts: [],
+        })
+      } else if (
+        message.actionArtifact?.action_type === "create_flashcards" &&
+        message.actionArtifact.deck
+      ) {
+        const dData = message.actionArtifact.deck
+        const nowTime = nowIso()
+        upsertFlashcardDeck({
+          id: String(dData.id ?? message.actionArtifact.artifact_id ?? uid("deck")),
+          workspaceId: currentWsId,
+          documentId: (dData.documentId as string | null) ?? null,
+          documentName: (dData.documentName as string | null) ?? null,
+          title: String(dData.title ?? message.actionArtifact.title ?? "Flashcards AI"),
+          cardStyle: (dData.cardStyle as Flashcard["cardStyle"]) || "term_definition",
+          cards: (dData.cards as Flashcard[]) || [],
+          createdAt: nowTime,
+          updatedAt: nowTime,
+        })
+      }
+
       updateMessage(convId, assistantId, {
         ...message,
         id: assistantId,
+        reasoningSteps:
+          message.reasoningSteps?.length ? message.reasoningSteps : collectedSteps.length ? collectedSteps : undefined,
         streaming: false,
         error: undefined,
       })
@@ -716,17 +826,173 @@ export function ChatPage() {
     )
   }
 
+  const handlePinAnswerToNote = async (msg: ChatMessage) => {
+    const { mainContent } = parseMessageSuggestions(msg.content)
+    const cleanBody = (mainContent || msg.content || "").trim()
+    if (!cleanBody) return
+    const promptTitle = findPrecedingUserPrompt(msg.id) || conversation?.title || "Ghi chú AI"
+    const cleanTitle = promptTitle.length > 64 ? `${promptTitle.slice(0, 61)}...` : promptTitle
+    const citedDocId = msg.citations[0]?.documentId ?? scopedAttachedDocIds[0] ?? null
+    const localNote = {
+      id: uid("note"),
+      workspaceId: currentWsId,
+      notebookId: selectedNotebookId,
+      documentId: citedDocId,
+      title: cleanTitle,
+      content: cleanBody,
+      updatedAt: nowIso(),
+    }
+    saveNote(localNote)
+    if (getAuthToken()) {
+      try {
+        await saveWorkspaceNoteApi(currentWsId, {
+          title: cleanTitle,
+          content: cleanBody,
+          notebook_id: selectedNotebookId,
+          document_id: citedDocId,
+        })
+      } catch {
+        // Fallback giữ bản ghi chú ở local store nếu mạng/server tạm ngắt
+      }
+    }
+    setPinnedMsgIds((prev) => ({ ...prev, [msg.id]: true }))
+    setRightTab("notes")
+    setCitationOpen(true)
+    toast({
+      title: "Đã lưu vào Ghi chú Studio",
+      description: cleanTitle,
+      tone: "success",
+    })
+  }
+
+  const handleSwitchHardwareProfile = async (mode: HardwareProfileMode) => {
+    if (switchingProfile) return
+    setSwitchingProfile(true)
+    try {
+      const res = await updateHardwareProfileApi(mode)
+      const fresh = await fetchSystemStatus().catch(() => null)
+      if (fresh) {
+        setStatus(fresh)
+      } else if (res.hardwareProfile) {
+        setStatus({ ...status, hardwareProfile: res.hardwareProfile })
+      }
+      toast({
+        title: `Đã chuyển cấu hình: ${res.hardwareProfile?.activeLabel || mode}`,
+        description: res.message,
+        tone: "success",
+      })
+    } catch {
+      toast({
+        title: "Không thể đổi cấu hình hiệu năng lúc này",
+        tone: "error",
+      })
+    } finally {
+      setSwitchingProfile(false)
+    }
+  }
+
+  const activeProfileId = status.hardwareProfile?.activeId ?? "balanced"
+  const activeProfileBadge =
+    activeProfileId === "eco"
+      ? "Eco · Máy yếu"
+      : activeProfileId === "performance"
+        ? "Hiệu năng cao"
+        : "Cân bằng"
+
   const citationCount = lastAssistant?.citations.length ?? 0
 
   return (
     <div className="relative flex h-full w-full min-w-0 overflow-hidden bg-white">
       {/* =====================================================================
-          MAIN CHAT AREA (64% chiều rộng - Khu vực nổi bật nhất)
+          PANE TRÁI: NGUỒN TRI THỨC & SOURCE GUIDE (CHUẨN NOTEBOOKLM)
+      ===================================================================== */}
+      {sourcesOpen ? (
+        <>
+          <div className="hidden h-full w-[250px] shrink-0 lg:flex">
+            <NotebookSourcesPane
+              workspaceId={currentWsId}
+              notebookId={selectedNotebookId}
+              documents={workspaceDocuments}
+              attachedDocIds={scopedAttachedDocIds}
+              onToggleDoc={toggleAttachDoc}
+              onSelectAllDocs={() => setAttachedDocIds(workspaceDocuments.map((d) => d.id))}
+              onClearDocs={() => setAttachedDocIds([])}
+              onAskQuestion={(q) => void sendQuery(q)}
+              onClose={() => setSourcesOpen(false)}
+              busy={busy}
+            />
+          </div>
+
+          <div className="fixed inset-0 z-40 flex justify-start lg:hidden">
+            <div className="relative z-10 h-full w-72 max-w-[85vw] bg-[#F7FAF9] shadow-xl">
+              <NotebookSourcesPane
+                workspaceId={currentWsId}
+                notebookId={selectedNotebookId}
+                documents={workspaceDocuments}
+                attachedDocIds={scopedAttachedDocIds}
+                onToggleDoc={toggleAttachDoc}
+                onSelectAllDocs={() => setAttachedDocIds(workspaceDocuments.map((d) => d.id))}
+                onClearDocs={() => setAttachedDocIds([])}
+                onAskQuestion={(q) => {
+                  setSourcesOpen(false)
+                  void sendQuery(q)
+                }}
+                onClose={() => setSourcesOpen(false)}
+                busy={busy}
+              />
+            </div>
+            <button
+              type="button"
+              aria-label="Đóng cột nguồn"
+              className="fixed inset-0 bg-[#172B29]/30"
+              onClick={() => setSourcesOpen(false)}
+            />
+          </div>
+        </>
+      ) : (
+        <aside className="hidden h-full w-9 shrink-0 flex-col items-center border-r border-[#DCE7E4] bg-[#F7FAF9] py-2.5 lg:flex">
+          <Tooltip content="Mở cột Nguồn tri thức" side="right">
+            <button
+              type="button"
+              onClick={() => setSourcesOpen(true)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#DCE7E4] bg-white text-[#172B29] transition-colors hover:border-[#087F73] hover:text-[#087F73]"
+              aria-label="Mở rộng Nguồn tri thức"
+            >
+              <PanelLeftOpen className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        </aside>
+      )}
+
+      {/* =====================================================================
+          PANE GIỮA: HỘI THOẠI TRÍCH DẪN CHUẨN XÁC (GROUNDED CHAT)
       ===================================================================== */}
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-white">
         {/* Header phiên hội thoại: gọn gàng, tinh tế */}
         <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#DCE7E4] bg-white px-3 md:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
+            {!sourcesOpen ? (
+              <Tooltip content="Mở danh sách Nguồn tri thức" side="bottom">
+                <button
+                  type="button"
+                  onClick={() => setSourcesOpen(true)}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-[#DCE7E4] bg-[#F7FAF9] px-2 text-[11px] font-medium text-[#172B29] hover:border-[#087F73] hover:text-[#087F73]"
+                >
+                  <PanelLeftOpen className="h-3 w-3" />
+                  <span>Nguồn ({workspaceDocuments.length})</span>
+                </button>
+              </Tooltip>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSourcesOpen(true)}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#DCE7E4] bg-[#F7FAF9] px-2 text-[11px] font-medium text-[#172B29] lg:hidden"
+              >
+                <PanelLeftOpen className="h-3 w-3" />
+                <span>Nguồn ({workspaceDocuments.length})</span>
+              </button>
+            )}
+
             {conversation ? (
               <div className="min-w-0 max-w-md flex-1">
                 <InlineEdit
@@ -748,10 +1014,59 @@ export function ChatPage() {
           </div>
 
           <div className="flex items-center gap-1.5">
+            {status.backendOnline ? (
+              <DropdownMenu
+                align="end"
+                trigger={
+                  <button
+                    type="button"
+                    disabled={switchingProfile}
+                    title="Tối ưu hiệu năng cho máy yếu / cân bằng / hiệu năng cao"
+                    className={cn(
+                      "hidden h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors sm:inline-flex",
+                      activeProfileId === "eco"
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                        : "border-[#DCE7E4] bg-[#F7FAF9] text-[#172B29] hover:border-[#087F73]",
+                    )}
+                  >
+                    <Cpu className="h-3 w-3 text-[#087F73]" />
+                    <span>{activeProfileBadge}</span>
+                    <ChevronDown className="h-2.5 w-2.5 text-[#647C79]" />
+                  </button>
+                }
+              >
+                <DropdownMenuLabel>Tối ưu phần cứng cục bộ</DropdownMenuLabel>
+                <DropdownMenuItem
+                  icon={<Check className={cn("h-3.5 w-3.5", (status.hardwareProfile?.selectedMode ?? "auto") === "auto" ? "text-[#087F73]" : "opacity-0")} />}
+                  onClick={() => void handleSwitchHardwareProfile("auto")}
+                >
+                  Tự động nhận diện máy
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  icon={<Check className={cn("h-3.5 w-3.5", status.hardwareProfile?.selectedMode === "eco" ? "text-[#087F73]" : "opacity-0")} />}
+                  onClick={() => void handleSwitchHardwareProfile("eco")}
+                >
+                  Eco · Máy yếu / RAM ít (Siêu nhanh)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  icon={<Check className={cn("h-3.5 w-3.5", status.hardwareProfile?.selectedMode === "balanced" ? "text-[#087F73]" : "opacity-0")} />}
+                  onClick={() => void handleSwitchHardwareProfile("balanced")}
+                >
+                  Cân bằng (Laptop phổ thông)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  icon={<Check className={cn("h-3.5 w-3.5", status.hardwareProfile?.selectedMode === "performance" ? "text-[#087F73]" : "opacity-0")} />}
+                  onClick={() => void handleSwitchHardwareProfile("performance")}
+                >
+                  Hiệu năng cao (GPU / nhiều RAM)
+                </DropdownMenuItem>
+              </DropdownMenu>
+            ) : null}
+
             <ModeSelector value={aiMode} onChange={handleModeChange} />
 
             <Tooltip
-              content={citationOpen ? "Ẩn bảng ngữ cảnh" : "Mở bảng ngữ cảnh"}
+              content={citationOpen ? "Ẩn bảng Trích dẫn & Studio" : "Mở Trích dẫn & Ghi chú"}
               side="bottom"
             >
               <button
@@ -767,7 +1082,7 @@ export function ChatPage() {
               >
                 <PanelRightOpen className="h-3 w-3" />
                 <span className="hidden sm:inline text-[11px]">
-                  {citationCount > 0 ? `Nguồn (${citationCount})` : `Kho (${workspaceDocuments.length})`}
+                  {citationCount > 0 ? `Bằng chứng (${citationCount})` : `Studio (${workspaceNotes.length})`}
                 </span>
               </button>
             </Tooltip>
@@ -916,9 +1231,18 @@ export function ChatPage() {
                       ) : null}
 
                       {isUser ? (
-                        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
-                          {m.content}
-                        </p>
+                        <div className="space-y-1.5">
+                          {m.imageDataUrl ? (
+                            <img
+                              src={m.imageDataUrl}
+                              alt="Ảnh đính kèm"
+                              className="max-h-56 w-auto rounded-lg border border-[#DCE7E4] bg-white object-contain"
+                            />
+                          ) : null}
+                          <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
+                            {m.content}
+                          </p>
+                        </div>
                       ) : m.error ? (
                         <div className="space-y-2.5">
                           <Alert
@@ -940,16 +1264,191 @@ export function ChatPage() {
                           </Button>
                         </div>
                       ) : m.streaming && !m.content ? (
-                        <div className="space-y-1.5 py-1.5" aria-live="polite">
+                        <div className="space-y-2 py-1.5" aria-live="polite">
                           <div className="flex items-center gap-2 text-xs text-[#647C79]">
                             <span className="h-1.5 w-1.5 animate-ping rounded-full bg-[#087F73]" />
-                            <span>Đang truy xuất tài liệu...</span>
+                            <span>{m.progressLabel || "Đang tìm thông tin trong tài liệu..."}</span>
                           </div>
-                          <div className="h-2.5 w-1/2 animate-pulse rounded bg-[#F1F6F5]" />
+                          {m.reasoningSteps && m.reasoningSteps.length > 0 ? (
+                            <div className="space-y-1 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5]/70 px-3 py-2 text-[11px] text-[#172B29]">
+                              {m.reasoningSteps.map((st) => (
+                                <div key={st.step} className="flex items-start gap-1.5">
+                                  <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-[#087F73]" />
+                                  <span>
+                                    <strong>Bước {st.step} ({st.title}):</strong> {st.detail}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {m.citations.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {m.citations.slice(0, 4).map((c) => (
+                                <button
+                                  key={c.refId}
+                                  type="button"
+                                  onClick={() => setActiveCitation(c.refId)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-[#DCE7E4] bg-[#F1F6F5] px-2 py-0.5 text-[11px] text-[#172B29] hover:border-[#087F73] hover:text-[#087F73]"
+                                >
+                                  <span className="font-semibold text-[#087F73]">[{c.refId}]</span>
+                                  <span className="max-w-[160px] truncate">{c.documentName}</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="h-2.5 w-1/2 animate-pulse rounded bg-[#F1F6F5]" />
+                          )}
                         </div>
                       ) : (
-                        <div className="text-[#172B29]">
-                          <CitationMarkdown content={mainContent} />
+                        <div className="space-y-3 text-[#172B29]">
+                          {/* Hiển thị luồng suy luận & kết quả kiểm chứng nếu có */}
+                          {!isUser &&
+                          ((m.reasoningSteps && m.reasoningSteps.length > 0) ||
+                            (m.actionArtifact?.reasoning_steps &&
+                              m.actionArtifact.reasoning_steps.length > 0)) ? (
+                            <details className="rounded-lg border border-[#DCE7E4] bg-[#F1F6F5]/60 px-3 py-2 text-xs">
+                              <summary className="flex cursor-pointer items-center justify-between font-medium text-[#087F73] select-none">
+                                <span className="flex items-center gap-1.5">
+                                  <Brain className="h-3.5 w-3.5" />
+                                  <span>
+                                    Quá trình AI tự suy luận (
+                                    {(m.actionArtifact?.reasoning_steps ?? m.reasoningSteps ?? []).length} bước)
+                                  </span>
+                                  {m.actionArtifact?.sandbox?.ok ? (
+                                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                      Đã kiểm chứng Python Sandbox
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <ChevronDown className="h-3.5 w-3.5 text-[#647C79]" />
+                              </summary>
+                              <div className="mt-2 space-y-1.5 border-t border-[#DCE7E4]/70 pt-2 text-[11.5px] text-[#172B29]">
+                                {(m.actionArtifact?.reasoning_steps ?? m.reasoningSteps ?? []).map((st) => (
+                                  <div key={st.step} className="flex items-start gap-1.5">
+                                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#087F73]" />
+                                    <div>
+                                      <span className="font-semibold">
+                                        Bước {st.step} — {st.title}:
+                                      </span>{" "}
+                                      {st.detail}
+                                    </div>
+                                  </div>
+                                ))}
+                                {m.actionArtifact?.sandbox?.ok ? (
+                                  <div className="mt-1.5 rounded border border-emerald-200 bg-white px-2.5 py-1.5 font-mono text-[11px]">
+                                    <div className="font-sans text-[10.5px] font-semibold text-emerald-700">
+                                      Chi tiết kiểm chứng tính toán / điều kiện:
+                                    </div>
+                                    {m.actionArtifact.sandbox.steps.map((sb, sIdx) => (
+                                      <div key={sIdx}>
+                                        {sb.expr} → <strong>{String(sb.value)}</strong>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </details>
+                          ) : null}
+
+                          <CitationMarkdown content={mainContent} citationCount={m.citations?.length ?? 0} />
+
+                          {/* Action Card thực thi trực tiếp cho Học liệu / Văn bản / Đối chiếu */}
+                          {!isUser && m.actionArtifact && !m.streaming ? (
+                            <>
+                              {["create_quiz", "create_flashcards", "create_mindmap", "create_plan"].includes(
+                                m.actionArtifact.action_type,
+                              ) ? (
+                                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#087F73]/30 bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#087F73]">
+                                      <GraduationCap className="h-4 w-4 shrink-0" />
+                                      <span className="truncate">{m.actionArtifact.title || "Học liệu AI"}</span>
+                                    </div>
+                                    {m.actionArtifact.summary ? (
+                                      <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                        {m.actionArtifact.summary}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    leftIcon={<ArrowUpRight className="h-3.5 w-3.5" />}
+                                    onClick={() =>
+                                      navigate(`/study?tab=${m.actionArtifact?.study_tab ?? "quiz"}`)
+                                    }
+                                  >
+                                    Mở Học liệu ngay
+                                  </Button>
+                                </div>
+                              ) : null}
+
+                              {m.actionArtifact.action_type === "compose_document" &&
+                              m.actionArtifact.markdown ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#087F73]/30 bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#172B29]">
+                                      <FileText className="h-4 w-4 shrink-0 text-[#087F73]" />
+                                      <span className="truncate">
+                                        {m.actionArtifact.title || "Văn bản đã soạn thảo"}
+                                      </span>
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                      {m.actionArtifact.summary || "Xuất trực tiếp ra Word (.docx), PDF hoặc Markdown."}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        saveNote({
+                                          id: uid("note"),
+                                          workspaceId: currentWsId,
+                                          notebookId: selectedNotebookId,
+                                          documentId: attachedDocIds[0] ?? null,
+                                          title: m.actionArtifact?.title || "Văn bản từ Chat AI",
+                                          content: m.actionArtifact?.markdown || mainContent,
+                                          updatedAt: nowIso(),
+                                        })
+                                        toast({ title: "Đã lưu văn bản vào Ghi chú Học liệu", tone: "success" })
+                                      }}
+                                    >
+                                      Lưu vào Ghi chú
+                                    </Button>
+                                    <ExportFormatMenu
+                                      title={m.actionArtifact.title || "Van_ban_AI"}
+                                      content={m.actionArtifact.markdown}
+                                      label="Xuất tệp"
+                                      size="sm"
+                                      variant="default"
+                                    />
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {m.actionArtifact.action_type === "version_diff" &&
+                              m.actionArtifact.markdown ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#DCE7E4] bg-[#F1F6F5] px-3.5 py-2.5">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-xs font-semibold text-[#172B29]">
+                                      <GitCompare className="h-4 w-4 shrink-0 text-[#087F73]" />
+                                      <span className="truncate">{m.actionArtifact.title}</span>
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] text-[#647C79]">
+                                      Tương đồng: {m.actionArtifact.similarity_percent ?? 100}% · Phát hiện{" "}
+                                      {m.actionArtifact.total_changes ?? 0} điểm khác biệt
+                                    </div>
+                                  </div>
+                                  <ExportFormatMenu
+                                    title={m.actionArtifact.title || "Doi_chieu_phien_ban"}
+                                    content={m.actionArtifact.markdown}
+                                    label="Xuất báo cáo đối chiếu"
+                                    size="sm"
+                                  />
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
                         </div>
                       )}
 
@@ -981,7 +1480,27 @@ export function ChatPage() {
                       {!isUser && !m.streaming && !m.error ? (
                         <div className="mt-3 pt-1">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void handlePinAnswerToNote(m)}
+                                className={cn(
+                                  "inline-flex h-6.5 items-center gap-1 rounded border px-2 text-xs font-medium transition-colors",
+                                  pinnedMsgIds[m.id]
+                                    ? "border-[#087F73]/40 bg-[#E8F4F2] text-[#087F73]"
+                                    : "border-[#DCE7E4] bg-white text-[#172B29] hover:border-[#087F73] hover:text-[#087F73]",
+                                )}
+                              >
+                                {pinnedMsgIds[m.id] ? (
+                                  <Check className="h-3 w-3" />
+                                ) : (
+                                  <StickyNote className="h-3 w-3 text-[#087F73]" />
+                                )}
+                                <span className="text-[11px]">
+                                  {pinnedMsgIds[m.id] ? "Đã lưu Studio" : "Lưu ghi chú"}
+                                </span>
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={() => void handleCopyMessage(m)}
@@ -1041,6 +1560,20 @@ export function ChatPage() {
                                   <ThumbsDown className="h-3 w-3" />
                                 </button>
                               </Tooltip>
+
+                              {m.modelId || m.latencySeconds != null ? (
+                                <span className="ml-1 hidden items-center gap-1 rounded-md bg-[#F1F6F5] px-2 py-0.5 text-[10.5px] text-[#647C79] sm:inline-flex">
+                                  <Clock className="h-2.5 w-2.5" />
+                                  <span>
+                                    {[
+                                      m.modelId && m.modelId !== "auto" ? m.modelId : null,
+                                      m.latencySeconds != null ? `${m.latencySeconds.toFixed(1)}s` : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </span>
+                                </span>
+                              ) : null}
                             </div>
 
                             <DropdownMenu
@@ -1109,6 +1642,8 @@ export function ChatPage() {
             busy={busy}
             aiMode={aiMode}
             onModeChange={handleModeChange}
+            reasoningMode={reasoningMode}
+            onReasoningModeChange={setReasoningMode}
             modelId={localLlmModel}
             onModelChange={handleModelChange}
             currentWorkspace={currentWorkspace}
@@ -1119,22 +1654,29 @@ export function ChatPage() {
             attachedDocIds={scopedAttachedDocIds}
             onToggleAttachDoc={toggleAttachDoc}
             onClearAttachedDocs={() => setAttachedDocIds([])}
+            attachedImage={attachedImage}
+            onAttachImage={setAttachedImage}
+            visionAvailable={status.visionAvailable}
             backendOnline={status.backendOnline}
           />
         </div>
       </div>
 
       {/* =====================================================================
-          CONTEXT PANEL BÊN PHẢI (20% chiều rộng - Nền #F1F6F5)
+          PANE PHẢI: TRÍCH DẪN ĐẦY ĐỦ & GHI CHÚ STUDIO (NOTEBOOKLM)
       ===================================================================== */}
       {citationOpen ? (
         <>
-          <div className="hidden h-full w-[24%] min-w-[260px] max-w-[320px] shrink-0 xl:flex">
+          <div className="hidden h-full w-[30%] min-w-[290px] max-w-[400px] shrink-0 xl:flex">
             <CitationPanel
               citations={lastAssistant?.citations ?? []}
               workspaceDocuments={workspaceDocuments}
               attachedDocIds={scopedAttachedDocIds}
               onToggleAttachDoc={toggleAttachDoc}
+              notes={workspaceNotes}
+              activeTab={rightTab}
+              onTabChange={setRightTab}
+              onDeleteNote={deleteNote}
               onClose={() => setCitationOpen(false)}
             />
           </div>
@@ -1146,12 +1688,16 @@ export function ChatPage() {
               className="fixed inset-0 bg-[#172B29]/30"
               onClick={() => setCitationOpen(false)}
             />
-            <div className="relative z-10 h-full w-80 max-w-[88vw] bg-[#F1F6F5]">
+            <div className="relative z-10 h-full w-96 max-w-[90vw] bg-[#F7FAF9]">
               <CitationPanel
                 citations={lastAssistant?.citations ?? []}
                 workspaceDocuments={workspaceDocuments}
                 attachedDocIds={scopedAttachedDocIds}
                 onToggleAttachDoc={toggleAttachDoc}
+                notes={workspaceNotes}
+                activeTab={rightTab}
+                onTabChange={setRightTab}
+                onDeleteNote={deleteNote}
                 onClose={() => setCitationOpen(false)}
               />
             </div>

@@ -5,13 +5,16 @@ import {
   Eye,
   FileText,
   FolderInput,
+  GitCompare,
   MoreHorizontal,
   Search,
   Trash2,
 } from "lucide-react"
 import { PageHeader } from "@/components/common/PageHeader"
 import { ConfirmDialog } from "@/components/common/NameDialog"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
 import { InlineEdit } from "@/components/common/InlineEdit"
+import { CitationMarkdown } from "@/features/citations/CitationMarkdown"
 import {
   Badge,
   Button,
@@ -32,7 +35,7 @@ import {
   TableRow,
 } from "@/components/ui"
 import { useAppStore } from "@/store/app-store"
-import { deleteDocumentApi } from "@/services/api"
+import { deleteDocumentApi, diffWorkspaceDocumentsApi } from "@/services/api"
 import { formatBytes, formatDate } from "@/utils/format"
 import type { KnowledgeDocument } from "@/types"
 import { DocumentUploadPanel } from "./DocumentUploadPanel"
@@ -69,6 +72,14 @@ export function DocumentsPage() {
   const [moveDoc, setMoveDoc] = useState<KnowledgeDocument | null>(null)
   const [moveWsId, setMoveWsId] = useState<string>("")
   const [moveNbId, setMoveNbId] = useState<string>("")
+  const [diffOpen, setDiffOpen] = useState(false)
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [diffResult, setDiffResult] = useState<{
+    title: string
+    markdown: string
+    similarityPercent?: number
+    totalChanges?: number
+  } | null>(null)
 
   const moveWorkspaceNotebooks = useMemo(() => {
     if (!moveWsId) return []
@@ -165,6 +176,49 @@ export function DocumentsPage() {
     setStatusFilter("all")
   }
 
+  const versionedDocs = useMemo(
+    () => wsDocuments.filter((d) => (d.versionNumber ?? 1) > 1 || d.isLatest === false),
+    [wsDocuments],
+  )
+
+  const handleCompareVersions = async (newDocId?: string, oldDocId?: string) => {
+    if (!status.backendOnline) {
+      toast({
+        title: "Cần kết nối Backend",
+        description: "Tính năng đối chiếu phiên bản cần máy chủ Backend đang chạy.",
+        tone: "warning",
+      })
+      return
+    }
+    setDiffOpen(true)
+    setDiffLoading(true)
+    setDiffResult(null)
+    try {
+      const res = await diffWorkspaceDocumentsApi(activeWsId, {
+        oldDocumentId: oldDocId,
+        newDocumentId: newDocId,
+        includeAiSummary: true,
+      })
+      const oldName = String(res.old_document?.file_name ?? "Bản cũ")
+      const oldVer = Number(res.old_document?.version_number ?? 1)
+      const newName = String(res.new_document?.file_name ?? "Bản mới")
+      const newVer = Number(res.new_document?.version_number ?? 2)
+      setDiffResult({
+        title: `Đối chiếu ${oldName} (v${oldVer}) -> ${newName} (v${newVer})`,
+        markdown: res.markdown,
+        similarityPercent: res.similarity_percent,
+        totalChanges: res.total_changes,
+      })
+    } catch (err) {
+      setDiffResult({
+        title: "Không thể đối chiếu phiên bản",
+        markdown: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setDiffLoading(false)
+    }
+  }
+
   const renderActionMenu = (doc: KnowledgeDocument) => (
     <DropdownMenu
       align="end"
@@ -209,6 +263,18 @@ export function DocumentsPage() {
       <PageHeader
         title="Tài liệu"
         description="Tải lên và quản lý các tài liệu tri thức trong không gian làm việc của bạn."
+        actions={
+          versionedDocs.length > 0 || wsDocuments.length >= 2 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<GitCompare className="h-3.5 w-3.5 text-[#087F73]" />}
+              onClick={() => void handleCompareVersions()}
+            >
+              So sánh phiên bản
+            </Button>
+          ) : undefined
+        }
       />
 
       {/* Khu vực Tải lên tài liệu (tự động gắn vào không gian đang chọn) */}
@@ -326,6 +392,12 @@ export function DocumentsPage() {
                         >
                           <Eye className="h-3.5 w-3.5" />
                         </button>
+                        {(d.versionNumber ?? 1) > 1 || d.isLatest === false ? (
+                          <Badge tone={d.isLatest === false ? "neutral" : "success"}>
+                            v{d.versionNumber ?? 1}
+                            {d.isLatest === false ? " · Cũ" : " · Mới nhất"}
+                          </Badge>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -411,6 +483,38 @@ export function DocumentsPage() {
               Xác nhận chuyển
             </Button>
           </div>
+        </div>
+      </Dialog>
+
+      {/* Dialog đối chiếu thay đổi giữa các phiên bản tài liệu */}
+      <Dialog
+        open={diffOpen}
+        title={diffResult?.title || "Đối chiếu thay đổi phiên bản"}
+        onClose={() => setDiffOpen(false)}
+      >
+        <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+          {diffLoading ? (
+            <div className="py-8 text-center text-xs text-muted">
+              Đang đối chiếu nội dung giữa các phiên bản...
+            </div>
+          ) : diffResult ? (
+            <>
+              <div className="text-xs text-[#172B29]">
+                <CitationMarkdown content={diffResult.markdown} />
+              </div>
+              <div className="flex justify-end gap-2 border-t border-line pt-3">
+                <ExportFormatMenu
+                  title={diffResult.title || "Doi_chieu_phien_ban"}
+                  content={diffResult.markdown}
+                  label="Xuất báo cáo"
+                  size="sm"
+                />
+                <Button variant="outline" size="sm" onClick={() => setDiffOpen(false)}>
+                  Đóng
+                </Button>
+              </div>
+            </>
+          ) : null}
         </div>
       </Dialog>
     </div>

@@ -1,330 +1,585 @@
 import { useEffect, useState } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { useNavigate } from "react-router-dom"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
-  AlertCircle,
-  ArrowUpRight,
+  BookOpenCheck,
   Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   ExternalLink,
   FileText,
   Globe,
+  Loader2,
+  NotebookPen,
   PanelRightClose,
-  Paperclip,
-  Plus,
   Quote,
+  StickyNote,
+  Trash2,
+  Volume2,
+  VolumeX,
+  X,
 } from "lucide-react"
-import type { Citation, KnowledgeDocument } from "@/types"
-import { Button, Tooltip } from "@/components/ui"
-import { useAppStore } from "@/store/app-store"
+import { Badge, Button, EmptyState, Tooltip } from "@/components/ui"
+import { ExportFormatMenu } from "@/components/common/ExportFormatMenu"
+import { fetchDocumentChunks, type DocumentChunkRecord } from "@/services/api"
 import { buildSourceViewerHref, resolveCitationEvidence } from "@/services/source-service"
-import { formatBytes } from "@/utils/format"
+import { useAppStore } from "@/store/app-store"
+import type { Citation, EvidenceItem, KnowledgeDocument, Note } from "@/types"
+import { formatDate } from "@/utils/format"
 import { cn } from "@/utils/cn"
 
 export function CitationPanel({
   citations,
-  workspaceDocuments = [],
-  attachedDocIds = [],
-  onToggleAttachDoc,
+  workspaceDocuments,
+  notes = [],
+  activeTab: controlledTab,
+  onTabChange,
+  onDeleteNote,
   onClose,
 }: {
   citations: Citation[]
-  workspaceDocuments?: KnowledgeDocument[]
+  workspaceDocuments: KnowledgeDocument[]
   attachedDocIds?: string[]
   onToggleAttachDoc?: (docId: string) => void
+  notes?: Note[]
+  activeTab?: "citations" | "notes"
+  onTabChange?: (tab: "citations" | "notes") => void
+  onDeleteNote?: (noteId: string) => void
   onClose: () => void
 }) {
-  const { conversationId } = useParams()
-  const active = useAppStore((s) => s.activeCitation)
-  const setActive = useAppStore((s) => s.setActiveCitation)
-  const allDocuments = useAppStore((s) => s.documents)
   const navigate = useNavigate()
+  const activeCitation = useAppStore((s) => s.activeCitation)
+  const setActiveCitation = useAppStore((s) => s.setActiveCitation)
+  const toast = useAppStore((s) => s.toast)
 
-  const [manualTab, setManualTab] = useState<"overview" | "citations" | null>(null)
-  const activeTab: "overview" | "citations" =
-    manualTab ?? (citations.length > 0 ? "citations" : "overview")
+  const [internalTab, setInternalTab] = useState<"citations" | "notes">("citations")
+  const tab = controlledTab ?? internalTab
+  const setTab = (next: "citations" | "notes") => {
+    if (onTabChange) onTabChange(next)
+    setInternalTab(next)
+  }
+
+  const [expandedRefIds, setExpandedRefIds] = useState<Record<number, boolean>>({})
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [speakingKey, setSpeakingKey] = useState<string | null>(null)
+
+  // In-place Context Reader Drawer (xem ngữ cảnh cả trang/chunk kế bên mà không rời Chat)
+  const [contextEvidence, setContextEvidence] = useState<EvidenceItem | null>(null)
+  const [contextChunks, setContextChunks] = useState<DocumentChunkRecord[]>([])
+  const [contextLoading, setContextLoading] = useState(false)
 
   useEffect(() => {
-    const onSwitchTab = (e: Event) => {
-      const custom = e as CustomEvent<"citations" | "overview">
-      if (custom.detail) setManualTab(custom.detail)
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel()
+      }
     }
-    window.addEventListener("studio-context-tab", onSwitchTab)
-    return () => window.removeEventListener("studio-context-tab", onSwitchTab)
   }, [])
 
-  useEffect(() => {
-    if (active != null) {
-      setManualTab("citations")
-      setTimeout(() => {
-        const el = document.getElementById(`citation-card-${active}`)
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "nearest" })
-        }
-      }, 50)
+  const handleToggleSpeak = (key: string, text: string) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      toast({ title: "Trình duyệt chưa hỗ trợ đọc giọng nói offline", tone: "warning" })
+      return
     }
-  }, [active])
+    if (speakingKey === key) {
+      window.speechSynthesis.cancel()
+      setSpeakingKey(null)
+      return
+    }
+    window.speechSynthesis.cancel()
+    const cleanSpeech = text
+      .replace(/[#*`>|_[\]]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1800)
+    if (!cleanSpeech) return
+    const utter = new SpeechSynthesisUtterance(cleanSpeech)
+    utter.lang = "vi-VN"
+    utter.rate = 1.05
+    utter.onend = () => setSpeakingKey(null)
+    utter.onerror = () => setSpeakingKey(null)
+    setSpeakingKey(key)
+    window.speechSynthesis.speak(utter)
+  }
 
-  const readyDocs = workspaceDocuments.filter((d) => d.status === "ready")
-  const totalChunks = workspaceDocuments.reduce((acc, d) => acc + (d.totalChunks || 0), 0)
+  const renderHighlightedChunk = (chunkText: string, snippet?: string) => {
+    const cleanSnip = (snippet || "").replace(/\.\.\.$/, "").trim()
+    if (!cleanSnip || cleanSnip.length < 18) {
+      return <Markdown remarkPlugins={[remarkGfm]}>{chunkText}</Markdown>
+    }
+    const probe = cleanSnip.slice(0, 90)
+    const idx = chunkText.toLowerCase().indexOf(probe.toLowerCase())
+    if (idx === -1) {
+      return <Markdown remarkPlugins={[remarkGfm]}>{chunkText}</Markdown>
+    }
+    const matchEnd = Math.min(chunkText.length, idx + cleanSnip.length)
+    const before = chunkText.slice(0, idx)
+    const hit = chunkText.slice(idx, matchEnd)
+    const after = chunkText.slice(matchEnd)
+    return (
+      <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-[#172B29]">
+        {before}
+        <mark className="rounded bg-amber-200/85 px-1 py-0.5 font-medium text-[#172B29]">
+          {hit}
+        </mark>
+        {after}
+      </div>
+    )
+  }
+
+  useEffect(() => {
+    if (activeCitation != null) {
+      setExpandedRefIds((prev) => ({ ...prev, [activeCitation]: true }))
+      setTab("citations")
+      const el = document.getElementById(`citation-card-${activeCitation}`)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" })
+      }
+    }
+  }, [activeCitation])
+
+  const evidences = citations.map((c) => resolveCitationEvidence(c, workspaceDocuments))
+
+  const handleToggleExpand = (refId: number) => {
+    setExpandedRefIds((prev) => ({ ...prev, [refId]: !prev[refId] }))
+  }
+
+  const handleCopyText = async (key: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey(null), 1600)
+      toast({ title: "Đã sao chép nội dung", tone: "success" })
+    } catch {
+      toast({ title: "Không thể sao chép tự động", tone: "warning" })
+    }
+  }
+
+  const handleOpenInPlaceReader = async (evidence: EvidenceItem) => {
+    if (!evidence.citation.documentId) return
+    setContextEvidence(evidence)
+    setContextLoading(true)
+    setContextChunks([])
+    try {
+      const pageNum = evidence.pageNumber ?? undefined
+      const res = await fetchDocumentChunks(evidence.citation.documentId, pageNum)
+      setContextChunks(res.chunks ?? [])
+    } catch {
+      setContextChunks([])
+    } finally {
+      setContextLoading(false)
+    }
+  }
 
   return (
-    <aside
-      aria-label="Context Panel"
-      className="flex h-full w-full flex-col border-l border-[#DCE7E4] bg-[#F1F6F5] text-[13px]"
-    >
-      {/* 1. Header: Tabs tinh giản, giảm độ nổi bật theo phong cách SaaS tối giản */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-[#DCE7E4] bg-white px-3">
-        <div className="flex items-center gap-3">
+    <aside className="flex h-full w-full flex-col border-l border-[#DCE7E4] bg-[#F7FAF9] text-[#172B29]">
+      {/* Header + Tabs Bằng chứng / Ghi chú Studio */}
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#DCE7E4] px-3">
+        <div className="flex items-center gap-1 rounded-lg bg-[#E9F1EF] p-0.5">
           <button
             type="button"
-            onClick={() => setManualTab("overview")}
+            onClick={() => setTab("citations")}
             className={cn(
-              "relative py-3 text-xs font-medium transition-colors",
-              activeTab === "overview"
-                ? "font-semibold text-[#087F73]"
+              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all",
+              tab === "citations"
+                ? "bg-white text-[#087F73] shadow-2xs"
                 : "text-[#647C79] hover:text-[#172B29]",
             )}
           >
-            <span>Tài liệu ({workspaceDocuments.length})</span>
-            {activeTab === "overview" ? (
-              <span className="absolute bottom-0 inset-x-0 h-0.5 bg-[#087F73]" />
-            ) : null}
+            <Quote className="h-3 w-3" />
+            <span>Trích dẫn ({evidences.length})</span>
           </button>
-
           <button
             type="button"
-            onClick={() => setManualTab("citations")}
+            onClick={() => setTab("notes")}
             className={cn(
-              "relative py-3 text-xs font-medium transition-colors",
-              activeTab === "citations"
-                ? "font-semibold text-[#087F73]"
+              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all",
+              tab === "notes"
+                ? "bg-white text-[#087F73] shadow-2xs"
                 : "text-[#647C79] hover:text-[#172B29]",
             )}
           >
-            <span>Nguồn ({citations.length})</span>
-            {activeTab === "citations" ? (
-              <span className="absolute bottom-0 inset-x-0 h-0.5 bg-[#087F73]" />
-            ) : null}
+            <StickyNote className="h-3 w-3" />
+            <span>Ghi chú ({notes.length})</span>
           </button>
         </div>
 
-        <Tooltip content="Thu gọn bảng" side="left">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
+        <Tooltip content="Đóng bảng bên phải" side="left">
+          <button
+            type="button"
             onClick={onClose}
-            aria-label="Thu gọn Context Panel"
+            aria-label="Đóng bảng bằng chứng"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[#647C79] transition hover:bg-white hover:text-[#172B29]"
           >
-            <PanelRightClose className="h-4 w-4" />
-          </Button>
+            <PanelRightClose className="h-3.5 w-3.5" />
+          </button>
         </Tooltip>
       </div>
 
-      {/* 2. TAB 1: DANH SÁCH TÀI LIỆU LÀ THÀNH PHẦN CHÍNH */}
-      {activeTab === "overview" ? (
-        <div className="flex flex-1 flex-col overflow-hidden p-3 space-y-3">
-          {/* Statistics nhỏ gọn: 1 dòng súc tích */}
-          <div className="flex items-center justify-between rounded-lg border border-[#DCE7E4] bg-white px-3 py-2 text-xs">
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#087F73]" />
-              <span className="font-semibold text-[#172B29]">
-                {readyDocs.length}/{workspaceDocuments.length}
-              </span>
-              <span className="text-[#647C79]">sẵn sàng</span>
-            </div>
-            <div className="text-[11px] text-[#647C79]">
-              <span className="font-semibold text-[#172B29]">{totalChunks}</span> chunks
-            </div>
-          </div>
-
-          {/* Nút thêm tài liệu (Kiểu Secondary Button, không lạm dụng Primary CTA) */}
-          <button
-            type="button"
-            onClick={() => navigate("/documents")}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#DCE7E4] bg-white py-1.5 text-xs font-medium text-[#172B29] transition-colors hover:bg-white/80 hover:border-[#647C79] shadow-2xs"
-          >
-            <Plus className="h-3.5 w-3.5 text-[#647C79]" />
-            <span>Thêm tài liệu</span>
-          </button>
-
-          {/* Danh sách tài liệu (Thành phần chính) */}
-          <div className="flex-1 overflow-y-auto space-y-1">
-            {workspaceDocuments.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[#DCE7E4] p-4 text-center">
-                <p className="text-xs text-[#647C79]">Chưa có tài liệu trong không gian này.</p>
-              </div>
-            ) : (
-              workspaceDocuments.map((doc) => {
-                const isAttached = attachedDocIds.includes(doc.id)
-                const isReady = doc.status === "ready"
-                return (
-                  <div
-                    key={doc.id}
-                    className={cn(
-                      "group flex items-center justify-between gap-2 rounded-lg border bg-white px-2.5 py-2 transition-colors",
-                      isAttached
-                        ? "border-[#087F73] ring-1 ring-[#087F73]/20"
-                        : "border-[#DCE7E4] hover:border-[#087F73]/50",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/documents/${doc.id}`)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <FileText className="h-4 w-4 shrink-0 text-[#647C79] group-hover:text-[#087F73]" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-medium text-[#172B29] group-hover:text-[#087F73]">
-                          {doc.fileName}
-                        </p>
-                        <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-[#647C79]">
-                          <span>{formatBytes(doc.fileSize)}</span>
-                          <span>·</span>
-                          <span className={cn(isReady ? "text-[#087F73]" : "text-amber-600")}>
-                            {isReady ? "Đã index" : "Đang xử lý"}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-
-                    {onToggleAttachDoc ? (
-                      <Tooltip
-                        content={isAttached ? "Bỏ đính kèm" : "Đính kèm vào câu hỏi"}
-                        side="left"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => onToggleAttachDoc(doc.id)}
-                          className={cn(
-                            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-xs transition-colors",
-                            isAttached
-                              ? "border-[#087F73] bg-[#087F73] text-white"
-                              : "border-[#DCE7E4] bg-white text-[#647C79] hover:border-[#087F73] hover:text-[#087F73]",
-                          )}
-                          aria-label={`Đính kèm ${doc.fileName}`}
-                        >
-                          {isAttached ? (
-                            <Check className="h-3 w-3" />
-                          ) : (
-                            <Paperclip className="h-3 w-3" />
-                          )}
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </div>
-      ) : (
-        /* 3. TAB 2: NGUỒN CITATION CỦA CÂU TRẢ LỜI HIỆN TẠI */
-        <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
-          {citations.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
-              <Quote className="h-5 w-5 text-[#647C79] mb-1.5" />
-              <p className="text-xs font-semibold text-[#172B29]">Chưa có trích dẫn</p>
-              <p className="mt-0.5 max-w-[200px] text-[11px] text-[#647C79]">
-                Câu trả lời AI có đối chiếu tài liệu sẽ hiển thị trích dẫn tại đây.
-              </p>
+      {/* Nội dung Panel */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {tab === "citations" ? (
+          evidences.length === 0 ? (
+            <div className="py-8">
+              <EmptyState
+                compact
+                icon={<Quote className="h-5 w-5 text-[#087F73]" />}
+                title="Chưa có đoạn trích dẫn"
+                description="Khi bạn đặt câu hỏi và AI trích xuất thông tin từ tài liệu, toàn bộ đoạn gốc kèm số trang sẽ hiển thị đầy đủ tại đây để bạn đối chiếu."
+              />
             </div>
           ) : (
-            citations.map((c) => {
-              const evidence = resolveCitationEvidence(c, allDocuments)
-              const isSelected = active === c.refId || (!active && citations[0]?.refId === c.refId)
+            <div className="space-y-2.5">
+              {evidences.map((ev) => {
+                const refId = ev.citation.refId
+                const isActive = activeCitation === refId
+                const fullText = (ev.fullText || ev.citation.fullText || ev.snippet || "").trim()
+                const hasLongContent = fullText.length > ev.snippet.length + 20 || fullText.length > 260
+                const isExpanded = Boolean(expandedRefIds[refId] ?? (isActive || evidences.length === 1))
+                const isWeb = ev.source.kind === "web"
 
-              return (
-                <article
-                  id={`citation-card-${c.refId}`}
-                  key={`${c.sourceId ?? c.documentId ?? "web"}-${c.refId}`}
-                  onClick={() => setActive(c.refId)}
-                  className={cn(
-                    "cursor-pointer rounded-lg border bg-white p-2.5 transition-all",
-                    isSelected
-                      ? "border-[#087F73] ring-1 ring-[#087F73]/30 shadow-2xs"
-                      : "border-[#DCE7E4] hover:border-[#087F73]/50",
-                  )}
-                >
-                  {/* Tên tài liệu & Trang */}
-                  <div className="flex items-start justify-between gap-1.5">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span
-                        className={cn(
-                          "inline-flex h-4.5 px-1 items-center justify-center rounded text-[10px] font-mono font-bold",
-                          isSelected
-                            ? "bg-[#087F73] text-white"
-                            : "border border-[#DCE7E4] bg-[#F1F6F5] text-[#172B29]",
-                        )}
-                      >
-                        [{c.refId}]
-                      </span>
+                return (
+                  <article
+                    key={refId}
+                    id={`citation-card-${refId}`}
+                    className={cn(
+                      "rounded-xl border bg-white p-3 transition-all",
+                      isActive
+                        ? "border-[#087F73] ring-2 ring-[#087F73]/15 shadow-xs"
+                        : "border-[#DCE7E4] hover:border-[#B4CDC7]",
+                    )}
+                  >
+                    {/* Header thẻ nguồn */}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setActiveCitation(refId)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") setActiveCitation(refId)
+                      }}
+                      className="flex cursor-pointer items-start justify-between gap-2"
+                    >
+                      <div className="flex min-w-0 items-start gap-2">
+                        <span
+                          className={cn(
+                            "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                            isActive
+                              ? "bg-[#087F73] text-white"
+                              : "bg-[#E8F4F2] text-[#087F73]",
+                          )}
+                        >
+                          {refId}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            {isWeb ? (
+                              <Globe className="h-3.5 w-3.5 shrink-0 text-[#087F73]" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5 shrink-0 text-[#087F73]" />
+                            )}
+                            <span className="truncate text-[12px] font-semibold text-[#172B29]">
+                              {ev.source.title}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-[#647C79]">
+                            {ev.pageLabel ? (
+                              <Badge tone="neutral" className="px-1.5 py-0 text-[10px]">
+                                {ev.pageLabel}
+                              </Badge>
+                            ) : null}
+                            {ev.citation.chunkIndex != null ? (
+                              <span>Đoạn #{ev.citation.chunkIndex}</span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
 
-                      {evidence.source.kind === "web" ? (
-                        <Globe className="h-3.5 w-3.5 shrink-0 text-[#647C79]" />
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleToggleSpeak(`cite-${refId}`, fullText)
+                          }}
+                          title={speakingKey === `cite-${refId}` ? "Dừng đọc" : "Nghe đọc đoạn trích dẫn (Offline)"}
+                          className={cn(
+                            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors",
+                            speakingKey === `cite-${refId}`
+                              ? "bg-[#E8F4F2] text-[#087F73]"
+                              : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
+                          )}
+                        >
+                          {speakingKey === `cite-${refId}` ? (
+                            <VolumeX className="h-3 w-3" />
+                          ) : (
+                            <Volume2 className="h-3 w-3" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void handleCopyText(`cite-${refId}`, fullText)
+                          }}
+                          title="Chép đoạn trích dẫn"
+                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
+                        >
+                          {copiedKey === `cite-${refId}` ? (
+                            <Check className="h-3 w-3 text-[#087F73]" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Đoạn bằng chứng đầy đủ (không còn bị cắt cụt 200 ký tự!) */}
+                    <div className="mt-2.5 rounded-lg border border-[#DCE7E4]/80 bg-[#F9FCFB] px-2.5 py-2">
+                      {isExpanded ? (
+                        <div className="markdown-body max-h-[340px] overflow-y-auto pr-1 text-[12.5px] leading-relaxed text-[#172B29]">
+                          <Markdown remarkPlugins={[remarkGfm]}>{fullText}</Markdown>
+                        </div>
                       ) : (
-                        <FileText className="h-3.5 w-3.5 shrink-0 text-[#087F73]" />
+                        <p className="text-[12px] leading-relaxed text-[#172B29]/90 whitespace-pre-line">
+                          {ev.snippet}
+                        </p>
                       )}
+                    </div>
 
-                      <h4 className="truncate text-xs font-semibold text-[#172B29]">
-                        {evidence.source.title}
+                    {/* Thanh hành động thẻ trích dẫn */}
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5 pt-0.5">
+                      <div className="flex items-center gap-1.5">
+                        {hasLongContent ? (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleExpand(refId)}
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#087F73] hover:bg-[#E8F4F2]"
+                          >
+                            {isExpanded ? (
+                              <>
+                                <ChevronUp className="h-3 w-3" />
+                                <span>Thu gọn</span>
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown className="h-3 w-3" />
+                                <span>Đọc toàn đoạn</span>
+                              </>
+                            )}
+                          </button>
+                        ) : null}
+
+                        {!isWeb && ev.citation.documentId ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenInPlaceReader(ev)}
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#172B29] hover:bg-[#F1F6F5] hover:text-[#087F73]"
+                          >
+                            <BookOpenCheck className="h-3 w-3 text-[#087F73]" />
+                            <span>Xem ngữ cảnh trang</span>
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {isWeb && ev.source.url ? (
+                        <a
+                          href={ev.source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-[#087F73] hover:underline"
+                        >
+                          <span>Mở liên kết</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      ) : !isWeb && ev.citation.documentId && ev.source.exists ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const href = buildSourceViewerHref(ev.citation)
+                            if (href) navigate(href)
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-[#647C79] hover:text-[#087F73]"
+                        >
+                          <span>Mở tệp</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )
+        ) : (
+          /* Tab Ghi chú Studio (NotebookLM Studio Notes) */
+          <div className="space-y-2.5">
+            {notes.length === 0 ? (
+              <div className="py-8">
+                <EmptyState
+                  compact
+                  icon={<NotebookPen className="h-5 w-5 text-[#087F73]" />}
+                  title="Chưa có ghi chú đã lưu"
+                  description="Bấm 'Lưu ghi chú' ngay dưới mỗi câu trả lời AI để ghim các tổng hợp, công thức và lập luận quan trọng vào Studio tại đây."
+                />
+              </div>
+            ) : (
+              notes.map((note) => (
+                <article
+                  key={note.id}
+                  className="rounded-xl border border-[#DCE7E4] bg-white p-3 shadow-2xs"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h4 className="truncate text-[12.5px] font-semibold text-[#172B29]">
+                        {note.title}
                       </h4>
-                    </div>
-
-                    {evidence.pageLabel || evidence.pageNumber != null ? (
-                      <span className="shrink-0 rounded border border-[#DCE7E4] bg-[#F1F6F5] px-1.5 py-0.5 text-[10px] font-medium text-[#172B29]">
-                        {evidence.pageLabel || `Trang ${evidence.pageNumber}`}
+                      <span className="text-[10.5px] text-[#647C79]">
+                        {formatDate(note.updatedAt)}
                       </span>
-                    ) : null}
-                  </div>
-
-                  {/* Cảnh báo nếu tài liệu bị xóa */}
-                  {!evidence.source.exists && evidence.source.kind === "local" ? (
-                    <div className="mt-2 flex items-center gap-1 rounded bg-rose-50 p-1.5 text-[11px] text-rose-700">
-                      <AlertCircle className="h-3 w-3 shrink-0" />
-                      <span>Tài liệu đã bị xóa khỏi không gian.</span>
                     </div>
-                  ) : null}
-
-                  {/* Đoạn trích (Snippet) */}
-                  <blockquote className="mt-2 rounded border-l-2 border-[#087F73] bg-[#F1F6F5] px-2 py-1.5 text-[11.5px] leading-relaxed text-[#172B29]">
-                    &ldquo;{evidence.snippet || "Không có đoạn trích đính kèm."}&rdquo;
-                  </blockquote>
-
-                  {/* Nút xem chi tiết */}
-                  <div className="mt-2 flex items-center justify-end">
-                    {evidence.source.kind === "web" && evidence.source.url ? (
-                      <a
-                        href={evidence.source.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#087F73] hover:underline"
-                      >
-                        <span>Mở liên kết</span>
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    ) : evidence.citation.documentId ? (
+                    <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
-                        disabled={!evidence.source.exists}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const href = buildSourceViewerHref(evidence.citation, conversationId)
-                          if (href) navigate(href)
-                        }}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#087F73] hover:underline disabled:opacity-50"
+                        onClick={() => void handleCopyText(`note-${note.id}`, note.content)}
+                        title="Sao chép ghi chú"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]"
                       >
-                        <span>Xem chi tiết</span>
-                        <ArrowUpRight className="h-3 w-3" />
+                        {copiedKey === `note-${note.id}` ? (
+                          <Check className="h-3 w-3 text-[#087F73]" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
                       </button>
-                    ) : null}
+                      <ExportFormatMenu
+                        title={note.title}
+                        content={note.content}
+                        label=""
+                        size="sm"
+                        variant="ghost"
+                      />
+                      {onDeleteNote ? (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteNote(note.id)}
+                          title="Xóa ghi chú"
+                          className="inline-flex h-6 w-6 items-center justify-center rounded text-[#647C79] hover:bg-rose-50 hover:text-rose-600"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="markdown-body mt-2 max-h-44 overflow-y-auto border-t border-[#DCE7E4]/70 pt-2 text-[12px] leading-relaxed text-[#172B29]">
+                    <Markdown remarkPlugins={[remarkGfm]}>{note.content}</Markdown>
                   </div>
                 </article>
-              )
-            })
-          )}
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Modal In-Place Context Reader (Đọc nguyên trang/đoạn lân cận mà không rời Chat) */}
+      {contextEvidence ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#172B29]/40 p-4 backdrop-blur-[1px]">
+          <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[#DCE7E4] bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#DCE7E4] bg-[#F7FAF9] px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#087F73] text-[11px] font-bold text-white">
+                    {contextEvidence.citation.refId}
+                  </span>
+                  <h3 className="truncate text-sm font-semibold text-[#172B29]">
+                    {contextEvidence.source.title}
+                  </h3>
+                </div>
+                <p className="mt-0.5 text-xs text-[#647C79]">
+                  {contextEvidence.pageLabel || "Toàn tài liệu"}
+                  {contextEvidence.citation.chunkIndex != null
+                    ? ` · Đang tô sáng Đoạn #${contextEvidence.citation.chunkIndex}`
+                    : ""}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {contextEvidence.citation.documentId && contextEvidence.source.exists ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const url = buildSourceViewerHref(contextEvidence.citation)
+                      setContextEvidence(null)
+                      if (url) navigate(url)
+                    }}
+                  >
+                    <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                    Mở trang tài liệu
+                  </Button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setContextEvidence(null)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#647C79] hover:bg-white hover:text-[#172B29]"
+                  aria-label="Đóng khung đọc ngữ cảnh"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              {contextLoading ? (
+                <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#647C79]">
+                  <Loader2 className="h-4 w-4 animate-spin text-[#087F73]" />
+                  <span>Đang tải nguyên văn trang gốc từ tài liệu...</span>
+                </div>
+              ) : contextChunks.length === 0 ? (
+                <div className="rounded-xl border border-[#DCE7E4] bg-[#F9FCFB] p-4">
+                  <div className="markdown-body text-[13.5px] leading-relaxed">
+                    <Markdown remarkPlugins={[remarkGfm]}>
+                      {contextEvidence.fullText || contextEvidence.snippet}
+                    </Markdown>
+                  </div>
+                </div>
+              ) : (
+                contextChunks.map((chunk) => {
+                  const isTarget =
+                    contextEvidence.citation.chunkIndex != null &&
+                    chunk.chunk_index === contextEvidence.citation.chunkIndex
+                  return (
+                    <div
+                      key={chunk.id}
+                      className={cn(
+                        "rounded-xl border p-3.5 transition-all",
+                        isTarget
+                          ? "border-[#087F73] bg-[#E8F4F2]/75 ring-2 ring-[#087F73]/25"
+                          : "border-[#DCE7E4] bg-white",
+                      )}
+                    >
+                      <div className="mb-1.5 flex items-center justify-between text-[11px] text-[#647C79]">
+                        <span className="font-semibold text-[#172B29]">
+                          Đoạn #{chunk.chunk_index} · Trang {chunk.page_number}
+                        </span>
+                        {isTarget ? (
+                          <span className="rounded bg-[#087F73] px-2 py-0.5 text-[10px] font-semibold text-white">
+                            Trích dẫn đang xem
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="markdown-body text-[13.5px] leading-relaxed text-[#172B29]">
+                        {isTarget
+                          ? renderHighlightedChunk(chunk.content, contextEvidence.snippet)
+                          : <Markdown remarkPlugins={[remarkGfm]}>{chunk.content}</Markdown>}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
         </div>
-      )}
+      ) : null}
     </aside>
   )
 }

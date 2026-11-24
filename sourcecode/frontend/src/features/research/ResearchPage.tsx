@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   FileText,
   MoreHorizontal,
   Pencil,
@@ -34,13 +35,20 @@ import {
 } from "@/components/ui"
 import { ModeSelector } from "@/features/chat/ModeSelector"
 import {
+  deleteResearchProjectApi,
+  fetchResearchProjectsApi,
+  streamResearchProjectApi,
+  updateResearchProjectApi,
+} from "@/services/api"
+import { getAuthToken } from "@/services/auth-service"
+import {
   buildSimulatedResearchReport,
   REPORT_SECTIONS,
   RESEARCH_PIPELINE_STEPS,
 } from "@/services/research-service"
 import { useAppStore } from "@/store/app-store"
 import { nowIso, relativeTime, uid } from "@/utils/format"
-import type { AIMode, ResearchProject } from "@/types"
+import type { AIMode, Citation, ResearchProject } from "@/types"
 
 function sectionIdFromHeading(text: string): string | undefined {
   const lower = text.toLowerCase()
@@ -73,8 +81,9 @@ function sectionIdFromHeading(text: string): string | undefined {
 
 function renderReportTextWithCitations(
   children: ReactNode,
+  projectCitations: Citation[] | undefined,
   projectDocs: Array<{ id: string; fileName: string }>,
-  onOpenDoc: (docId: string, refId: number) => void,
+  onOpenLocal: (docId: string, refId: number, page?: number | null) => void,
 ): ReactNode {
   const items = Array.isArray(children) ? children : [children]
   return items.map((child, idx) => {
@@ -84,8 +93,24 @@ function renderReportTextWithCitations(
       const m = part.match(/^\[(\d+)\]$/)
       if (!m) return <span key={`${idx}-${pIdx}`}>{part}</span>
       const refNum = Number(m[1])
-      const targetDoc = projectDocs[refNum - 1] ?? projectDocs[0]
-      if (!targetDoc) {
+      const cite = projectCitations?.find((c) => c.refId === refNum) ?? projectCitations?.[refNum - 1]
+      if (cite?.url && cite.sourceKind === "web") {
+        return (
+          <a
+            key={`${idx}-${pIdx}`}
+            href={cite.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Mở nguồn web [${refNum}]: ${cite.documentName}`}
+            className="citation-chip"
+          >
+            {refNum}
+          </a>
+        )
+      }
+      const docId = cite?.documentId ?? (projectDocs[refNum - 1] ?? projectDocs[0])?.id
+      const docName = cite?.documentName ?? (projectDocs[refNum - 1] ?? projectDocs[0])?.fileName
+      if (!docId) {
         return (
           <span key={`${idx}-${pIdx}`} className="citation-chip">
             {refNum}
@@ -96,8 +121,8 @@ function renderReportTextWithCitations(
         <button
           key={`${idx}-${pIdx}`}
           type="button"
-          title={`Mở nguồn [${refNum}]: ${targetDoc.fileName}`}
-          onClick={() => onOpenDoc(targetDoc.id, refNum)}
+          title={`Mở nguồn [${refNum}]: ${docName ?? "Tài liệu"}`}
+          onClick={() => onOpenLocal(docId, refNum, cite?.pageNumber)}
           className="citation-chip"
         >
           {refNum}
@@ -121,9 +146,11 @@ export function ResearchPage() {
   const upsert = useAppStore((s) => s.upsertResearch)
   const renameResearch = useAppStore((s) => s.renameResearch)
   const deleteResearch = useAppStore((s) => s.deleteResearch)
+  const replaceResearch = useAppStore((s) => s.replaceResearchFromBackend)
   const toast = useAppStore((s) => s.toast)
 
   const selected = projects.find((p) => p.id === projectId) ?? null
+  const abortRef = useRef<AbortController | null>(null)
 
   // Danh sách dự án & tìm kiếm
   const [searchQuery, setSearchQuery] = useState("")
@@ -141,6 +168,27 @@ export function ResearchPage() {
   const [allowWeb, setAllowWeb] = useState(false)
   const [mode, setMode] = useState<AIMode>("local")
   const [running, setRunning] = useState(false)
+  const [liveStepDetail, setLiveStepDetail] = useState("")
+
+  useEffect(() => {
+    if (current && !workspaces.some((w) => w.id === sourceWsId)) {
+      setSourceWsId(current)
+    }
+  }, [current, sourceWsId, workspaces])
+
+  useEffect(() => {
+    const wsId = current || sourceWsId
+    if (!status.backendOnline || !getAuthToken() || !wsId) return
+    fetchResearchProjectsApi(wsId)
+      .then((rows) => replaceResearch(wsId, rows))
+      .catch(() => {})
+  }, [current, sourceWsId, status.backendOnline, replaceResearch])
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
 
   // Trạng thái trên trang chi tiết báo cáo
   const [editingReport, setEditingReport] = useState(false)
@@ -177,37 +225,133 @@ export function ResearchPage() {
     const qText = existingProject ? existingProject.question : question.trim()
     if (!qText || running) return
 
+    const useBackend = status.backendOnline && Boolean(getAuthToken())
     const docIdsToUse = existingProject
       ? existingProject.documentIds
       : selectedDocIds.length > 0
         ? selectedDocIds
-        : availableDocs.slice(0, 2).map((d) => d.id)
+        : availableDocs.map((d) => d.id)
 
-    const targetProject: ResearchProject = existingProject ?? {
-      id: uid("rs"),
-      workspaceId: sourceWsId,
-      notebookId: sourceNbId || null,
-      title: title.trim() || qText.slice(0, 64),
-      question: qText,
-      documentIds: docIdsToUse,
-      allowWeb,
-      mode,
-      status: "running",
-      step: 0,
-      report: "",
-      isMock: !status.backendOnline,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    }
+    const initialProject: ResearchProject = existingProject
+      ? {
+          ...existingProject,
+          status: "running",
+          step: 1,
+          report: "",
+          isMock: !useBackend,
+          updatedAt: nowIso(),
+        }
+      : {
+          id: uid("rs"),
+          workspaceId: sourceWsId,
+          notebookId: sourceNbId || null,
+          title: title.trim() || qText.slice(0, 64),
+          question: qText,
+          documentIds: docIdsToUse,
+          allowWeb,
+          mode,
+          status: "running",
+          step: 1,
+          report: "",
+          citations: [],
+          isMock: !useBackend,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        }
 
     setRunning(true)
-    upsert({ ...targetProject, status: "running", step: 1, updatedAt: nowIso() })
-    navigate(`/research/${targetProject.id}`)
+    setLiveStepDetail("Đang khởi tạo pipeline nghiên cứu...")
+    upsert(initialProject)
+    navigate(`/research/${initialProject.id}`)
+
+    if (useBackend) {
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
+      let workingProject: ResearchProject = { ...initialProject }
+      let accumulatedReport = ""
+
+      try {
+        const finalProject = await streamResearchProjectApi(
+          workingProject.workspaceId,
+          {
+            project_id: existingProject ? existingProject.id : undefined,
+            notebook_id: workingProject.notebookId,
+            title: workingProject.title,
+            question: workingProject.question,
+            document_ids: workingProject.documentIds,
+            allow_web: workingProject.allowWeb,
+            mode: workingProject.mode,
+          },
+          {
+            onMeta: (serverProj) => {
+              const oldId = workingProject.id
+              workingProject = { ...serverProj, status: "running", step: 1, report: "" }
+              upsert(workingProject)
+              if (oldId !== serverProj.id) {
+                deleteResearch(oldId)
+                navigate(`/research/${serverProj.id}`, { replace: true })
+              }
+            },
+            onStep: (step, label, detail) => {
+              setLiveStepDetail(detail || label)
+              workingProject = { ...workingProject, status: "running", step, updatedAt: nowIso() }
+              upsert(workingProject)
+            },
+            onCitations: (citations) => {
+              workingProject = { ...workingProject, citations }
+              upsert(workingProject)
+            },
+            onDelta: (deltaText) => {
+              accumulatedReport += deltaText
+              workingProject = { ...workingProject, report: accumulatedReport, updatedAt: nowIso() }
+              upsert(workingProject)
+            },
+            onDone: (completedProj) => {
+              workingProject = completedProj
+              upsert(completedProj)
+            },
+          },
+          controller.signal,
+        )
+
+        if (finalProject) {
+          upsert(finalProject)
+        }
+        setRunning(false)
+        setLiveStepDetail("")
+        setQuestion("")
+        setTitle("")
+        setCreateExpanded(false)
+        toast({
+          title: "Đã hoàn thành báo cáo nghiên cứu AI",
+          description: workingProject.title,
+          tone: "success",
+        })
+        return
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          setRunning(false)
+          setLiveStepDetail("")
+          return
+        }
+        const msg = err instanceof Error ? err.message : "Không thể chạy pipeline nghiên cứu từ Backend."
+        upsert({ ...workingProject, status: "completed", isMock: true })
+        setRunning(false)
+        setLiveStepDetail("")
+        toast({
+          title: "Nghiên cứu sâu gặp lỗi",
+          description: msg,
+          tone: "error",
+        })
+        return
+      }
+    }
 
     for (let step = 1; step <= RESEARCH_PIPELINE_STEPS.length; step += 1) {
       await new Promise((r) => setTimeout(r, 320))
       upsert({
-        ...targetProject,
+        ...initialProject,
         status: "running",
         step,
         updatedAt: nowIso(),
@@ -216,14 +360,14 @@ export function ResearchPage() {
 
     const chosenDocs = documents.filter((d) => docIdsToUse.includes(d.id))
     const generatedReport = buildSimulatedResearchReport({
-      question: targetProject.question,
+      question: initialProject.question,
       selectedDocs: chosenDocs,
-      allowWeb: targetProject.allowWeb,
-      mode: targetProject.mode,
+      allowWeb: initialProject.allowWeb,
+      mode: initialProject.mode,
     })
 
     const completed: ResearchProject = {
-      ...targetProject,
+      ...initialProject,
       status: "completed",
       step: RESEARCH_PIPELINE_STEPS.length,
       report: generatedReport,
@@ -233,6 +377,7 @@ export function ResearchPage() {
 
     upsert(completed)
     setRunning(false)
+    setLiveStepDetail("")
     setQuestion("")
     setTitle("")
     setCreateExpanded(false)
@@ -241,6 +386,48 @@ export function ResearchPage() {
       description: completed.title,
       tone: "info",
     })
+  }
+
+  const handleRenameProject = async (project: ResearchProject, nextTitle: string) => {
+    renameResearch(project.id, nextTitle)
+    if (status.backendOnline && getAuthToken() && !project.isMock) {
+      try {
+        const updated = await updateResearchProjectApi(project.id, { title: nextTitle })
+        upsert(updated)
+      } catch {
+        // giữ tên cục bộ nếu sync lỗi tạm thời
+      }
+    }
+    toast({ title: "Đã đổi tên dự án", tone: "success" })
+  }
+
+  const handleSaveEditedReport = async (project: ResearchProject, nextReport: string) => {
+    upsert({ ...project, report: nextReport, updatedAt: nowIso() })
+    setEditingReport(false)
+    if (status.backendOnline && getAuthToken() && !project.isMock) {
+      try {
+        const updated = await updateResearchProjectApi(project.id, { report: nextReport })
+        upsert(updated)
+      } catch {
+        toast({ title: "Đã lưu cục bộ (chưa đồng bộ được server)", tone: "warning" })
+        return
+      }
+    }
+    toast({ title: "Đã lưu nội dung báo cáo", tone: "success" })
+  }
+
+  const handleDeleteProject = async (project: ResearchProject, goBack: boolean) => {
+    if (status.backendOnline && getAuthToken() && !project.isMock) {
+      try {
+        await deleteResearchProjectApi(project.id)
+      } catch {
+        // vẫn xóa state cục bộ
+      }
+    }
+    deleteResearch(project.id)
+    setDeleteTarget(null)
+    toast({ title: "Đã xóa dự án nghiên cứu", tone: "info" })
+    if (goBack) navigate("/research")
   }
 
   const handleCopyReport = async (text: string) => {
@@ -352,8 +539,7 @@ export function ResearchPage() {
                 ariaLabel="Tên dự án nghiên cứu"
                 validate={(next) => (!next.trim() ? "Tên không được để trống." : null)}
                 onSave={(next) => {
-                  renameResearch(selected.id, next)
-                  toast({ title: "Đã đổi tên dự án", tone: "success" })
+                  void handleRenameProject(selected, next)
                 }}
                 className="text-2xl font-semibold tracking-tight text-ink"
                 inputClassName="text-xl font-semibold"
@@ -362,7 +548,11 @@ export function ResearchPage() {
             <Badge tone="neutral">
               {selected.status === "completed" ? "Hoàn thành" : "Đang tổng hợp"}
             </Badge>
-            <Badge tone="warning">Báo cáo mô phỏng</Badge>
+            {selected.isMock ? (
+              <Badge tone="warning">Báo cáo mô phỏng</Badge>
+            ) : (
+              <Badge tone="success">Báo cáo AI thực tế</Badge>
+            )}
           </div>
 
           <p className="mt-1.5 text-sm text-muted">
@@ -388,7 +578,11 @@ export function ResearchPage() {
           <div className="mb-2 flex items-center justify-between text-xs">
             <span className="font-semibold text-ink">Pipeline nghiên cứu (5 bước)</span>
             <span className="text-muted">
-              Tiến trình mô phỏng trên giao diện · Chưa gọi RAG/LLM từ Backend
+              {selected.status === "running" && liveStepDetail
+                ? liveStepDetail
+                : selected.isMock
+                  ? "Tiến trình mô phỏng trên giao diện · Chưa kết nối Backend"
+                  : "Pipeline RAG + LLM đa nguồn thực tế từ Backend"}
             </span>
           </div>
           <ol className="grid gap-2 sm:grid-cols-5">
@@ -433,15 +627,7 @@ export function ResearchPage() {
                   </Button>
                   <Button
                     size="sm"
-                    onClick={() => {
-                      upsert({
-                        ...selected,
-                        report: reportDraft,
-                        updatedAt: nowIso(),
-                      })
-                      setEditingReport(false)
-                      toast({ title: "Đã lưu nội dung báo cáo", tone: "success" })
-                    }}
+                    onClick={() => void handleSaveEditedReport(selected, reportDraft)}
                   >
                     Lưu báo cáo
                   </Button>
@@ -466,8 +652,10 @@ export function ResearchPage() {
                         <p>
                           {renderReportTextWithCitations(
                             children,
+                            selected.citations,
                             projectDocs,
-                            (docId, refId) => navigate(`/documents/${docId}?cite=${refId}`),
+                            (docId, refId, page) =>
+                              navigate(`/documents/${docId}?${page ? `page=${page}&` : ""}cite=${refId}`),
                           )}
                         </p>
                       )
@@ -477,8 +665,10 @@ export function ResearchPage() {
                         <li>
                           {renderReportTextWithCitations(
                             children,
+                            selected.citations,
                             projectDocs,
-                            (docId, refId) => navigate(`/documents/${docId}?cite=${refId}`),
+                            (docId, refId, page) =>
+                              navigate(`/documents/${docId}?${page ? `page=${page}&` : ""}cite=${refId}`),
                           )}
                         </li>
                       )
@@ -514,9 +704,49 @@ export function ResearchPage() {
 
               <div>
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                  Nguồn tham chiếu ({projectDocs.length})
+                  Nguồn tham chiếu ({selected.citations?.length || projectDocs.length})
                 </p>
-                {projectDocs.length === 0 ? (
+                {selected.citations && selected.citations.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {selected.citations.map((cite) =>
+                      cite.sourceKind === "web" && cite.url ? (
+                        <li key={`cite-${cite.refId}`}>
+                          <a
+                            href={cite.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex w-full items-start gap-2 rounded-md border border-line bg-bg px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
+                          >
+                            <span className="font-semibold text-ink">[{cite.refId}]</span>
+                            <span className="min-w-0 flex-1 truncate text-ink">{cite.documentName}</span>
+                            <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted" />
+                          </a>
+                        </li>
+                      ) : (
+                        <li key={`cite-${cite.refId}`}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              cite.documentId &&
+                              navigate(
+                                `/documents/${cite.documentId}?${cite.pageNumber ? `page=${cite.pageNumber}&` : ""}cite=${cite.refId}`,
+                              )
+                            }
+                            className="flex w-full items-start gap-2 rounded-md border border-line bg-bg px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
+                          >
+                            <span className="font-semibold text-ink">[{cite.refId}]</span>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-ink">{cite.documentName}</p>
+                              {cite.pageLabel ? (
+                                <p className="text-[10.5px] text-muted">{cite.pageLabel}</p>
+                              ) : null}
+                            </div>
+                          </button>
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                ) : projectDocs.length === 0 ? (
                   <p className="text-xs text-muted">Chưa gắn tài liệu cụ thể.</p>
                 ) : (
                   <ul className="space-y-1.5">
@@ -546,8 +776,7 @@ export function ResearchPage() {
           onClose={() => setRenameTarget(null)}
           onSubmit={(name) => {
             if (renameTarget) {
-              renameResearch(renameTarget.id, name)
-              toast({ title: "Đã đổi tên dự án", tone: "success" })
+              void handleRenameProject(renameTarget, name)
             }
           }}
         />
@@ -559,10 +788,7 @@ export function ResearchPage() {
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => {
             if (deleteTarget) {
-              deleteResearch(deleteTarget.id)
-              setDeleteTarget(null)
-              toast({ title: "Đã xóa dự án nghiên cứu", tone: "info" })
-              navigate("/research")
+              void handleDeleteProject(deleteTarget, true)
             }
           }}
         />
@@ -714,7 +940,7 @@ export function ResearchPage() {
                         checked={allowWeb}
                         onChange={(e) => setAllowWeb(e.target.checked)}
                       />
-                      <span>Cho phép mở rộng Web Search (Lưu cấu hình UI)</span>
+                      <span>Mở rộng đối chiếu từ Web Search (Internet)</span>
                     </label>
                   </div>
                 </div>
@@ -723,7 +949,9 @@ export function ResearchPage() {
 
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted">
-                Pipeline 5 bước sẽ chạy ở chế độ mô phỏng khi Backend chưa tích hợp.
+                {status.backendOnline && getAuthToken()
+                  ? "Sử dụng Pipeline RAG + LLM đa nguồn thực tế (5 bước SSE)."
+                  : "Pipeline 5 bước sẽ chạy ở chế độ mô phỏng khi chưa kết nối Backend."}
               </span>
               <Button
                 loading={running}
@@ -841,8 +1069,7 @@ export function ResearchPage() {
         onClose={() => setRenameTarget(null)}
         onSubmit={(name) => {
           if (renameTarget) {
-            renameResearch(renameTarget.id, name)
-            toast({ title: "Đã đổi tên dự án", tone: "success" })
+            void handleRenameProject(renameTarget, name)
           }
         }}
       />
@@ -854,9 +1081,7 @@ export function ResearchPage() {
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
           if (deleteTarget) {
-            deleteResearch(deleteTarget.id)
-            setDeleteTarget(null)
-            toast({ title: "Đã xóa dự án nghiên cứu", tone: "info" })
+            void handleDeleteProject(deleteTarget, false)
           }
         }}
       />

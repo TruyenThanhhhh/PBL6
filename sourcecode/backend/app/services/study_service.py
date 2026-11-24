@@ -13,6 +13,7 @@ import httpx
 
 from app.config import DEFAULT_LLM_MODEL, OLLAMA_BASE_URL, OLLAMA_TIMEOUT
 from app.database import get_db_connection
+from app.services.hardware_profile_service import get_active_profile_config, get_recommended_keep_alive
 from app.services.llm_service import check_ollama_status, resolve_available_chat_model
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,13 @@ def _resolve_document_ids(
         return list(dict.fromkeys([doc for doc in document_ids if doc]))
 
     rows = cursor.execute(
-        "SELECT DISTINCT document_id FROM document_chunks WHERE workspace_id = ? ORDER BY document_id",
+        """
+        SELECT DISTINCT c.document_id
+        FROM document_chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.workspace_id = ? AND COALESCE(d.is_latest, 1) = 1
+        ORDER BY c.document_id
+        """,
         (workspace_id,),
     ).fetchall()
     return [row["document_id"] for row in rows]
@@ -177,7 +184,7 @@ def _get_document_context_items(
         )
         return total_len < max_chars and len(source_refs) < max_chunks
 
-    # 1. Nếu có yêu cầu trọng tâm thực sự, ưu tiên truy vấn nhanh qua chỉ mục FTS5 (BM25 < 5ms) trước để tránh trễ CPU
+    # 1. Nếu có yêu cầu trọng tâm thực sự, ưu tiên Positional (đầu/cuối) hoặc FTS5 (BM25 < 5ms) để tránh trễ CPU
     semantic_focus = (
         focus_prompt.strip()
         if focus_prompt and not _is_generic_focus_prompt(focus_prompt)
@@ -185,6 +192,35 @@ def _get_document_context_items(
     )
     if semantic_focus:
         try:
+            from app.services.retrieval_service import (
+                detect_positional_intent,
+                search_positional_chunks,
+            )
+
+            pos_intent = detect_positional_intent(semantic_focus)
+            if pos_intent:
+                pos_type, letter_filter = pos_intent
+                pos_chunks = search_positional_chunks(
+                    workspace_id=workspace_id,
+                    position=pos_type,
+                    letter_filter=letter_filter,
+                    max_chunks=min(max_chunks, 6),
+                    document_id=document_id,
+                    document_ids=document_ids,
+                )
+                for r in pos_chunks:
+                    ok = _append_chunk(
+                        str(r.get("content") or ""),
+                        r.get("document_id"),
+                        str(r.get("document_name") or "Tài liệu"),
+                        int(r.get("page_number") or 1),
+                        r.get("chunk_index"),
+                    )
+                    if not ok:
+                        break
+                if source_refs:
+                    return "\n\n".join(parts), source_refs
+
             tokens = [
                 t
                 for t in re.findall(r"[\w]{2,}", semantic_focus, flags=re.UNICODE)
@@ -386,6 +422,34 @@ async def _ensure_ollama_chat_model(
     return chosen_model, None
 
 
+def _get_study_runtime_budget() -> Dict[str, Any]:
+    """Lấy ngưỡng context và token sinh theo hồ sơ phần cứng hiện hành (Eco / Balanced / Performance)."""
+    profile = get_active_profile_config()
+    profile_id = str(profile.get("id") or "balanced").lower()
+    num_ctx = int(profile.get("num_ctx") or 4096)
+    profile_num_predict = int(profile.get("num_predict") or 1200)
+    if profile_id == "eco":
+        summary_max_chars = 1500
+        summary_max_chunks = 6
+        summary_num_predict = min(profile_num_predict, 450)
+    elif profile_id == "performance":
+        summary_max_chars = 4500
+        summary_max_chunks = 10
+        summary_num_predict = min(profile_num_predict, 900)
+    else:
+        summary_max_chars = 3200
+        summary_max_chunks = 8
+        summary_num_predict = min(profile_num_predict, 700)
+    return {
+        "profile_id": profile_id,
+        "num_ctx": num_ctx,
+        "num_predict": profile_num_predict,
+        "summary_max_chars": summary_max_chars,
+        "summary_max_chunks": summary_max_chunks,
+        "summary_num_predict": summary_num_predict,
+    }
+
+
 async def _call_ollama_chat(
     system_prompt: str,
     user_prompt: str,
@@ -394,6 +458,12 @@ async def _call_ollama_chat(
     timeout_sec: float = OLLAMA_TIMEOUT,
     num_predict: int = 1200,
 ) -> str:
+    budget = _get_study_runtime_budget()
+    effective_num_predict = (
+        min(num_predict, budget["num_predict"])
+        if budget["profile_id"] == "eco" and num_predict > budget["num_predict"]
+        else num_predict
+    )
     payload: Dict[str, Any] = {
         "model": model,
         "messages": [
@@ -401,12 +471,12 @@ async def _call_ollama_chat(
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
-        "keep_alive": "30m",
+        "keep_alive": get_recommended_keep_alive(),
         "options": {
             "temperature": 0.4 if json_mode else 0.7,
             "top_p": 0.9,
-            "num_predict": num_predict,
-            "num_ctx": 4096,
+            "num_predict": effective_num_predict,
+            "num_ctx": budget["num_ctx"],
         },
     }
     if json_mode:
@@ -434,13 +504,15 @@ def _prepare_summary_prompts(
     document_ids: Optional[List[str]] = None,
     focus_prompt: Optional[str] = None,
 ) -> tuple[str, str, str]:
-    """Chuẩn bị ngữ cảnh tinh gọn (tối ưu tốc độ prefill trên CPU) và cặp system/user prompt cho Tóm tắt AI."""
+    """Chuẩn bị ngữ cảnh tinh gọn theo hồ sơ phần cứng và cặp system/user prompt cho Tóm tắt AI."""
+    budget = _get_study_runtime_budget()
+    summary_max_chars = int(budget["summary_max_chars"])
     context, source_refs = _get_document_context_items(
         workspace_id=workspace_id,
         document_id=document_id,
         document_ids=document_ids,
-        max_chunks=6,
-        max_chars=1500,
+        max_chunks=int(budget["summary_max_chunks"]),
+        max_chars=summary_max_chars,
         focus_prompt=focus_prompt,
         numbered_sources=False,
     )
@@ -465,7 +537,7 @@ def _prepare_summary_prompts(
                 break
         effective_context = "\n".join(sampled_lines)
     else:
-        effective_context = context[:1500]
+        effective_context = context[:summary_max_chars]
 
     system_prompt = (
         "Bạn là Trợ lý Học tập AI. Tóm tắt ngắn gọn tài liệu bằng tiếng Việt (Markdown) theo 3 mục:\n"
@@ -510,12 +582,13 @@ async def generate_ai_summary(
             "is_mock": True,
         }
 
+    budget = _get_study_runtime_budget()
     try:
         markdown_res = await _call_ollama_chat(
             system_prompt,
             user_prompt,
             model=chosen_model,
-            num_predict=450,
+            num_predict=int(budget["summary_num_predict"]),
         )
         return {
             "title": summary_title,
@@ -556,6 +629,7 @@ async def stream_ai_summary(
 
     yield f"data: {json.dumps({'type': 'meta', 'title': summary_title, 'is_mock': False}, ensure_ascii=False)}\n\n"
 
+    budget = _get_study_runtime_budget()
     payload: Dict[str, Any] = {
         "model": chosen_model,
         "messages": [
@@ -563,12 +637,12 @@ async def stream_ai_summary(
             {"role": "user", "content": user_prompt},
         ],
         "stream": True,
-        "keep_alive": "30m",
+        "keep_alive": get_recommended_keep_alive(),
         "options": {
             "temperature": 0.7,
             "top_p": 0.9,
-            "num_predict": 450,
-            "num_ctx": 4096,
+            "num_predict": int(budget["summary_num_predict"]),
+            "num_ctx": int(budget["num_ctx"]),
         },
     }
 

@@ -1,15 +1,18 @@
-import { useRef } from "react"
+import { useRef, useState, type ClipboardEvent } from "react"
 import {
   ArrowUp,
   BookOpen,
+  Brain,
   Check,
   ChevronDown,
   Cpu,
   FileText,
+  ImagePlus,
   Loader2,
   Paperclip,
   Square,
   X,
+  Zap,
 } from "lucide-react"
 import {
   Button,
@@ -19,9 +22,17 @@ import {
   DropdownMenuSeparator,
   Tooltip,
 } from "@/components/ui"
-import type { AIMode, KnowledgeDocument, Notebook, Workspace } from "@/types"
+import type {
+  AIMode,
+  ChatImageAttachment,
+  KnowledgeDocument,
+  Notebook,
+  ReasoningMode,
+  Workspace,
+} from "@/types"
 import { AI_MODEL_OPTIONS, getModeDescriptor } from "@/services/chat-service"
 import { formatBytes } from "@/utils/format"
+import { prepareChatImageAttachment } from "@/utils/image-upload"
 import { cn } from "@/utils/cn"
 
 export function ChatComposer({
@@ -32,6 +43,8 @@ export function ChatComposer({
   busy,
   aiMode = "auto",
   onModeChange,
+  reasoningMode = "auto",
+  onReasoningModeChange,
   modelId,
   onModelChange,
   notebooks,
@@ -41,6 +54,9 @@ export function ChatComposer({
   attachedDocIds,
   onToggleAttachDoc,
   onClearAttachedDocs,
+  attachedImage,
+  onAttachImage,
+  visionAvailable,
 }: {
   value: string
   onChange: (next: string) => void
@@ -49,6 +65,8 @@ export function ChatComposer({
   busy: boolean
   aiMode?: AIMode
   onModeChange?: (mode: AIMode) => void
+  reasoningMode?: ReasoningMode
+  onReasoningModeChange?: (mode: ReasoningMode) => void
   modelId: string
   onModelChange: (modelId: string) => void
   currentWorkspace?: Workspace
@@ -59,12 +77,45 @@ export function ChatComposer({
   attachedDocIds: string[]
   onToggleAttachDoc: (docId: string) => void
   onClearAttachedDocs: () => void
+  attachedImage?: ChatImageAttachment | null
+  onAttachImage?: (img: ChatImageAttachment | null) => void
+  visionAvailable?: boolean
   backendOnline?: boolean
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
+  const [processingImage, setProcessingImage] = useState(false)
   const attachedDocs = workspaceDocuments.filter((d) => attachedDocIds.includes(d.id))
   const currentModelOption =
     AI_MODEL_OPTIONS.find((m) => m.id === modelId) ?? AI_MODEL_OPTIONS[0]
+
+  const handleSelectImageFile = async (file: File | null | undefined) => {
+    if (!file || !onAttachImage) return
+    setImageError(null)
+    setProcessingImage(true)
+    try {
+      const prepared = await prepareChatImageAttachment(file)
+      onAttachImage(prepared)
+    } catch (err) {
+      setImageError(err instanceof Error ? err.message : "Không thể xử lý ảnh đính kèm.")
+    } finally {
+      setProcessingImage(false)
+    }
+  }
+
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onAttachImage) return
+    const items = Array.from(e.clipboardData?.items ?? [])
+    const imgItem = items.find((item) => item.type.startsWith("image/"))
+    if (imgItem) {
+      const file = imgItem.getAsFile()
+      if (file) {
+        e.preventDefault()
+        void handleSelectImageFile(file)
+      }
+    }
+  }
 
   const adjustHeight = (el: HTMLTextAreaElement) => {
     el.style.height = "auto"
@@ -79,8 +130,10 @@ export function ChatComposer({
     }
   }
 
+  const canSend = Boolean(value.trim() || attachedImage) && !busy && !processingImage
+
   const handleTriggerSend = () => {
-    if (!value.trim() || busy) return
+    if (!canSend) return
     onSend()
     if (textareaRef.current) {
       textareaRef.current.style.height = "40px"
@@ -131,12 +184,53 @@ export function ChatComposer({
             </div>
           ) : null}
 
+          {/* Preview ảnh đính kèm / lỗi xử lý ảnh */}
+          {attachedImage || imageError ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#DCE7E4] bg-[#F1F6F5] px-3 py-2 text-xs">
+              {attachedImage ? (
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <img
+                    src={attachedImage.dataUrl}
+                    alt={attachedImage.name}
+                    className="h-11 w-11 shrink-0 rounded-md border border-[#DCE7E4] object-cover bg-white"
+                  />
+                  <div className="min-w-0">
+                    <p className="truncate text-[11.5px] font-medium text-[#172B29]">
+                      {attachedImage.name}
+                    </p>
+                    <p className="text-[10.5px] text-[#647C79]">
+                      {formatBytes(attachedImage.sizeBytes)} ·{" "}
+                      {visionAvailable === false
+                        ? "Cần cài model Vision (vd: ollama pull qwen3-vl:2b-instruct)"
+                        : "Sẵn sàng phân tích bằng Vision AI"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onAttachImage?.(null)
+                      setImageError(null)
+                    }}
+                    className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[#DCE7E4] bg-white text-[#647C79] hover:text-[#172B29]"
+                    aria-label="Xóa ảnh đính kèm"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : null}
+              {imageError ? (
+                <span className="text-[11px] text-red-600">{imageError}</span>
+              ) : null}
+            </div>
+          ) : null}
+
           {/* Ô nhập Textarea tự giãn chiều cao */}
           <div className="px-3.5 pt-2.5 pb-1">
             <textarea
               ref={textareaRef}
               value={value}
               onChange={(e) => handleTextChange(e.target.value)}
+              onPaste={handlePaste}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault()
@@ -144,7 +238,11 @@ export function ChatComposer({
                 }
               }}
               rows={1}
-              placeholder="Đặt câu hỏi từ tài liệu của bạn... (Enter để gửi)"
+              placeholder={
+                attachedImage
+                  ? "Nhập câu hỏi về hình ảnh này... (Enter để gửi)"
+                  : "Đặt câu hỏi từ tài liệu hoặc dán ảnh (Ctrl+V)... (Enter để gửi)"
+              }
               className="max-h-[160px] min-h-[40px] w-full resize-none border-0 bg-transparent py-1 text-sm leading-relaxed text-[#172B29] placeholder:text-[#647C79] focus:outline-none focus-visible:outline-none"
             />
           </div>
@@ -320,6 +418,42 @@ export function ChatComposer({
                 )}
               </DropdownMenu>
 
+              {onAttachImage ? (
+                <>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      void handleSelectImageFile(file)
+                      e.target.value = ""
+                    }}
+                  />
+                  <Tooltip content="Đính kèm hoặc dán ảnh (Ctrl+V)" side="top">
+                    <button
+                      type="button"
+                      disabled={processingImage || busy}
+                      onClick={() => imageInputRef.current?.click()}
+                      aria-label="Đính kèm ảnh"
+                      className={cn(
+                        "inline-flex h-6.5 items-center gap-1 rounded-md px-1.5 text-xs transition-colors",
+                        attachedImage
+                          ? "bg-[#087F73]/10 font-semibold text-[#087F73]"
+                          : "text-[#647C79] hover:bg-[#F1F6F5] hover:text-[#172B29]",
+                      )}
+                    >
+                      {processingImage ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ImagePlus className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </Tooltip>
+                </>
+              ) : null}
+
               {/* Chọn mô hình LLM */}
               <DropdownMenu
                 align="start"
@@ -352,6 +486,78 @@ export function ChatComposer({
                   </DropdownMenuItem>
                 ))}
               </DropdownMenu>
+
+              {onReasoningModeChange ? (
+                <DropdownMenu
+                  align="start"
+                  side="top"
+                  trigger={
+                    <button
+                      type="button"
+                      aria-label="Chế độ suy luận"
+                      title="Chọn mức độ suy luận của AI (Tự động / Nhanh / Suy luận sâu)"
+                      className={cn(
+                        "inline-flex h-6.5 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                        reasoningMode === "deep"
+                          ? "border-[#087F73] bg-[#087F73]/10 text-[#087F73]"
+                          : reasoningMode === "fast"
+                            ? "border-amber-300 bg-amber-50 text-amber-800"
+                            : "border-[#DCE7E4] bg-[#F1F6F5] text-[#647C79] hover:border-[#087F73] hover:text-[#172B29]",
+                      )}
+                    >
+                      {reasoningMode === "deep" ? (
+                        <Brain className="h-3 w-3" />
+                      ) : reasoningMode === "fast" ? (
+                        <Zap className="h-3 w-3" />
+                      ) : (
+                        <Brain className="h-3 w-3 opacity-75" />
+                      )}
+                      <span className="hidden sm:inline">
+                        {reasoningMode === "deep"
+                          ? "Suy luận sâu"
+                          : reasoningMode === "fast"
+                            ? "Siêu nhanh"
+                            : "Tự động"}
+                      </span>
+                    </button>
+                  }
+                >
+                  <DropdownMenuLabel>Chế độ Suy luận AI</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "auto" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("auto")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Tự động (Khuyên dùng)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Hỏi thường trả lời nhanh; tự kích hoạt suy luận sâu khi gặp bài toán/tình huống phức tạp.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "fast" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("fast")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Siêu nhanh (Tối ưu máy yếu)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Chỉ chạy 1 lượt RAG gọn nhẹ để đạt tốc độ phản hồi nhanh nhất.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    shortcut={reasoningMode === "deep" ? "Đang chọn" : undefined}
+                    onClick={() => onReasoningModeChange("deep")}
+                  >
+                    <div>
+                      <div className="font-medium text-[#172B29]">Suy luận sâu (Đa bước + Sandbox)</div>
+                      <div className="text-[11px] text-[#647C79]">
+                        Tự phân tách vấn đề, truy xuất nhiều vòng, kiểm chứng Python Sandbox & đối chiếu chéo.
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenu>
+              ) : null}
 
               {onModeChange ? (
                 <DropdownMenu
@@ -400,7 +606,7 @@ export function ChatComposer({
                 <Tooltip content="Gửi câu hỏi (Enter)" side="top">
                   <button
                     type="button"
-                    disabled={!value.trim()}
+                    disabled={!canSend}
                     onClick={handleTriggerSend}
                     aria-label="Gửi câu hỏi"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[#087F73] text-white transition-colors hover:bg-[#06665C] disabled:cursor-not-allowed disabled:bg-[#DCE7E4] disabled:text-[#647C79]"

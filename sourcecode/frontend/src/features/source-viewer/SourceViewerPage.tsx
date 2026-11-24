@@ -619,9 +619,15 @@ export function SourceViewerPage() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="whitespace-pre-line text-[13.5px] leading-relaxed">
-                      {highlightText(c.content)}
-                    </p>
+                    {q.trim() ? (
+                      <p className="whitespace-pre-line text-[13.5px] leading-relaxed">
+                        {highlightText(c.content)}
+                      </p>
+                    ) : (
+                      <div className="markdown-body text-[13.5px] leading-relaxed">
+                        <Markdown remarkPlugins={[remarkGfm]}>{c.content}</Markdown>
+                      </div>
+                    )}
                   </div>
                 )
               })}

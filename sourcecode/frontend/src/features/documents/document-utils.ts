@@ -86,11 +86,14 @@ export interface StagedUploadItem {
   stageLabel?: string
   currentPhase?: UploadPhase
   totalChunks?: number
+  replaceDocumentId?: string | null
+  nextVersionNumber?: number
+  updateAsNewVersion?: boolean
 }
 
 export function validateCandidateFile(
   file: File,
-  existingDocsInWorkspace: KnowledgeDocument[],
+  _existingDocsInWorkspace: KnowledgeDocument[],
 ): string | null {
   if (!isAcceptedFile(file.name)) {
     return `Định dạng không hỗ trợ. Chỉ chấp nhận: ${ACCEPTED_EXTENSIONS.join(", ")}.`
@@ -101,12 +104,6 @@ export function validateCandidateFile(
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return `Dung lượng tệp (${formatBytes(file.size)}) vượt quá giới hạn ${formatBytes(MAX_FILE_SIZE_BYTES)}.`
   }
-  const dup = existingDocsInWorkspace.some(
-    (d) => d.fileName.toLowerCase() === file.name.toLowerCase(),
-  )
-  if (dup) {
-    return "Đã có tài liệu trùng tên trong workspace đang chọn."
-  }
   return null
 }
 
@@ -115,6 +112,11 @@ export function buildStagedItem(
   existingDocsInWorkspace: KnowledgeDocument[],
   id: string,
 ): StagedUploadItem {
+  const matchedExisting = existingDocsInWorkspace.find(
+    (d) => d.fileName.toLowerCase() === file.name.toLowerCase() && d.isLatest !== false,
+  ) ?? existingDocsInWorkspace.find(
+    (d) => d.fileName.toLowerCase() === file.name.toLowerCase(),
+  )
   return {
     id,
     file,
@@ -126,6 +128,9 @@ export function buildStagedItem(
     uploadState: "staged",
     stageLabel: "Chờ tải lên",
     currentPhase: "upload",
+    replaceDocumentId: matchedExisting ? matchedExisting.id : null,
+    nextVersionNumber: matchedExisting ? (matchedExisting.versionNumber ?? 1) + 1 : 1,
+    updateAsNewVersion: Boolean(matchedExisting),
   }
 }
 
