@@ -538,6 +538,14 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertIn("-∞", cleaned_sub)
         self.assertEqual(cleaned_sub.count("y₂ - y₁"), 1)
 
+        leaked_footer_out = (
+            "Phương pháp chung gồm 3 bước [1].\n\n"
+            "Câu hỏi/Yêu cầu của người dùng: nội dung của chương 9\n\n"
+            "Hãy đối chiếu tài liệu và trả lời trực diện, đúng trọng tâm câu hỏi, gắn nhãn trích dẫn 1, 2... tương ứng: [9. HAI ĐƯỜNG THẲNG]: Phương pháp chung:;"
+        )
+        cleaned_footer = _sanitize_rag_output(leaked_footer_out, citations_count=1)
+        self.assertEqual(cleaned_footer, "Phương pháp chung gồm 3 bước [1].")
+
         # 9. Kiểm tra đọc nối tiếp trọn vẹn mục 9 (a..f) qua nhiều chunk và tự dừng trước mục 10
         conn = db_mod.get_db_connection()
         try:

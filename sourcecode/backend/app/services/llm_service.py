@@ -791,12 +791,13 @@ def decode_symbol_pua_text(text: str) -> str:
     cleaned = text.replace("\xa0", " ").translate(_SYMBOL_PUA_MAP)
     cleaned = re.sub(r"[\uf000-\uf0ff]", "", cleaned)
 
-    # Gom các chuỗi >= 3 dòng cực ngắn (<= 4 ký tự) do PyMuPDF tách từng ký tự công thức thành 1 dòng đọc được
+    # Gom các chuỗi >= 3 dòng cực ngắn (<= 4 ký tự) do PyMuPDF tách từng ký tự công thức thành 1 dòng đọc được,
+    # đồng thời bỏ khoảng trắng thụt đầu dòng >= 3 dấu cách (tránh tạo Markdown code block ngoài ý muốn).
     lines = cleaned.splitlines()
     out_lines: List[str] = []
     short_buf: List[str] = []
     for ln in lines:
-        s = ln.strip()
+        s = re.sub(r"[ \t]{2,}", " ", ln.strip())
         if 0 < len(s) <= 4 and not re.match(r"^(?:[A-ZĐÂĂÊÔƠƯ]{2,}|Trang|\d+\.)$", s):
             short_buf.append(s)
         else:
@@ -805,7 +806,7 @@ def decode_symbol_pua_text(text: str) -> str:
             elif short_buf:
                 out_lines.extend(short_buf)
             short_buf = []
-            out_lines.append(ln)
+            out_lines.append(s)
     if len(short_buf) >= 3:
         out_lines.append(" ".join(short_buf))
     elif short_buf:
@@ -1012,6 +1013,12 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
     text = re.sub(
+        r"\n*\s*(?:Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s*:|Hãy\s+đối\s+chiếu\s+tài\s+liệu\s+và\s+trả\s+lời\s+trực\s+diện|🎯\s*\[TRÍCH\s+ĐOẠN)[\s\S]*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
         r"\n*\s*(?:Trích\s+dẫn\s+được\s+thực\s+hiện\s+dựa\s+trên\s+thông\s+tin\s+trong\s+tài\s+liệu|Hãy\s+đối\s+chiếu\s+tài\s+liệu)[^.\n]*\.?\s*$",
         "",
         text,
@@ -1177,7 +1184,14 @@ def _prepare_rag_prompts_and_citations(
     has_web = any(c["source_type"] == "web" for c in citations)
 
     system_prompt = _build_dynamic_system_prompt(query, has_local, has_web, image_base64)
-    pinpointed = _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
+    is_section_ask = bool(
+        re.search(
+            r"^(?:nội\s+dung|tóm\s+tắt|giải\s+thích).{0,25}(?:chương|phần|mục|bài|vấn\s+đề)\b",
+            query or "",
+            re.IGNORECASE | re.UNICODE,
+        )
+    )
+    pinpointed = "" if is_section_ask else _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
     pinpoint_block = (
         f"\n🎯 [TRÍCH ĐOẠN TRỌNG TÂM KHỚP CÂU HỎI NHẤT (ưu tiên trả lời chính xác từ thông tin này)]:\n{pinpointed}\n"
         if pinpointed
