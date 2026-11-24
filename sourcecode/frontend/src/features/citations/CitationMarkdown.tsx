@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { cloneElement, isValidElement, useState, type ReactNode } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Check, Copy } from "lucide-react"
@@ -43,15 +43,27 @@ function cleanMathDisplay(text: string): string {
     .replace(/\\Leftrightarrow/g, "⇔")
     .replace(/\\Rightarrow/g, "⇒")
     .replace(/\\rightarrow/g, "→")
-    .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => `\`${inner.trim()}\``)
-    .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> \`${inner.trim()}\`\n\n`)
+    .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => inner.trim())
+    .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> **${inner.trim()}**\n\n`)
+    .replace(/\^\{2\}|\^2\b/g, "²")
+    .replace(/\^\{3\}|\^3\b/g, "³")
     .replace(/\^\{([^}]+)\}/g, "^$1")
-    .replace(/_\{([^}]+)\}/g, "_$1")
+    .replace(/_\{([0-9]+)\}|_([0-9])\b/g, (_m, g1?: string, g2?: string) => {
+      const subMap: Record<string, string> = { "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉" }
+      const raw = g1 || g2 || ""
+      return raw.split("").map((ch) => subMap[ch] ?? ch).join("")
+    })
+    .replace(/_\{([^}]+)\}/g, "($1)")
+    .replace(/\(\s+([^()\n]{2,80}?)\s+\)/g, "($1)")
 }
 
 function withCitationChips(text: string) {
+  // Gỡ heading rỗng kiểu '### **[1]' hoặc '**[1]' chưa đóng trước khi chuyển chip trích dẫn
+  const normalizedHeading = text
+    .replace(/^#{1,4}\s*\*{0,2}\s*\[(?:Tài liệu |Nguồn(?:\s*web)? |Web )?(\d{1,3})\]\*{0,2}\s*$/gim, "")
+    .replace(/^(\*{1,2})\[(\d{1,3})\](?!\*{1,2})\s*$/gm, "[$2]")
   // Làm sạch ký hiệu LaTeX thô và các biến thể trích dẫn lồng tên file từ LLM nhỏ
-  const cleaned = cleanMathDisplay(text)
+  const cleaned = cleanMathDisplay(normalizedHeading)
     .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\]\n"]{2,180}\]?"?/gi, "[[cite:$1]]")
     .replace(/"?\[\s*(?:Tài liệu|Nguồn(?:\s*web)?|Web)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?"?/gi, "[[cite:$1]]")
   return cleaned.replace(/\[(\d{1,3})\]/g, (_m, n: string) => `[[cite:${n}]]`)
@@ -118,6 +130,27 @@ export function CitationMarkdown({ content }: { content: string }) {
           p({ children }) {
             return <p>{renderNodes(children, setActive)}</p>
           },
+          h1({ children }) {
+            return <h1>{renderNodes(children, setActive)}</h1>
+          },
+          h2({ children }) {
+            return <h2>{renderNodes(children, setActive)}</h2>
+          },
+          h3({ children }) {
+            return <h3>{renderNodes(children, setActive)}</h3>
+          },
+          h4({ children }) {
+            return <h4>{renderNodes(children, setActive)}</h4>
+          },
+          strong({ children }) {
+            return <strong>{renderNodes(children, setActive)}</strong>
+          },
+          em({ children }) {
+            return <em>{renderNodes(children, setActive)}</em>
+          },
+          blockquote({ children }) {
+            return <blockquote>{renderNodes(children, setActive)}</blockquote>
+          },
           li({ children }) {
             return <li>{renderNodes(children, setActive)}</li>
           },
@@ -158,6 +191,9 @@ export function CitationMarkdown({ content }: { content: string }) {
 function renderNodes(children: ReactNode, setActive: (n: number) => void): ReactNode {
   return flatten(children).map((child, i) => {
     if (typeof child === "string") return replaceCites(child, setActive, i)
+    if (isValidElement<{ children?: ReactNode }>(child) && child.props?.children !== undefined) {
+      return cloneElement(child, { key: child.key ?? `el-${i}` }, renderNodes(child.props.children, setActive))
+    }
     return child
   })
 }

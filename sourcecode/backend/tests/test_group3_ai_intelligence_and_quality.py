@@ -500,6 +500,25 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertEqual(classify_chat_intent("Phát hiện mâu thuẫn và kiểm tra tính hợp lệ của tài liệu trên").kind, "deep_reasoning")
         self.assertEqual(classify_chat_intent("Hãy phản biện lập luận ở mục 15 và 17").kind, "deep_reasoning")
 
+        # 8. Khử lặp đoạn văn/đề mục + dọn heading '**[1]' & chuẩn hóa chỉ số dưới x_1 -> x₁, ^2 -> ²
+        loop_3b_out = (
+            'Để đáp lại yêu cầu của bạn về nội dung chi tiết của phần "HÀM SỐ ĐỒNG BIẾN":\n\n'
+            '### **[1]\n'
+            '- Giả sử x_1 < x_2 và tính ( f(x_2) - f(x_1) )\n'
+            '- Nếu (f(x_2) - f(x_1))/(x_2 - x_1) > 0, hàm số đồng biến.\n\n'
+            '### **[2]\n'
+            '- Giả sử x_1 < x_2 và tính ( f(x_2) - f(x_1) )\n'
+            '- Nếu (f(x_2) - f(x_1))/(x_2 - x_1) > 0, hàm số đồng biến.\n'
+            'Trích dẫn được thực hiện dựa trên thông tin trong tài liệu 1 và 2.'
+        )
+        deduped_ans = _sanitize_rag_output(loop_3b_out, citations_count=2)
+        self.assertNotIn("Để đáp lại yêu cầu", deduped_ans)
+        self.assertNotIn("**[1]", deduped_ans)
+        self.assertNotIn("Trích dẫn được thực hiện", deduped_ans)
+        self.assertEqual(deduped_ans.count("hàm số đồng biến"), 1)
+        self.assertIn("x₁", deduped_ans)
+        self.assertIn("x₂", deduped_ans)
+
 
 if __name__ == "__main__":
     unittest.main()

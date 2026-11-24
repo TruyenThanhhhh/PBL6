@@ -658,7 +658,7 @@ def _resolve_sampling_options(
         "num_predict": dyn_predict,
         "temperature": 0.20 if is_precise else 0.45,
         "top_p": 0.85 if is_precise else 0.90,
-        "repeat_penalty": 1.15,
+        "repeat_penalty": 1.18,
         "num_ctx": dyn_ctx,
     }
 
@@ -678,8 +678,9 @@ def _build_dynamic_system_prompt(
         "NGUYÊN TẮC TRẢ LỜI:\n"
         "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên; TUYỆT ĐỐI KHÔNG lặp lại nguyên văn câu hỏi ('Câu hỏi của bạn là...', 'Bạn đã hỏi...').\n"
         "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế (ví dụ: hỏi về 'A và B', hoặc tài liệu có nhiều mục liên quan), hãy chia câu trả lời thành các đề mục in đậm rõ ràng để giải đáp trọn vẹn từng vế, liệt kê đầy đủ tất cả các thành phần/hạng mục có trong nguồn mà không bỏ sót hay viết tắt giữa chừng.\n"
+        "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa/định lý nhiều lần. Luôn tổng hợp các đoạn nguồn liên quan thành MỘT câu trả lời thống nhất duy nhất và chỉ gắn `[1]`, `[2]` ở cuối ý.\n"
         "- TUYỆT ĐỐI KHÔNG tự bịa ra định dạng 'Câu Hỏi ÔN TẬP', 'Câu 1:', 'Đáp Án:' khi người dùng chỉ đang hỏi thông tin bình thường.\n"
-        "- TUYỆT ĐỐI KHÔNG chép tên file, số trang hay cụm '[Tài liệu 1: ... (Trang 2)]' vào nội dung, và KHÔNG mở đầu câu bằng kiểu máy móc ('Tài liệu [1] mô tả...', 'Trong Tài liệu [2]...', 'Dựa trên tài liệu...'). Hãy viết câu tự nhiên, chia gạch đầu dòng gọn gàng nếu có nhiều mục/từ vựng và chỉ đặt ký hiệu `[1]`, `[2]` ở cuối ý.\n"
+        "- TUYỆT ĐỐI KHÔNG bịa kiến thức ngoài cấp học/tài liệu (ví dụ: không tự thêm 'đạo hàm' vào tài liệu Toán lớp 9 nếu tài liệu không hề nhắc đến) và KHÔNG mở đầu câu kiểu máy móc ('Tài liệu [1] mô tả...', 'Để đáp lại yêu cầu của bạn...').\n"
         "- Nếu kho tài liệu KHÔNG chứa thông tin được hỏi: nói rõ 'Tài liệu trong kho tri thức của bạn không chứa thông tin về [chủ đề].', sau đó giải đáp ngắn gọn bằng kiến thức chuẩn xác (không gắn [1], [2] giả) hoặc liệt kê nhanh vài mục tiêu biểu dưới dạng gạch đầu dòng sạch."
     ]
 
@@ -863,8 +864,17 @@ def _strip_raw_latex_math(text: str) -> str:
         res = res.replace(k, v)
 
     res = res.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
+    res = re.sub(r"\^\{2\}|\^2\b", "²", res)
+    res = re.sub(r"\^\{3\}|\^3\b", "³", res)
     res = re.sub(r"\^\{([^{}]+)\}", r"^\1", res)
-    res = re.sub(r"_\{([^{}]+)\}", r"_\1", res)
+    sub_digits = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    res = re.sub(
+        r"_\{([0-9]+)\}|_([0-9])\b",
+        lambda m: (m.group(1) or m.group(2) or "").translate(sub_digits),
+        res,
+    )
+    res = re.sub(r"_\{([^{}]+)\}", r"(\1)", res)
+    res = re.sub(r"\(\s+([^()\n]{2,80}?)\s+\)", r"(\1)", res)
     res = re.sub(r"\(\s*\*\*([^*]+)\*\*\s*\)", r"**\1**", res)
     return res
 
@@ -882,12 +892,23 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         return ""
     text = answer
 
-    # 0. Gỡ tiêu đề nội bộ, câu lặp lại câu hỏi, dòng biến Sandbox/tên file bị rò và làm sạch LaTeX thô
+    # 0. Gỡ tiêu đề nội bộ, câu mở/chốt máy móc, dòng biến Sandbox/tên file bị rò và làm sạch LaTeX thô
     text = re.sub(
         r'^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
         "",
         text,
         flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r"^(?:Để\s+đáp\s+lại\s+yêu\s+cầu\s+của\s+bạn[^\n]{0,180}:\s*\n+)",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r"(?im)^\s*#{0,4}\s*\*{0,2}\s*\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?|Web)?\s*(\d{1,3})\s*\]\*{0,2}\s*$",
+        "",
+        text,
     )
     text = re.sub(
         r"(?im)^(?:#{1,4}\s*)?(?:KẾT\s*QUẢ\s*ĐÃ\s*KIỂM\s*CHỨNG\s*BẰNG\s*PYTHON\s*SANDBOX[^:\n]*|\[(?:DỮ\s*KIỆN\s*TOÁN\s*HỌC|SỐ\s*LIỆU\s*ĐỐI\s*CHIẾU)[^\]]*\]|Các\s+giá\s+trị\s+chính\s+xác\s+đã\s+tính\s*:[^\n]*|Đáp\s+số\s+cuối\s+cùng\s+chính\s+xác\s+tuyệt\s+đối\s*:[^\n]*|Kết\s+quả\s+chính\s+cuối\s+cùng\s*:[^\n]*)\s*\n*",
@@ -974,6 +995,31 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
 
     text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
+    text = re.sub(
+        r"\n*\s*Trích dẫn được thực hiện dựa trên thông tin trong tài liệu[^.\n]*\.?\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+
+    # 3b. Khử lặp dòng/mục giống hệt hoặc gần trùng nhau do model nhỏ (3B) lặp lại theo từng tài liệu
+    if "\n" in text:
+        dedup_lines: List[str] = []
+        seen_norm_lines: set[str] = set()
+        for ln in text.splitlines():
+            stripped_ln = ln.strip()
+            if not stripped_ln:
+                if dedup_lines and dedup_lines[-1] != "":
+                    dedup_lines.append("")
+                continue
+            norm_ln = re.sub(r"\[\d+\]|từ\s+tài\s+liệu\s*\d+|\(\s*tài\s+liệu\s*\d+\s*\)", "", stripped_ln, flags=re.IGNORECASE)
+            norm_ln = re.sub(r"[\s*#:\-–.,;()]+", " ", norm_ln).strip().lower()
+            if len(norm_ln) >= 20:
+                if norm_ln in seen_norm_lines:
+                    continue
+                seen_norm_lines.add(norm_ln)
+            dedup_lines.append(ln)
+        text = "\n".join(dedup_lines).strip()
 
     # 4. Chuẩn hóa nhãn phân tách gợi ý và làm sạch tiền tố `[Gợi ý 1]` hoặc `Gợi ý 1:`
     text = re.sub(
