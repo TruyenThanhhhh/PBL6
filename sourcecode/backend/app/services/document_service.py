@@ -79,7 +79,7 @@ def _extract_docx_blocks(doc: Any) -> List[str]:
 
 _NUMERIC_CLEAN_RE = re.compile(r"^[-+]?\d+(?:[.,]\d+)*(?:%)?$")
 _OUTLINE_HEADING_RE = re.compile(
-    r"^(?:#{1,4}\s+.+|(?:chương|bài|phần|mục|điều|khoản|chapter|section|part|article)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b.*)$",
+    r"^(?:#{1,4}\s+.+|(?:chương|bài|phần|mục|điều|khoản|vấn\s+đề|chapter|section|part|article)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b.*)$",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -458,7 +458,8 @@ def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
     for i, page in enumerate(doc):
         extracted = (page.get_text("text") or "").strip()
         if extracted:
-            page_texts[i + 1] = extracted
+            from app.services.llm_service import decode_symbol_pua_text
+            page_texts[i + 1] = decode_symbol_pua_text(extracted)
         if len(extracted) < 20:
             has_images = bool(page.get_images(full=False))
             if not extracted or has_images:

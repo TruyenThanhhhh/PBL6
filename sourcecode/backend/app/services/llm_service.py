@@ -716,6 +716,159 @@ def _build_dynamic_system_prompt(
     return "\n\n".join(sections)
 
 
+_SYMBOL_PUA_MAP = str.maketrans({
+    "\uf022": "∀",
+    "\uf024": "∃",
+    "\uf028": "(",
+    "\uf029": ")",
+    "\uf02a": "×",
+    "\uf02b": "+",
+    "\uf02d": "-",
+    "\uf02f": "/",
+    "\uf03a": ":",
+    "\uf03b": ";",
+    "\uf03c": "<",
+    "\uf03d": "=",
+    "\uf03e": ">",
+    "\uf044": "Δ",
+    "\uf05b": "[",
+    "\uf05d": "]",
+    "\uf05e": "^",
+    "\uf061": "α",
+    "\uf062": "β",
+    "\uf067": "γ",
+    "\uf064": "δ",
+    "\uf066": "φ",
+    "\uf070": "π",
+    "\uf071": "θ",
+    "\uf073": "σ",
+    "\uf077": "ω",
+    "\uf07b": "{",
+    "\uf07c": "|",
+    "\uf07d": "}",
+    "\uf0a2": "′",
+    "\uf0a3": "≤",
+    "\uf0a5": "∞",
+    "\uf0a7": "•",
+    "\uf0a8": "•",
+    "\uf0ae": "→",
+    "\uf0b0": "°",
+    "\uf0b1": "±",
+    "\uf0b3": "≥",
+    "\uf0b4": "×",
+    "\uf0b8": "÷",
+    "\uf0b9": "≠",
+    "\uf0bb": "≈",
+    "\uf0ce": "∈",
+    "\uf0cf": "∉",
+    "\uf0db": "⇔",
+    "\uf0de": "⇒",
+    "\uf0e9": "[",
+    "\uf0ea": "[",
+    "\uf0eb": "[",
+    "\uf0ec": "{",
+    "\uf0ed": "{",
+    "\uf0ee": "{",
+    "\uf0ef": "|",
+    "\uf0f9": "]",
+    "\uf0fa": "]",
+    "\uf0fb": "]",
+})
+
+
+def decode_symbol_pua_text(text: str) -> str:
+    """
+    Giải mã ký tự font MS Word Symbol/Wingdings (vùng PUA \\uf020-\\uf0ff)
+    thành ký hiệu toán học chuẩn (=, +, π, ≤, ≥, ⇔...) và gom dòng công thức bị xẻ dọc.
+    """
+    if not text:
+        return ""
+    cleaned = text.replace("\xa0", " ").translate(_SYMBOL_PUA_MAP)
+    cleaned = re.sub(r"[\uf000-\uf0ff]", "", cleaned)
+
+    # Gom các chuỗi >= 3 dòng cực ngắn (<= 4 ký tự) do PyMuPDF tách từng ký tự công thức thành 1 dòng đọc được
+    lines = cleaned.splitlines()
+    out_lines: List[str] = []
+    short_buf: List[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if 0 < len(s) <= 4 and not re.match(r"^(?:[A-ZĐÂĂÊÔƠƯ]{2,}|Trang|\d+\.)$", s):
+            short_buf.append(s)
+        else:
+            if len(short_buf) >= 3:
+                out_lines.append(" ".join(short_buf))
+            elif short_buf:
+                out_lines.extend(short_buf)
+            short_buf = []
+            out_lines.append(ln)
+    if len(short_buf) >= 3:
+        out_lines.append(" ".join(short_buf))
+    elif short_buf:
+        out_lines.extend(short_buf)
+    return "\n".join(out_lines)
+
+
+def _strip_raw_latex_math(text: str) -> str:
+    """Chuyển đổi các lệnh LaTeX thô (\\frac, \\sqrt, \\pi, \\approx, ^{}, _{}) sang văn bản/Unicode dễ đọc."""
+    if not text:
+        return ""
+    res = text
+    res = re.sub(r"\\boxed\{([^{}]+)\}", r"**\1**", res)
+    res = re.sub(r"\\text\{([^{}]+)\}", r"\1", res)
+    res = re.sub(r"\\(?:left|right)\b", "", res)
+
+    # Xử lý lặp \sqrt{...} và \frac{...}{...} từ trong ra ngoài (tối đa 4 vòng lồng nhau)
+    for _ in range(4):
+        prev = res
+        res = re.sub(
+            r"\\sqrt\{([^{}]+)\}",
+            lambda m: f"√{m.group(1)}" if re.fullmatch(r"[\w.,]+", m.group(1).strip()) else f"√({m.group(1).strip()})",
+            res,
+        )
+        res = re.sub(
+            r"\\frac\{([^{}]+)\}\{([^{}]+)\}",
+            lambda m: (
+                f"{m.group(1).strip() if re.fullmatch(r'[\w.()√π]+', m.group(1).strip()) else '(' + m.group(1).strip() + ')'}"
+                "/"
+                f"{m.group(2).strip() if re.fullmatch(r'[\w.()√π]+', m.group(2).strip()) else '(' + m.group(2).strip() + ')'}"
+            ),
+            res,
+        )
+        if res == prev:
+            break
+
+    latex_tokens = (
+        ("\\times", "×"),
+        ("\\cdot", "·"),
+        ("\\%", "%"),
+        ("\\pi", "π"),
+        ("\\approx", "≈"),
+        ("\\pm", "±"),
+        ("\\leq", "≤"),
+        ("\\le", "≤"),
+        ("\\geq", "≥"),
+        ("\\ge", "≥"),
+        ("\\neq", "≠"),
+        ("\\ne", "≠"),
+        ("\\Delta", "Δ"),
+        ("\\alpha", "α"),
+        ("\\beta", "β"),
+        ("\\gamma", "γ"),
+        ("\\theta", "θ"),
+        ("\\Leftrightarrow", "⇔"),
+        ("\\Rightarrow", "⇒"),
+        ("\\rightarrow", "→"),
+    )
+    for k, v in latex_tokens:
+        res = res.replace(k, v)
+
+    res = res.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
+    res = re.sub(r"\^\{([^{}]+)\}", r"^\1", res)
+    res = re.sub(r"_\{([^{}]+)\}", r"_\1", res)
+    res = re.sub(r"\(\s*\*\*([^*]+)\*\*\s*\)", r"**\1**", res)
+    return res
+
+
 def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     """
     Hậu kiểm câu trả lời RAG (<0.2ms):
@@ -741,13 +894,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         "",
         text,
     )
-    text = re.sub(r"\\boxed\{([^{}]+)\}", r"**\1**", text)
-    text = re.sub(r"\\text\{([^{}]+)\}", r"\1", text)
-    text = re.sub(r"\\(?:left|right)\b", "", text)
-    text = text.replace("\\times", "×").replace("\\cdot", "·").replace("\\%", "%")
-    text = text.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
-    text = re.sub(r"\^\{([^}]+)\}", r"^\1", text)
-    text = re.sub(r"\(\s*\*\*([^*]+)\*\*\s*\)", r"**\1**", text)
+    text = _strip_raw_latex_math(text)
 
     # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ... / [Tài liệu 1] / [Nguồn web 1] -> [1]
     text = re.sub(
@@ -859,7 +1006,7 @@ def _prepare_rag_prompts_and_citations(
             meta_parts.append(page_label)
         page_suffix = f" ({' · '.join(meta_parts)})" if meta_parts else ""
         header = f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
-        raw_body = str(chunk.get("content", ""))
+        raw_body = decode_symbol_pua_text(str(chunk.get("content", "")))
         doc_key = str(chunk.get("document_id") or "")
         deduped_body = (
             _deduplicate_chunk_overlap(seen_doc_tails[doc_key], raw_body)

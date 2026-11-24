@@ -175,6 +175,86 @@ def _fast_local_reasoning_planner(
         if arith_m:
             expr_clean = arith_m.group(1).strip()
             expressions = [f"ket_qua = round({expr_clean}, 4)"]
+        else:
+            # Hình học không gian tức thì (<1ms): Hình nón cụt, Hình nón, Hình trụ (kể cả quay hình chữ nhật), Hình cầu
+            has_frustum = any(k in q_low for k in ("nón cụt", "non cut"))
+            has_cylinder = any(k in q_low for k in ("hình trụ", "hinh tru"))
+            has_cone = not has_frustum and any(k in q_low for k in ("hình nón", "hinh non"))
+            has_sphere = any(k in q_low for k in ("hình cầu", "hinh cau", "mặt cầu", "mat cau", "khối cầu", "khoi cau"))
+
+            if has_frustum:
+                rad_m = re.search(
+                    r"bán\s+kính[^0-9]{0,35}(\d+(?:[.,]\d+)?)\s*(?:cm|m|dm|mm)?\s*(?:và|,)\s*(\d+(?:[.,]\d+)?)",
+                    q_low,
+                )
+                h_m = re.search(r"chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                if rad_m and h_m:
+                    r1 = float(rad_m.group(1).replace(",", "."))
+                    r2 = float(rad_m.group(2).replace(",", "."))
+                    variables["R_nc"] = max(r1, r2)
+                    variables["r_nc"] = min(r1, r2)
+                    variables["h_nc"] = float(h_m.group(1).replace(",", "."))
+                    expressions.extend([
+                        "duong_sinh_l = round(sqrt((R_nc - r_nc) ** 2 + h_nc ** 2), 4)",
+                        "V_non_cut = round((pi * h_nc / 3) * (R_nc ** 2 + r_nc ** 2 + R_nc * r_nc), 4)",
+                        "S_xq_non_cut = round(pi * (R_nc + r_nc) * duong_sinh_l, 4)",
+                        "S_tp_non_cut = round(S_xq_non_cut + pi * (R_nc ** 2) + pi * (r_nc ** 2), 4)",
+                    ])
+
+            if has_cylinder:
+                rect_m = re.search(
+                    r"hình\s+chữ\s+nhật[^.\n]{0,80}?AB\s*=\s*(\d+(?:[.,]\d+)?)[^.\n]{0,30}?BC\s*=\s*(\d+(?:[.,]\d+)?)",
+                    q_clean,
+                    re.IGNORECASE,
+                )
+                if rect_m:
+                    ab = float(rect_m.group(1).replace(",", "."))
+                    bc = float(rect_m.group(2).replace(",", "."))
+                    rot_m = re.search(r"quanh\s+(?:cạnh\s+)?(AB|BC|CD|AD)", q_clean, re.IGNORECASE)
+                    axis = (rot_m.group(1).upper() if rot_m else "AB")
+                    if axis in ("AB", "CD"):
+                        variables["h_tru"] = ab
+                        variables["R_tru"] = bc
+                    else:
+                        variables["h_tru"] = bc
+                        variables["R_tru"] = ab
+                    expressions.extend([
+                        "V_tru = round(pi * (R_tru ** 2) * h_tru, 4)",
+                        "S_tp_tru = round(2 * pi * R_tru * (h_tru + R_tru), 4)",
+                    ])
+                else:
+                    cyl_r = re.search(r"hình\s+trụ[^.\n]{0,60}?bán\s+kính\s*(?:đáy\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                    cyl_h = re.search(r"hình\s+trụ[^.\n]{0,90}?chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                    if cyl_r and cyl_h:
+                        variables["R_tru"] = float(cyl_r.group(1).replace(",", "."))
+                        variables["h_tru"] = float(cyl_h.group(1).replace(",", "."))
+                        expressions.extend([
+                            "V_tru = round(pi * (R_tru ** 2) * h_tru, 4)",
+                            "S_tp_tru = round(2 * pi * R_tru * (h_tru + R_tru), 4)",
+                        ])
+
+            if "V_non_cut" in str(expressions) and "V_tru" in str(expressions):
+                expressions.append("chenh_lech_V = round(V_non_cut - V_tru, 4)")
+                expressions.append("chenh_lech_phan_tram = round(abs(V_non_cut - V_tru) / V_tru * 100, 2)")
+            elif has_cone:
+                cone_r = re.search(r"bán\s+kính\s*(?:đáy\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                cone_h = re.search(r"chiều\s+cao\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                if cone_r and cone_h:
+                    variables["R_non"] = float(cone_r.group(1).replace(",", "."))
+                    variables["h_non"] = float(cone_h.group(1).replace(",", "."))
+                    expressions.extend([
+                        "l_non = round(sqrt(R_non ** 2 + h_non ** 2), 4)",
+                        "V_non = round((pi * (R_non ** 2) * h_non) / 3, 4)",
+                        "S_tp_non = round(pi * R_non * (R_non + l_non), 4)",
+                    ])
+            elif has_sphere:
+                sph_r = re.search(r"bán\s+kính\s*(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)
+                if sph_r:
+                    variables["R_cau"] = float(sph_r.group(1).replace(",", "."))
+                    expressions.extend([
+                        "S_cau = round(4 * pi * (R_cau ** 2), 4)",
+                        "V_cau = round((4 / 3) * pi * (R_cau ** 3), 4)",
+                    ])
 
     goal = (
         "Áp dụng công thức & kiểm chứng số liệu từ tài liệu qua Python Sandbox"
@@ -389,14 +469,23 @@ async def stream_autonomous_reasoning(
         or hasattr(call_ollama_json, "assert_called")
         or getattr(call_ollama_json, "__module__", "").startswith("unittest.mock")
     )
-    # Chỉ gọi thêm LLM JSON Planner (vòng 1) khi đang chạy unit test mock, hoặc máy ở chế độ Performance
-    # hoặc khi Fast Local Planner chưa trích được biểu thức tính toán/sub_queries trên máy có RAM dồi dào
+    needs_math_cue = bool(
+        re.search(
+            r"\b(?:tính|tinh|bao\s+nhiêu|bao\s+nhieu|phần\s+trăm|phan\s+tram|thể\s+tích|the\s+tich|"
+            r"diện\s+tích|dien\s+tich|khoảng\s+cách|khoang\s+cach|gtln|gtnn|tiếp\s+xúc|parabol|giải)\b",
+            query or "",
+            re.IGNORECASE | re.UNICODE,
+        )
+    )
+    # Chỉ gọi thêm LLM JSON Planner (vòng 1) khi đang chạy unit test mock, hoặc máy ở chế độ Performance,
+    # hoặc khi Fast Local Planner chưa trích được biểu thức tính toán (nhất là bài toán cần giải bằng Python Sandbox)
     should_call_llm_planner = (
         ollama_status.get("running")
         and model_available
         and (
             json_mocked
             or profile_id == "performance"
+            or (not fast_plan.get("expressions") and needs_math_cue and profile_id != "eco")
             or (not fast_plan.get("expressions") and not fast_plan.get("sub_queries") and avail_ram >= 8.5)
         )
     )
@@ -529,16 +618,24 @@ async def stream_autonomous_reasoning(
     )
 
     has_citations = bool(citations)
+    is_finance_risk_q = bool(
+        re.search(r"\b(?:lãi|lai|tiền|tien|hợp\s+đồng|hop\s+dong|phạt|phat|rủi\s+ro|rui\s+ro|vay|gửi|gui)\b", query or "", re.IGNORECASE)
+    )
+    sec3_block = (
+        "### 3. Đánh giá rủi ro & Điều kiện thực tế\n- Giải thích chính xác bản chất nghiệp vụ (ví dụ với tiền gửi kỳ hạn: rút trước hạn vẫn bảo toàn tiền gốc nhưng mất phần lãi kép kỳ hạn dài do bị chuyển sang lãi suất không kỳ hạn thấp hoặc chịu phí tất toán nếu hợp đồng quy định).\n"
+        if is_finance_risk_q
+        else "### 3. Điều kiện áp dụng & Lưu ý phương pháp\n- Nêu ngắn gọn điều kiện xác định, giả thiết hoặc điểm dễ nhầm lẫn khi giải dạng bài trên.\n"
+    )
     synth_system = (
         "Bạn là Chuyên gia Phân tích & Suy luận Tri thức AI. Hãy trình bày câu trả lời ĐÚNG MỘT LẦN theo đúng thứ tự 4 mục ngắn gọn sau (không lặp lại mục Kết luận 2 lần):\n"
         + (
-            "### 1. Căn cứ từ tài liệu & Công thức áp dụng\n(gắn trích dẫn [1], [2]... nếu lấy từ tài liệu).\n"
+            "### 1. Căn cứ từ tài liệu & Công thức áp dụng\n(gắn trích dẫn [1], [2]... tương ứng với nguồn trong tài liệu).\n"
             if has_citations
             else "### 1. Phương pháp & Công thức áp dụng\n(nêu ngắn gọn ở 1 dòng nếu tài liệu không chứa bài toán này, rồi ghi rõ công thức chuẩn).\n"
         )
-        + "### 2. Phân tích & Tính toán từng bước\n- Viết công thức bằng ký hiệu phổ thông (`150.000.000 × (1 + 6,8%)^5 = 208.423.902,12 đồng`), tuyệt đối KHÔNG viết tên biến Python, KHÔNG tự nhẩm sai lũy thừa trung gian, và KHÔNG dùng cú pháp LaTeX (`\\boxed`, `\\%`, `\\times`, `\\(`, `\\[`).\n"
-        "### 3. Đánh giá rủi ro & Điều kiện thực tế\n- Giải thích chính xác bản chất nghiệp vụ (ví dụ với tiền gửi kỳ hạn: rút trước hạn vẫn bảo toàn tiền gốc nhưng mất phần lãi kép kỳ hạn dài do bị chuyển sang lãi suất không kỳ hạn thấp hoặc chịu phí tất toán nếu hợp đồng quy định).\n"
-        "### 4. Kết luận\n- Chốt gọn đáp số và khuyến nghị trong 2–3 câu; dừng ngay sau đó."
+        + "### 2. Phân tích & Tính toán từng bước\n- Viết công thức bằng ký hiệu phổ thông (`(π × 24 / 3) × (15^2 + 15×10 + 10^2) ≈ 11.938,05 cm^3`), tuyệt đối KHÔNG viết tên biến Python, KHÔNG tự nhẩm sai lũy thừa/căn thức trung gian, và KHÔNG dùng cú pháp LaTeX (`\\frac`, `\\sqrt`, `\\pi`, `\\approx`, `\\boxed`, `\\%`, `\\times`, `\\(`, `\\[`).\n"
+        + sec3_block
+        + "### 4. Kết luận\n- Chốt gọn đáp số và nhận xét trong 2–3 câu; dừng ngay sau đó."
         f"{verify_directive}"
     )
 

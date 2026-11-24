@@ -5,16 +5,48 @@ import { Check, Copy } from "lucide-react"
 import { useAppStore } from "@/store/app-store"
 
 function cleanMathDisplay(text: string): string {
-  return text
+  let res = text
     .replace(/\\boxed\{([^{}]+)\}/g, "**$1**")
     .replace(/\\text\{([^{}]+)\}/g, "$1")
     .replace(/\\(?:left|right)\b/g, "")
+
+  for (let i = 0; i < 4; i++) {
+    const prev = res
+    res = res
+      .replace(/\\sqrt\{([^{}]+)\}/g, (_m, inner: string) => {
+        const clean = inner.trim()
+        return /^[\w.,]+$/.test(clean) ? `√${clean}` : `√(${clean})`
+      })
+      .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, (_m, num: string, den: string) => {
+        const n = num.trim()
+        const d = den.trim()
+        const nFmt = /^[\w.()√π]+$/.test(n) ? n : `(${n})`
+        const dFmt = /^[\w.()√π]+$/.test(d) ? d : `(${d})`
+        return `${nFmt}/${dFmt}`
+      })
+    if (res === prev) break
+  }
+
+  return res
     .replace(/\\times/g, "×")
     .replace(/\\cdot/g, "·")
     .replace(/\\%/g, "%")
+    .replace(/\\pi/g, "π")
+    .replace(/\\approx/g, "≈")
+    .replace(/\\pm/g, "±")
+    .replace(/\\leq?/g, "≤")
+    .replace(/\\geq?/g, "≥")
+    .replace(/\\neq?/g, "≠")
+    .replace(/\\Delta/g, "Δ")
+    .replace(/\\alpha/g, "α")
+    .replace(/\\beta/g, "β")
+    .replace(/\\Leftrightarrow/g, "⇔")
+    .replace(/\\Rightarrow/g, "⇒")
+    .replace(/\\rightarrow/g, "→")
     .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => `\`${inner.trim()}\``)
     .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> \`${inner.trim()}\`\n\n`)
     .replace(/\^\{([^}]+)\}/g, "^$1")
+    .replace(/_\{([^}]+)\}/g, "_$1")
 }
 
 function withCitationChips(text: string) {

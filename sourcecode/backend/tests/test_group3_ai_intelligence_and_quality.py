@@ -26,8 +26,10 @@ from app.services.llm_service import (  # noqa: E402
     _prepare_rag_prompts_and_citations,
     _resolve_sampling_options,
     _sanitize_rag_output,
+    decode_symbol_pua_text,
     select_optimal_chat_model,
 )
+from app.services.python_sandbox_service import evaluate_python_sandbox  # noqa: E402
 from app.services.reasoning_service import (  # noqa: E402
     _audit_reasoning_grounding,
     _fast_local_reasoning_planner,
@@ -373,6 +375,84 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertNotIn("xin vui lòng cung cấp chi tiết hơn", sanitized_vocab)
         self.assertIn("[1]", sanitized_vocab)
         self.assertIn("[2]", sanitized_vocab)
+
+        # 6. Giải mã font Symbol MS Word PUA + LaTeX \frac/\sqrt/\pi + Hình học không gian Python Sandbox + không để TOC lấn át trang công thức
+        pua_raw = "Thể tích:\n(\n)\n2\n2\n3\nV\nR\nr\nrR\nh\n\uf03d\n\uf02b\n\uf02b\n\uf070"
+        decoded_pua = decode_symbol_pua_text(pua_raw)
+        self.assertIn("π", decoded_pua)
+        self.assertIn("=", decoded_pua)
+        self.assertIn("+", decoded_pua)
+
+        raw_latex_ans = (
+            "V_{nóncút} = \\frac{24}{3}(15^2 + 15\\times 10 + 10^2)\\pi \\approx 11938.05\\text{ cm}^3, "
+            "l = \\sqrt{(15 - 10)^2 + 24^2} = \\sqrt{601}"
+        )
+        cleaned_math = _sanitize_rag_output(raw_latex_ans, citations_count=1)
+        self.assertNotIn("\\frac", cleaned_math)
+        self.assertNotIn("\\sqrt", cleaned_math)
+        self.assertNotIn("\\pi", cleaned_math)
+        self.assertNotIn("\\approx", cleaned_math)
+        self.assertIn("24/3", cleaned_math)
+        self.assertIn("√601", cleaned_math)
+        self.assertIn("π ≈", cleaned_math)
+
+        geo_q = (
+            "Dựa vào công thức Hình nón cụt và Hình trụ trong tài liệu, hãy tính thể tích và diện tích toàn phần "
+            "của một cái xô hình nón cụt có bán kính hai đáy lần lượt là 15 cm và 10 cm, chiều cao 24 cm; "
+            "sau đó so sánh xem thể tích của nó lớn hơn hay nhỏ hơn thể tích hình trụ tạo thành khi quay hình chữ nhật "
+            "ABCD (AB = 24 cm, BC = 12 cm) quanh cạnh AB bao nhiêu phần trăm?"
+        )
+        geo_plan = _fast_local_reasoning_planner(geo_q, [])
+        self.assertTrue(geo_plan["needs_calculation"])
+        geo_sb = evaluate_python_sandbox(geo_plan["variables"], geo_plan["expressions"])
+        self.assertTrue(geo_sb["ok"])
+        step_map = {st["target"]: st["value"] for st in geo_sb["steps"]}
+        self.assertAlmostEqual(step_map["V_non_cut"], 11938.0521, places=2)
+        self.assertAlmostEqual(step_map["V_tru"], 10857.3442, places=2)
+        self.assertAlmostEqual(step_map["chenh_lech_phan_tram"], 9.95, places=2)
+
+        with patch("app.services.retrieval_service.embed_texts", side_effect=_zero_embed), \
+             patch("app.services.retrieval_service.rerank_documents", side_effect=lambda q, docs, limit, **kw: docs[:limit]):
+            conn = db_mod.get_db_connection()
+            try:
+                cur = conn.cursor()
+                ws_id = "default"
+                doc_id = "doc-toan9"
+                cur.execute(
+                    "INSERT INTO documents (id, workspace_id, file_name, file_type, file_size, file_path, total_chunks, status, total_pages, is_latest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                    (doc_id, ws_id, "[toanthaycu.com]_Sổ tay tra cứu công thức toán 9.pdf", "pdf", 1000, "toan9.pdf", 3, "indexed", 74),
+                )
+                toc_chunk = (
+                    "MỤC LỤC\n"
+                    "1. HÀM SỐ BẬC NHẤT ...................................................... 14\n"
+                    "2. ĐỒ THỊ HÀM SỐ ........................................................ 21\n"
+                    "3. GIẢI PHƯƠNG TRÌNH .................................................... 27\n"
+                    "4. HÌNH HỌC KHÔNG GIAN .................................................. 68"
+                )
+                intro_chunk = "VẤN ĐỀ 1: CĂN THỨC\nTính giá trị biểu thức chứa căn bậc hai và rút gọn."
+                frustum_chunk = (
+                    "VẤN ĐỀ 18. HÌNH HỌC KHÔNG GIAN\n"
+                    "2. Hình trụ - Bài toán 2: Quay hình chữ nhật ABCD quanh cạnh AB thì h = AB, R = BC.\n"
+                    "3. Hình nón - Hình nón cụt: Diện tích xung quanh S_xq = π(R + r)l. Thể tích V = (πh/3)(R^2 + r^2 + Rr)."
+                )
+                for idx, (pg, txt) in enumerate([(2, toc_chunk), (6, intro_chunk), (70, frustum_chunk)]):
+                    cid = f"c-{idx}"
+                    cur.execute(
+                        "INSERT INTO document_chunks (id, document_id, workspace_id, chunk_index, page_number, content, token_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (cid, doc_id, ws_id, idx, pg, txt, 50),
+                    )
+                    cur.execute(
+                        "INSERT INTO chunks_fts (chunk_id, document_id, workspace_id, content) VALUES (?, ?, ?, ?)",
+                        (cid, doc_id, ws_id, txt),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            invalidate_workspace_vector_cache("default")
+            top_hits = search_relevant_chunks("default", geo_q, top_k=2)
+            self.assertTrue(top_hits)
+            self.assertEqual(top_hits[0]["page_number"], 70)
 
 
 if __name__ == "__main__":

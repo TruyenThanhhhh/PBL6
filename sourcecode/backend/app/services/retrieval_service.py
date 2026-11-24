@@ -866,6 +866,50 @@ def _fts_hit_is_sufficient_for_eco(
     return matched >= min(len(meaningful), 2)
 
 
+_TOC_DOT_LEADER_RE = re.compile(r"\.{5,}\s*\d+")
+
+_RETRIEVAL_STOPWORDS = {
+    "dựa", "vào", "theo", "trong", "của", "từ", "cho", "với", "và", "hoặc", "hay",
+    "là", "gì", "nào", "này", "đó", "kia", "những", "các", "một", "hai", "ba",
+    "hãy", "vui", "lòng", "giúp", "tôi", "bạn", "mình", "em", "anh", "chị",
+    "tài", "liệu", "file", "tệp", "văn", "bản", "sách", "sau", "rồi", "để", "mà",
+    "xem", "nó", "có", "không", "được", "bị", "bằng", "lớn", "nhỏ", "hơn", "kém",
+    "bao", "nhiêu", "lần", "lượt", "lúc", "khi", "nếu", "thì", "nhưng", "vì", "nên",
+    "tính", "toán", "so", "sánh", "giải", "chi", "tiết", "bài", "mới", "áp", "dụng", "đúng",
+    "dua", "vao", "trong", "cua", "cho", "voi", "va", "hoac", "la", "gi", "nao", "nay",
+    "nhung", "cac", "mot", "hay", "tai", "lieu", "tep", "sau", "de", "xem", "co", "khong",
+    "duoc", "bang", "lon", "nho", "hon", "bao", "nhieu", "lan", "luot", "neu", "thi",
+    "tinh", "so", "sanh", "giai", "chi", "tiet", "bai", "moi", "ap", "dung", "dung",
+}
+
+
+def _is_toc_chunk(text: str) -> bool:
+    """Nhận diện đoạn Mục lục nhiều dòng chấm dẫn '...... 14' để tránh lấn át trang nội dung."""
+    txt = text or ""
+    if len(_TOC_DOT_LEADER_RE.findall(txt)) >= 3:
+        return True
+    head = txt[:160].upper()
+    return ("MỤC LỤC" in head or "MỤC\xa0LỤC" in head) and txt.count("...") >= 2
+
+
+def _extract_content_phrases(query: str) -> List[str]:
+    """Tạo các cụm từ 2-3 chữ có nghĩa (bỏ từ nối) để cộng điểm khớp cụm chuyên ngành."""
+    raw_words = [
+        w.lower()
+        for w in re.sub(r"[^\w\s]", " ", query or "", flags=re.UNICODE).split()
+        if len(w) >= 2 and w.lower() not in _RETRIEVAL_STOPWORDS and not w.isdigit()
+    ]
+    phrases: List[str] = []
+    seen = set()
+    for n in (3, 2):
+        for i in range(len(raw_words) - n + 1):
+            ph = " ".join(raw_words[i : i + n])
+            if ph not in seen:
+                seen.add(ph)
+                phrases.append(ph)
+    return phrases[:14]
+
+
 def _fts_hit_is_high_confidence_fast_path(
     sparse: List[Dict[str, Any]],
     tokens: List[str],
@@ -877,10 +921,13 @@ def _fts_hit_is_high_confidence_fast_path(
     """
     if not sparse:
         return False
+    top_raw = str(sparse[0].get("content", ""))
+    if _is_toc_chunk(top_raw):
+        return False
     meaningful = [t.lower() for t in tokens if len(t) >= 2 or t.isdigit() or _contains_cjk(t)]
     if not meaningful:
         return False
-    top_text = str(sparse[0].get("content", "")).lower()
+    top_text = top_raw.lower()
     matched = sum(1 for tok in meaningful if tok in top_text)
     required = max(1, int(math.ceil(len(meaningful) * 0.75)))
     return matched >= required
@@ -1055,12 +1102,15 @@ def _run_hybrid_rrf_candidates(
             document_ids,
         )
 
-    # Reciprocal Rank Fusion (RRF) + Heading Topic Boost
+    # Reciprocal Rank Fusion (RRF) + Heading Topic Boost + Phrase Boost - TOC Penalty
     q_low = (query or "").lower()
     topic_cues = [
         w for w in ("công nghệ", "mở rộng", "kiến trúc", "lộ trình", "mục tiêu", "đánh giá", "module", "chế độ", "hoạt động")
         if w in q_low
     ]
+    content_phrases = _extract_content_phrases(query)
+    is_overview_q = is_global_summary_query(query) or bool(_OVERVIEW_OR_TABULAR_QUERY_RE.search(query or ""))
+
     merged: Dict[str, Dict[str, Any]] = {}
     for channel_name, ranking in (("sparse", sparse), ("dense", dense)):
         for rank, item in enumerate(ranking, start=1):
@@ -1072,15 +1122,35 @@ def _run_hybrid_rrf_candidates(
                 merged[chunk_id]["dense_score"] = float(item["score"])
             merged[chunk_id]["rrf_score"] += 1.0 / (RRF_K + rank)
 
-    if topic_cues:
-        heading_line_re = re.compile(
-            r"(?:^|\n)\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:chương|bài|phần|mục|điều)\s+(?:[IVXLCDM]+|\d+)\b)([^\n]{2,110})",
+    heading_line_re = (
+        re.compile(
+            r"(?:^|\n)\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:chương|bài|phần|mục|điều|vấn\s+đề)\s+(?:[IVXLCDM]+|\d+)\b)([^\n]{2,110})",
             re.IGNORECASE | re.UNICODE,
         )
-        for item in merged.values():
-            full_txt = str(item.get("content") or "")
+        if topic_cues
+        else None
+    )
+
+    for item in merged.values():
+        full_txt = str(item.get("content") or "")
+        is_toc = _is_toc_chunk(full_txt)
+        if is_toc and not is_overview_q:
+            item["rrf_score"] -= 0.045
+            continue
+
+        low_txt = full_txt.lower()
+        if content_phrases:
+            phrase_hits = 0
+            for ph in content_phrases:
+                if ph in low_txt:
+                    phrase_hits += 1
+                    item["rrf_score"] += 0.025
+                    if phrase_hits >= 4:
+                        break
+
+        if topic_cues and heading_line_re is not None:
             heading_texts = " ".join(m.group(0).lower() for m in heading_line_re.finditer(full_txt))
-            head_slice = full_txt[:260].lower()
+            head_slice = low_txt[:260]
             for cue in topic_cues:
                 if cue in heading_texts:
                     item["rrf_score"] += 0.045
@@ -1105,10 +1175,16 @@ def search_relevant_chunks(
         cursor = conn.cursor()
         clean_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         # Giữ lại token >= 2 ký tự, chữ số, hoặc ký tự CJK đơn lẻ (Kanji/Kana như '夢', '愛'...)
-        tokens = [
+        raw_tokens = [
             token for token in clean_query.split()
             if len(token) >= 2 or token.isdigit() or _contains_cjk(token)
         ]
+        # Loại bỏ các từ nối/từ chung khỏi FTS5 BM25 để tránh loãng điểm khi câu hỏi dài
+        filtered_tokens = [
+            token for token in raw_tokens
+            if token.lower() not in _RETRIEVAL_STOPWORDS or _contains_cjk(token)
+        ]
+        tokens = filtered_tokens if filtered_tokens else raw_tokens
         exact_terms = _extract_exact_lookup_terms(query)
         candidate_limit = max(top_k * RETRIEVAL_CANDIDATE_MULTIPLIER, top_k, 24)
         single_doc_scope = bool(document_id or (document_ids and len(document_ids) == 1))
@@ -1166,7 +1242,10 @@ def search_relevant_chunks(
         _GENERIC_FILENAME_STOPWORDS = {
             "tai", "tài", "lieu", "liệu", "file", "tep", "tệp", "doc", "docx", "pdf", "txt",
             "tong", "tổng", "quan", "de", "đề", "ban", "bản", "bao", "báo", "cao", "cáo",
-            "personal", "knowledge", "platform",
+            "cong", "công", "thuc", "thức", "so", "sổ", "tay", "tra", "cuu", "cứu",
+            "toan", "toán", "huong", "hướng", "dan", "dẫn", "giao", "trinh", "trình",
+            "on", "ôn", "tap", "tập", "sach", "sách", "bai", "bài", "phan", "phần",
+            "chuong", "chương", "muc", "mục", "dieu", "điều", "personal", "knowledge", "platform",
         }
         query_terms = {
             term.lower() for term in tokens
@@ -1197,31 +1276,20 @@ def search_relevant_chunks(
                 if name_terms & query_terms:
                     named_matches.append(item)
             named_ids = {item["chunk_id"] for item in named_matches}
-            ranked = named_matches + [item for item in ranked if item["chunk_id"] not in named_ids]
 
-        if named_ids:
-            pinned = [item for item in ranked if item["chunk_id"] in named_ids][:top_k]
-            pinned = _smart_rerank(
-                query,
-                pinned,
-                len(pinned),
-                profile,
-                max_candidates=len(pinned),
-                single_doc_scope=single_doc_scope,
-            )
-            remaining = [item for item in ranked if item["chunk_id"] not in named_ids]
-            if len(pinned) < top_k:
-                remaining = _smart_rerank(
-                    query,
-                    remaining,
-                    top_k - len(pinned),
-                    profile,
-                    single_doc_scope=single_doc_scope,
-                )
-            else:
-                remaining = []
-            final_chunks = expand_and_stitch_chunks(pinned + remaining, max_total_chunks=top_k)
+        is_file_overview_q = bool(
+            re.search(r"\b(?:chứa\s+gì|gồm\s+những\s+gì|nội\s+dung\s+gì|tóm\s+tắt|nói\s+về\s+gì|chua\s+gi|noi\s+dung\s+gi)\b", query or "", re.IGNORECASE)
+        )
+        if named_ids and (is_file_overview_q or not ranked):
+            ranked_tail = [item for item in ranked if item["chunk_id"] not in named_ids]
+            pinned = named_matches[:top_k]
+            final_chunks = expand_and_stitch_chunks(pinned + ranked_tail[: max(0, top_k - len(pinned))], max_total_chunks=top_k)
             return filter_relevant_chunks(query, final_chunks)
+        if named_ids and ranked:
+            for item in ranked:
+                if item["chunk_id"] in named_ids:
+                    item["rrf_score"] = float(item.get("rrf_score", 0.0)) + 0.035
+            ranked.sort(key=lambda item: float(item.get("rrf_score", 0.0)), reverse=True)
 
         if not ranked and (document_id or document_ids):
             cursor.execute(
