@@ -79,8 +79,10 @@ def _extract_docx_blocks(doc: Any) -> List[str]:
 
 _NUMERIC_CLEAN_RE = re.compile(r"^[-+]?\d+(?:[.,]\d+)*(?:%)?$")
 _OUTLINE_HEADING_RE = re.compile(
-    r"^(?:#{1,4}\s+.+|(?:chương|bài|phần|mục|điều|khoản|vấn\s+đề|chapter|section|part|article)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b.*)$",
-    re.IGNORECASE | re.UNICODE,
+    r"^(?:#{1,4}\s+.+|"
+    r"(?i:chương|bài|phần|mục|điều|khoản|vấn\s+đề|dạng|chapter|section|part|article)\s+(?:[IVXLCDM]{1,6}|\d{1,3})\b.*|"
+    r"[A-D]\.\s+[A-ZÀ-Ỹ][A-ZÀ-Ỹ0-9\s:,\-–()]{4,80})$",
+    re.UNICODE,
 )
 
 
@@ -449,6 +451,156 @@ def _ocr_png_bytes(png_bytes: bytes, vision_model: Optional[str] = None) -> str:
     return _ocr_via_ollama_vision(png_bytes, vision_model)
 
 
+_SUPERSCRIPT_CHAR_MAP = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    "n": "ⁿ", "+": "⁺", "-": "⁻",
+}
+
+
+def _extract_pdf_page_clean_text(page: Any) -> str:
+    """
+    Trích xuất text từng trang PDF có nhận diện dòng toán học & số mũ (MathType / Word Equation):
+    - Trên trang thường (< 3 span mũ nhỏ): giữ nguyên `page.get_text("text", sort=True)` nhanh và an toàn cho bố cục nhiều cột.
+    - Trên trang có công thức toán / số mũ nổi (`sz <= 0.72 * base_sz`): gom các span theo đường cơ sở `origin.y`
+      rồi ghép chỉ số mũ nhỏ lên ngay sau cơ số (`A²`, `(A + B)²`, `x³`) thay vì bị `sort=True` đẩy lên dòng trên.
+    """
+    from app.services.llm_service import decode_symbol_pua_text
+
+    try:
+        raw_dict = page.get_text("dict")
+    except Exception:
+        return decode_symbol_pua_text(page.get_text("text", sort=True) or page.get_text("text") or "").strip()
+
+    spans: List[Dict[str, Any]] = []
+    for blk in (raw_dict.get("blocks") or []):
+        if blk.get("type") != 0:
+            continue
+        for line in (blk.get("lines") or []):
+            d_vec = line.get("dir", (1.0, 0.0))
+            if abs(d_vec[0]) < 0.5:
+                continue
+            for sp in (line.get("spans") or []):
+                raw_txt = decode_symbol_pua_text(sp.get("text") or "")
+                if not raw_txt.strip():
+                    continue
+                x0, y0, x1, y1 = sp["bbox"]
+                ox, oy = sp.get("origin") or (x0, y1)
+                sz = float(sp.get("size") or max(y1 - y0, 8.0))
+                spans.append({
+                    "x0": float(x0), "y0": float(y0), "x1": float(x1), "y1": float(y1),
+                    "ox": float(ox), "oy": float(oy), "sz": sz,
+                    "txt": raw_txt.strip(),
+                    "lead_ws": raw_txt[0].isspace(),
+                    "trail_ws": raw_txt[-1].isspace(),
+                    "yc": (float(y0) + float(y1)) * 0.5,
+                })
+
+    if not spans:
+        return ""
+
+    sizes = sorted(s["sz"] for s in spans if len(s["txt"]) >= 2)
+    base_sz = sizes[len(sizes) // 2] if sizes else 11.0
+    small_math_cnt = sum(1 for s in spans if s["sz"] <= base_sz * 0.72 and len(s["txt"]) <= 6)
+    if small_math_cnt < 3:
+        return decode_symbol_pua_text(page.get_text("text", sort=True) or page.get_text("text") or "").strip()
+
+    normal_spans = [s for s in spans if s["sz"] > base_sz * 0.72 or len(s["txt"]) > 6]
+    small_spans = [s for s in spans if not (s["sz"] > base_sz * 0.72 or len(s["txt"]) > 6)]
+
+    normal_spans.sort(key=lambda s: (round(s["oy"], 1), s["x0"]))
+    rows: List[Dict[str, Any]] = []
+    tol = max(4.5, base_sz * 0.45)
+    for sp in normal_spans:
+        placed = False
+        for r in reversed(rows):
+            if abs(sp["oy"] - r["oy"]) <= tol:
+                r["spans"].append(sp)
+                r["y0"] = min(r["y0"], sp["y0"])
+                r["y1"] = max(r["y1"], sp["y1"])
+                placed = True
+                break
+        if not placed:
+            rows.append({"oy": sp["oy"], "y0": sp["y0"], "y1": sp["y1"], "spans": [sp]})
+
+    for sp in small_spans:
+        best_r = None
+        best_dist = 1e9
+        for r in rows:
+            ov = min(sp["y1"], r["y1"]) - max(sp["y0"], r["y0"])
+            dist = abs(sp["yc"] - ((r["y0"] + r["y1"]) * 0.5))
+            if (ov > -base_sz * 0.25 or dist <= base_sz * 0.75) and dist < best_dist:
+                best_dist = dist
+                best_r = r
+        if best_r is not None:
+            sp["is_sup"] = sp["oy"] < best_r["oy"] - max(2.2, base_sz * 0.22)
+            best_r["spans"].append(sp)
+        else:
+            rows.append({"oy": sp["oy"], "y0": sp["y0"], "y1": sp["y1"], "spans": [sp]})
+
+    rows.sort(key=lambda r: r["oy"])
+    out_lines: List[str] = []
+    for r in rows:
+        r["spans"].sort(key=lambda s: s["x0"])
+        parts: List[str] = []
+        prev_x1: Optional[float] = None
+        prev_trail_ws = False
+        prev_txt = ""
+        for sp in r["spans"]:
+            t = sp["txt"]
+            if not t:
+                continue
+            is_sup = bool(sp.get("is_sup", False))
+            if is_sup and all(ch in _SUPERSCRIPT_CHAR_MAP for ch in t) and len(t) <= 3:
+                if parts:
+                    parts[-1] = parts[-1] + "".join(_SUPERSCRIPT_CHAR_MAP[ch] for ch in t)
+                    prev_x1 = sp["x1"]
+                    prev_trail_ws = False
+                    prev_txt = parts[-1]
+                    continue
+            elif is_sup and len(t) <= 4 and parts:
+                parts[-1] = parts[-1] + f"^{t}"
+                prev_x1 = sp["x1"]
+                prev_trail_ws = False
+                prev_txt = parts[-1]
+                continue
+
+            if prev_x1 is not None:
+                gap = sp["x0"] - prev_x1
+                has_explicit_ws = prev_trail_ws or sp["lead_ws"]
+                is_word_pair = (
+                    (len(t) >= 2 and any(ch.islower() for ch in t) and any(ch.isalnum() for ch in prev_txt[-1:]))
+                    or (len(prev_txt) >= 2 and any(ch.islower() for ch in prev_txt) and len(t) >= 2 and t.isalpha())
+                )
+                if gap > base_sz * 3.2:
+                    parts.append("   " + t)
+                elif parts and parts[-1].endswith(":") and not t.startswith((" ", "\n")):
+                    parts.append(" " + t)
+                elif (
+                    (has_explicit_ws or gap > max(1.0, base_sz * 0.12) or (is_word_pair and gap >= -1.2))
+                    and parts
+                    and not parts[-1].endswith(("(", "["))
+                    and not t.startswith((")", "]", ",", ".", ":", ";"))
+                ):
+                    parts.append(" " + t)
+                else:
+                    if t in {"=", "+", "-", "≠", "<", ">"} and parts and not parts[-1].endswith(" "):
+                        parts.append(" " + t)
+                    elif parts and parts[-1].endswith(("=", "+", "-", "≠", "<", ">")):
+                        parts.append(" " + t)
+                    else:
+                        parts.append(t)
+            else:
+                parts.append(t)
+            prev_x1 = sp["x1"]
+            prev_trail_ws = sp["trail_ws"]
+            prev_txt = t
+        line_str = "".join(parts).strip()
+        if line_str:
+            out_lines.append(line_str)
+    return "\n".join(out_lines).strip()
+
+
 def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
     """Đọc text layer PDF trước, tự động fallback sang OCR cho các trang ảnh scan."""
     page_texts: Dict[int, str] = {}
@@ -456,10 +608,9 @@ def _extract_pdf_pages_with_ocr_fallback(doc: Any) -> List[Dict[str, Any]]:
     total_pages = len(doc)
 
     for i, page in enumerate(doc):
-        extracted = (page.get_text("text", sort=True) or page.get_text("text") or "").strip()
+        extracted = _extract_pdf_page_clean_text(page)
         if extracted:
-            from app.services.llm_service import decode_symbol_pua_text
-            page_texts[i + 1] = decode_symbol_pua_text(extracted)
+            page_texts[i + 1] = extracted
         if len(extracted) < 20:
             has_images = bool(page.get_images(full=False))
             if not extracted or has_images:
@@ -901,7 +1052,7 @@ def _index_chunk_vectors_in_batches(chunks: List[Dict[str, Any]], batch_size: in
     with _BG_EMBED_LOCK:
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
-            vectors = embed_texts([c["content"] for c in batch])
+            vectors = embed_texts([c["content"] for c in batch], allow_unload=False)
             if not vectors:
                 break
             rows_to_insert = [

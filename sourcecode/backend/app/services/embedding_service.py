@@ -172,7 +172,7 @@ def _embed_with_fastembed(texts: List[str]) -> List[List[float]]:
     return [list(map(float, vector)) for vector in _get_fastembed_model().embed(texts)]
 
 
-def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
+def embed_texts(texts: List[str], allow_unload: bool = True) -> Optional[List[List[float]]]:
     global _EMBED_LAST_USED_AT
     if not ENABLE_DENSE_RETRIEVAL or not texts:
         return None
@@ -190,8 +190,8 @@ def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
             else:
                 continue
             _EMBED_LAST_USED_AT = time.monotonic()
-            # Nếu RAM trống quá thấp (< 2.8 GB), giải phóng ngay model sau khi xử lý xong
-            if get_memory_gb()[1] < 2.8:
+            # Chỉ giải phóng ngay khi không nằm trong vòng lặp batch và RAM trống xuống mức nguy cấp (< 1.4 GB)
+            if allow_unload and get_memory_gb()[1] < 1.4:
                 unload_embedding_model(trim_os=True)
             return out
         except Exception:

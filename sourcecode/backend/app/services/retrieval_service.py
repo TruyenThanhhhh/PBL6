@@ -48,13 +48,19 @@ def invalidate_workspace_vector_cache(workspace_id: Optional[str] = None) -> Non
 
 # Từ khóa nhận biết câu hỏi muốn TÓM TẮT TOÀN BỘ tài liệu (hỗ trợ cả có dấu & không dấu)
 _GLOBAL_SUMMARY_KEYWORDS = [
-    "tóm tắt", "tóm lại", "tổng hợp", "liệt kê tất cả", "liệt kê các",
-    "các bài", "các chương", "các phần", "nội dung chính", "toàn bộ",
+    "tóm tắt", "tóm lại", "tổng hợp", "tổng quan", "khái quát", "giới thiệu chung",
+    "liệt kê tất cả", "liệt kê các",
+    "các bài", "các chương", "các phần", "nội dung chính", "nội dung gì",
+    "chứa gì", "chứa nội dung", "nói về gì", "viết về gì", "nội dung của file",
+    "nội dung của tài liệu", "bao gồm những gì", "toàn bộ",
     "overview", "summarize", "summary", "list all", "all chapters",
     "all sections", "main topics", "những bài", "những chương",
     "nêu các", "kể tên", "có những gì", "gồm những gì",
-    "tom tat", "tom lai", "tong hop", "liet ke tat ca", "liet ke cac",
-    "cac bai", "cac chuong", "cac phan", "noi dung chinh", "toan bo",
+    "tom tat", "tom lai", "tong hop", "tong quan", "khai quat", "gioi thieu chung",
+    "liet ke tat ca", "liet ke cac",
+    "cac bai", "cac chuong", "cac phan", "noi dung chinh", "noi dung gi",
+    "chua gi", "chua noi dung", "noi ve gi", "viet ve gi", "noi dung cua file",
+    "noi dung cua tai lieu", "bao gom nhung gi", "toan bo",
     "nhung bai", "nhung chuong", "neu cac", "ke ten", "co nhung gi", "gom nhung gi",
 ]
 
@@ -413,18 +419,23 @@ def search_spanning_chunks(
             selected = all_chunks
         else:
             sec_hdr_re = re.compile(
-                r"(?:^|\n)\s*(?:\[CÂY\s*MỤC\s*LỤC|Sheet:|Danh\s*mục\s*các\s*phần|#{1,4}\s+|\[?(?:Bài|Chương|Phần|Mục|Vấn\s*đề|Điều)\s+(?:[IVXLCDM]{1,5}|\d{1,3})\b)",
-                re.IGNORECASE | re.UNICODE,
+                r"(?:^|\n)\s*(?:\[?(?i:CÂY\s*MỤC\s*LỤC|Sheet:|Danh\s*mục\s*các\s*phần)|#{1,4}\s+|\[?(?i:Bài|Chương|Phần|Mục|Vấn\s*đề|Điều|Dạng)\s+(?:[IVXLCDM]{1,5}|\d{1,3})\b|[A-D]\.\s+[A-ZÀ-Ỹ][A-ZÀ-Ỹ\s:,]{3,60})",
+                re.UNICODE,
             )
             priority_idx = [
                 idx for idx, ch in enumerate(all_chunks)
-                if idx == 0 or sec_hdr_re.search(ch.get("content") or "")
+                if idx in (0, 1) or sec_hdr_re.search(ch.get("content") or "")
             ]
-            picked: set[int] = set()
+            picked: set[int] = {0}
+            if total > 1:
+                picked.add(1)
             if len(priority_idx) >= max_chunks:
-                step = len(priority_idx) / max_chunks
-                for i in range(max_chunks):
-                    picked.add(priority_idx[int(i * step)])
+                remaining_slots = max_chunks - len(picked)
+                tail_prio = [p for p in priority_idx if p not in picked]
+                if tail_prio and remaining_slots > 0:
+                    step = len(tail_prio) / remaining_slots
+                    for i in range(remaining_slots):
+                        picked.add(tail_prio[min(len(tail_prio) - 1, int(i * step))])
             else:
                 picked.update(priority_idx)
                 remain = [idx for idx in range(total) if idx not in picked]

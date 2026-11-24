@@ -45,7 +45,10 @@ export function AppHeader() {
     (d) => d.status !== "ready" && d.status !== "failed",
   ).length
 
-  const activeModelName = status.ollamaModels[0] || localLlmModel || "qwen2.5:3b"
+  const activeModelName =
+    !localLlmModel || localLlmModel === "auto"
+      ? "Tự động (Smart)"
+      : localLlmModel || status.ollamaModels[0] || "qwen2.5:3b"
 
   const validateWorkspaceName = (name: string) =>
     hasDuplicateName(

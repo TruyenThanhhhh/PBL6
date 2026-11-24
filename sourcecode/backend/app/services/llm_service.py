@@ -500,7 +500,10 @@ _LAB_STEPS_CUE_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 _GLOBAL_SUMMARY_CUE_RE = re.compile(
-    r"\b(?:tóm\s*tắt|tổng\s*hợp|toàn\s*bộ|các\s*bài|các\s*chương|liệt\s*kê|overview|summary)\b",
+    r"(?:\b(?:tóm\s*tắt|tổng\s*hợp|toàn\s*bộ|các\s*bài|các\s*chương|liệt\s*kê|overview|summary)\b|"
+    r"(?:chứa\s*(?:nội\s*dung\s*)?gì|gồm\s*những\s*gì|có\s*những\s*gì|nói\s*(?:về\s*)?gì|"
+    r"(?:file|tệp|tài\s*liệu)\s*(?:này\s*)?(?:chứa|có|gồm|viết|nói)\s*(?:nội\s*dung\s*)?gì|"
+    r"nội\s*dung\s*(?:chi\s*tiết\s*)?(?:của\s*)?(?:file|tệp|tài\s*liệu)))",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -573,10 +576,18 @@ def _extract_pinpointed_answer_sentences(
     if not q_tokens:
         return None
 
+    # Phát hiện câu hỏi nhắm vào số thứ tự cụ thể (vd: "hằng đẳng thức số 1", "quy tắc thứ 3", "bước 2")
+    ordinal_m = re.search(
+        r"\b(?:số|thứ|mục|công\s*thức|định\s*lý|quy\s*tắc|hằng\s*đẳng\s*thức|bước|phần|so|thu|muc)\s*(?:thứ\s+|số\s+)?(\d{1,2})\b",
+        query,
+        re.IGNORECASE | re.UNICODE,
+    )
+    target_ordinal = ordinal_m.group(1) if ordinal_m else None
+
     # 1. Quét các tiểu mục (Section blocks) có tiêu đề khớp trực tiếp với các vế câu hỏi
-    matched_sections: List[str] = []
+    scored_sections: List[tuple[float, str]] = []
     heading_pat = re.compile(
-        r"(?m)^\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:Chương|Bài|Phần|Mục|Điều)\s+(?:[IVXLCDM]+|\d+)\b)[^\n]{2,90}$"
+        r"(?m)^\s*(?:#{1,4}\s*|\d{1,2}(?:\.\d{1,2})?\.\s+|(?:Chương|Bài|Phần|Mục|Điều|Dạng)\s+(?:[IVXLCDM]+|\d+)\b)[^\n]{2,110}$"
     )
     seen_sec_titles = set()
     for idx, chunk in enumerate(context_chunks[:5], start=1):
@@ -589,16 +600,33 @@ def _extract_pinpointed_answer_sentences(
             h_folded = _fold_vn(h_line)
             if h_folded in seen_sec_titles:
                 continue
-            if any(tok in h_folded for tok in q_tokens if len(tok) >= 3):
-                sec_start = m.end()
-                sec_end = matches[m_pos + 1].start() if (m_pos + 1) < len(matches) else len(content)
-                sec_body = content[sec_start:sec_end].strip()
-                if sec_body:
-                    seen_sec_titles.add(h_folded)
-                    compact_body = " ; ".join(
-                        ln.strip() for ln in sec_body.splitlines() if ln.strip()
-                    )[:520]
-                    matched_sections.append(f"  • [{idx}] **{h_line}**: {compact_body}")
+            lead_num_m = re.match(r"^(?:#{1,4}\s*)?(?:(?:Chương|Bài|Phần|Mục|Điều|Dạng)\s+)?(\d{1,2})\s*[.:)-]", h_line, re.IGNORECASE)
+            lead_num = lead_num_m.group(1) if lead_num_m else None
+            # Nếu người dùng hỏi đúng mục số N (vd "số 1"), bỏ qua mục khác số rõ ràng (vd "3.") trừ khi tên khớp rất mạnh
+            if target_ordinal and lead_num and lead_num != target_ordinal:
+                continue
+            tok_hits = sum(1 for tok in q_tokens if len(tok) >= 3 and re.search(rf"\b{re.escape(tok)}\b", h_folded))
+            sec_score = float(tok_hits) * 2.0
+            if target_ordinal and lead_num == target_ordinal:
+                sec_score += 12.0
+            if tok_hits == 0 and not (target_ordinal and lead_num == target_ordinal):
+                continue
+
+            sec_start = m.end()
+            sec_end = matches[m_pos + 1].start() if (m_pos + 1) < len(matches) else len(content)
+            sec_body = content[sec_start:sec_end].strip()
+            if sec_body:
+                seen_sec_titles.add(h_folded)
+                compact_body = " ; ".join(
+                    ln.strip() for ln in sec_body.splitlines() if ln.strip()
+                )[:520]
+                scored_sections.append((sec_score, f"  • [{idx}] **{h_line}**: {compact_body}"))
+            elif ":" in h_line and not h_line.rstrip().endswith(":"):
+                seen_sec_titles.add(h_folded)
+                scored_sections.append((sec_score + 1.0, f"  • [{idx}] {h_line}"))
+
+    scored_sections.sort(key=lambda item: item[0], reverse=True)
+    matched_sections = [line for _, line in scored_sections[:4]]
 
     wants_number = bool(_NUMERIC_FACT_CUE_RE.search(query))
     scored_sentences: List[tuple[float, str]] = []
@@ -657,37 +685,6 @@ def _build_instant_followup_suggestions(
     q_folded = _fold_vn(query)
     has_local_citations = any(c.get("source_type") == "document" for c in (citations or []))
 
-    # 1. Chỉ trích xuất tiêu đề Chương/Bài/Điều/Mục khi thực sự có tài liệu địa phương liên quan được trích dẫn
-    if has_local_citations:
-        for ch in (context_chunks or [])[:4]:
-            txt = str(ch.get("content") or "")
-            for m in re.finditer(
-                r"(?:^|\n)\s*(?:#{1,4}\s*)?((?:(?:Chương|Bài|Phần|Điều|Mục)\s+(?:[IVXLCDM]{1,5}|\d{1,3}))|(?:\d{1,2}\.\s+[^\n:]{4,48}))(?:\s*[:.-]\s*([^\n]{4,52}))?",
-                txt,
-                re.UNICODE,
-            ):
-                sec_label = m.group(1).strip()
-                raw_title = (m.group(2) or "").strip(" :.-")
-                # Tránh cắt cụt số thập phân kiểu 'GPA từ 3.60' hoặc '8.000.000': chỉ cắt ở dấu chấm câu có khoảng trắng theo sau
-                sec_title = re.split(r"\.\s+|\n", raw_title)[0].strip(" :.,;-")
-                combined_sec = f"{sec_label} {sec_title}"
-                if (
-                    _fold_vn(sec_label) in q_folded
-                    or re.search(r"(?:FALSE|TRUE|hiển thị thông báo|trả về|nhập lại|email không)", combined_sec, re.IGNORECASE)
-                ):
-                    continue
-                cand = (
-                    f"{sec_label} ({sec_title}) quy định cụ thể những gì?"
-                    if sec_title and len(sec_title) <= 44
-                    else f"Nội dung chi tiết của {sec_label} gồm những gì?"
-                )
-                if cand not in suggestions:
-                    suggestions.append(cand)
-                if len(suggestions) >= 2:
-                    break
-            if len(suggestions) >= 2:
-                break
-
     doc_name = citations[0].get("document_name") if has_local_citations else None
     sample_raw = "\n".join(str(ch.get("content") or "")[:600] for ch in (context_chunks or [])[:3])
     sample_folded = f"{_fold_vn(doc_name or '')} {_fold_vn(sample_raw)}"
@@ -705,6 +702,12 @@ def _build_instant_followup_suggestions(
             sample_folded,
         )
     )
+    is_math_doc = bool(
+        re.search(
+            r"\b(?:hang\s+dang\s+thuc|phuong\s+trinh|bat\s+dang\s+thuc|bieu\s+thuc|dinh\s+ly|hinh\s+hoc|dai\s+so|toan|cong\s+thuc|tam\s+giac|duong\s+tron)\b",
+            sample_folded,
+        )
+    )
     is_tech_doc = bool(
         re.search(
             r"\b(?:api|rag|llm|vector|bm25|pipeline|kien\s+truc|database|sql|python|docker|server|thuat\s+toan|framework|microservice)\b",
@@ -718,6 +721,55 @@ def _build_instant_followup_suggestions(
         )
     )
 
+    # 1. Chỉ trích xuất tiêu đề Chương/Bài/Điều/Mục sạch (không chứa xuống dòng, không chứa mảnh toán lỗi)
+    if has_local_citations:
+        for ch in (context_chunks or [])[:4]:
+            txt = str(ch.get("content") or "")
+            for m in re.finditer(
+                r"(?:^|\n)[ \t]*(?:#{1,4}[ \t]*)?((?:(?:Chương|Bài|Phần|Điều|Mục)[ \t]+(?:[IVXLCDM]{1,5}|\d{1,3}))|(?:\d{1,2}\.[ \t]+[^\n:=]{5,44}))(?:[ \t]*[:.\-][ \t]*([^\n]{4,52}))?",
+                txt,
+                re.UNICODE,
+            ):
+                sec_label = re.sub(r"\s+", " ", m.group(1)).strip(" :.,;-")
+                raw_title = (m.group(2) or "").strip(" :.-")
+                # Tránh cắt cụt số thập phân kiểu 'GPA từ 3.60' hoặc '8.000.000': chỉ cắt ở dấu chấm câu có khoảng trắng theo sau
+                sec_title = re.sub(r"\s+", " ", re.split(r"\.\s+|\n", raw_title)[0]).strip(" :.,;-")
+                combined_sec = f"{sec_label} {sec_title}".strip()
+                alpha_chars = sum(1 for c in combined_sec if c.isalpha())
+                if (
+                    "\n" in sec_label
+                    or alpha_chars < 6
+                    or alpha_chars < len(combined_sec.replace(" ", "")) * 0.45
+                    or len(sec_label) > 54
+                    or _fold_vn(sec_label) in q_folded
+                    or re.search(r"(?:FALSE|TRUE|hiển thị thông báo|trả về|nhập lại|email không|^ta\s+có\b|^bài\s*\d+\s*:\s*cho\b|=)", combined_sec, re.IGNORECASE)
+                ):
+                    continue
+                if is_policy_doc:
+                    cand = (
+                        f"{sec_label} ({sec_title}) quy định cụ thể những gì?"
+                        if sec_title and len(sec_title) <= 44
+                        else f"Nội dung chi tiết của {sec_label} gồm những gì?"
+                    )
+                elif is_math_doc:
+                    cand = (
+                        f"{sec_label}: {sec_title} gồm những công thức và dạng bài tập nào?"
+                        if sec_title and len(sec_title) <= 44
+                        else f"Các công thức và ví dụ minh họa cho {sec_label} là gì?"
+                    )
+                else:
+                    cand = (
+                        f"Nội dung chi tiết của {sec_label} ({sec_title}) gồm những gì?"
+                        if sec_title and len(sec_title) <= 44
+                        else f"Nội dung chi tiết của {sec_label} gồm những gì?"
+                    )
+                if cand not in suggestions:
+                    suggestions.append(cand)
+                if len(suggestions) >= 2:
+                    break
+            if len(suggestions) >= 2:
+                break
+
     if is_vocab_doc:
         defaults = [
             f"Lấy 8 từ vựng tiêu biểu kèm phiên âm, nghĩa và câu ví dụ từ {doc_name}" if doc_name else "Lấy 8 từ vựng tiêu biểu kèm ví dụ minh họa",
@@ -729,6 +781,12 @@ def _build_instant_followup_suggestions(
             f"Có điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác trong {doc_name} không?" if doc_name else "Có trường hợp ngoại lệ hay lưu ý thực tế nào cần chú ý không?",
             "Hãy tóm tắt các quy định chính thành bảng hoặc gạch đầu dòng ngắn gọn",
             "Nêu ví dụ tình huống áp dụng cụ thể cho các điều kiện trên",
+        ]
+    elif is_math_doc:
+        defaults = [
+            f"Tổng hợp đầy đủ các công thức trọng tâm và lưu ý biến đổi trong {doc_name}" if doc_name else "Tổng hợp đầy đủ các công thức trọng tâm và mẹo biến đổi nhanh",
+            "Phân loại các dạng bài tập thường gặp kèm phương pháp giải và ví dụ mẫu",
+            "Đưa ra 3 bài tập tự luyện theo chuyên đề trên kèm đáp án chi tiết",
         ]
     elif is_tech_doc:
         defaults = [
@@ -850,7 +908,7 @@ def _build_dynamic_system_prompt(
         )
     if has_local and _GLOBAL_SUMMARY_CUE_RE.search(q_clean):
         sections.append(
-            "- TỔNG HỢP TOÀN TÀI LIỆU: Đây là yêu cầu tóm tắt nguồn đang có trong kho — TUYỆT ĐỐI KHÔNG trả lời 'không chứa thông tin về chủ đề tóm tắt nội dung'. Hãy sắp xếp mạch lạc đúng tên từng phần/chương/bài theo [CÂY MỤC LỤC] và chỉ xếp ví dụ vào đúng bài chứa ví dụ đó (tuyệt đối không tự đổi tên bài)."
+            "- TỔNG HỢP TOÀN TÀI LIỆU: Đây là yêu cầu tóm tắt / giới thiệu nội dung nguồn đang có trong kho — TUYỆT ĐỐI KHÔNG trả lời 'không chứa thông tin về chủ đề tóm tắt nội dung'. Hãy trình bày cấu trúc rõ ràng gồm: (1) Chủ đề & mục tiêu chính của tài liệu, (2) Các phần kiến thức / lý thuyết trọng tâm, (3) Các dạng bài tập / nội dung thực hành tiêu biểu; bám sát đúng tên mục trong `[CÂY MỤC LỤC]` và các nguồn, gắn nhãn `[1]`, `[2]` ở cuối mỗi ý (KHÔNG bắt đầu dòng bằng `[Tài liệu n]:`, và TUYỆT ĐỐI KHÔNG tự đếm số khối trích `[Tài liệu 1..N]` để suy diễn thành 'tài liệu chia làm N phần')."
         )
     if has_web:
         sections.append(
@@ -1142,10 +1200,17 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         text = re.sub(rf"\b{re.escape(py_var)}\b", clean_lbl, text)
     text = _strip_raw_latex_math(text)
 
-    # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ... / [Tài liệu 1] / [Nguồn web 1] -> [1]
+    # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ten_file.pdf -> [1]
+    # Lưu ý QUAN TRỌNG: Bắt buộc phải có dấu đóng ngoặc `]` hoặc tên file thật sự (.pdf/.xlsx/...), tuyệt đối KHÔNG ăn nhầm nội dung văn bản câu trả lời sau dấu `:`.
     text = re.sub(
-        r'"?\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\]\n"]{2,180}\]?"?',
+        r'"?\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*[:\-]\s*[^\]\n"]{2,160}\]"?',
         r"[\1]",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    text = re.sub(
+        r'"?\[\s*(?:Tài\s*liệu|Nguồn(?:\s*web)?)\s*\[?\s*(\d{1,3})\s*\]?\s*\]?\s*:\s*[^\n:]{1,120}\.(?:pdf|docx?|xlsx?|pptx?|txt|csv)(?:\s*\([^)\n]{1,50}\))?\s*[:\-–]*\s*',
+        r"[\1]: ",
         text,
         flags=re.IGNORECASE | re.UNICODE,
     )
@@ -1227,7 +1292,8 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
 
     text = re.sub(r"(?m)^\s*\[(\d{1,2})\]\s*:\s*(.+)$", _fix_leading_list_ref, text)
 
-    # 3. Cắt các trích dẫn [n] vượt phạm vi nguồn thực tế
+    # 3. Cắt các trích dẫn [n] hoặc ký hiệu giả [H1], [D1] vượt phạm vi nguồn thực tế
+    text = re.sub(r"(?m)^\s*\[[A-Za-z]\d{1,2}\]\s*", "", text)
     def _filter_citation(match: re.Match) -> str:
         idx = int(match.group(1))
         if 1 <= idx <= citations_count:
@@ -1294,7 +1360,14 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
             dedup_lines.append(ln)
         text = "\n".join(dedup_lines).strip()
 
-    # 4. Chuẩn hóa nhãn phân tách gợi ý và làm sạch tiền tố `[Gợi ý 1]` hoặc `Gợi ý 1:`
+    # 4. Xóa các tiêu đề rỗng (vd '### Tài liệu trích dẫn:') đứng trơ trọi cuối bài hoặc trước gợi ý
+    text = re.sub(
+        r"(?im)^\s*#{1,4}\s*(?:Tài\s+liệu\s+trích\s+dẫn|Nguồn\s+tham\s+khảo|Trích\s+dẫn)\s*:?\s*(?=\n*(?:---GỢI\s*Ý|\Z))",
+        "",
+        text,
+    )
+
+    # 5. Chuẩn hóa nhãn phân tách gợi ý và làm sạch tiền tố `[Gợi ý 1]` hoặc `Gợi ý 1:`
     text = re.sub(
         r"(?:---\s*\n\s*-{1,3}\s*GỢI\s*Ý\s*TIẾP\s*THEO\s*-{2,3}|-{2,3}\s*GỢI\s*Ý\s*TIẾP\s*THEO\s*-{2,3})",
         "---GỢI Ý TIẾP THEO---",
@@ -1365,8 +1438,8 @@ def _prepare_rag_prompts_and_citations(
             else raw_body
         )
         is_global_sum_prompt = bool(_GLOBAL_SUMMARY_CUE_RE.search(query or ""))
-        if is_global_sum_prompt and len(context_chunks) >= 6 and ref_id > 1 and not deduped_body.startswith("[CÂY MỤC LỤC") and len(deduped_body) > 460:
-            # Khi tóm tắt toàn tài liệu nhiều phần, nén gọn mỗi phần sau mục lục ~460 ký tự để AI thấy được trọn vẹn mọi chương/bài trong ngân sách token
+        if is_global_sum_prompt and len(context_chunks) >= 6 and ref_id > 2 and not deduped_body.startswith("[CÂY MỤC LỤC") and len(deduped_body) > 460:
+            # Khi tóm tắt toàn tài liệu nhiều phần, giữ nguyên Mục lục [1] và Phần mở đầu/Lý thuyết [2], nén gọn các phần sau ~460 ký tự để bao quát cả tài liệu trong ngân sách token
             prompt_body = _build_word_boundary_preview(deduped_body, 460)
         else:
             prompt_body = deduped_body
@@ -1571,20 +1644,18 @@ def select_optimal_chat_model(
 ) -> Optional[str]:
     """
     Điều phối tự động 2 tầng model (Fast 3B vs. Deep 7B) theo độ phức tạp tác vụ, VRAM và lượng RAM trống:
-    - Nếu người dùng đã chọn đích danh một model khác DEFAULT_LLM_MODEL và model đó có trong máy -> tôn trọng tuyệt đối.
-    - Nếu đang dùng model mặc định:
-      + Khi máy có `gpu_vram_mb <= 4096` hoặc `available_ram_gb < 8.5` hoặc `task_tier in ("fast", "standard")`:
-        ưu tiên giữ cố định model 3B (`qwen2.5:3b` nằm trọn 100% trong 4GB VRAM, tốc độ 76 tok/s, không bị swap).
-      + Khi `task_tier == "deep"` trên máy có `gpu_vram_mb >= 6144` hoặc `available_ram_gb >= 9.5`:
-        ưu tiên nâng lên model 7B/8B.
+    - Nếu người dùng đã chọn đích danh một model (như `qwen2.5:7b` hoặc `qwen2.5:3b`) và model đó có trong máy -> tôn trọng tuyệt đối lựa chọn đó.
+    - Chỉ tự động điều phối 3B/7B khi đang ở chế độ `auto` / `default` hoặc chưa chỉ định model (`""`):
+      + Khi máy là `eco` / VRAM <= 4GB / `task_tier in ("fast", "standard")`: ưu tiên model 3B nhanh, không swap.
+      + Khi `task_tier == "deep"` trên máy có `vram >= 4GB` hoặc `ram >= 7.5GB`: nâng lên model 7B/8B.
     """
     if not available_models:
         return None
 
     req = (requested_model or "").strip()
-    is_default_or_auto = not req or req == DEFAULT_LLM_MODEL or req.lower() == "auto"
+    is_auto_mode = not req or req.lower() in {"auto", "default"}
 
-    if not is_default_or_auto and req in available_models:
+    if not is_auto_mode and req in available_models:
         return req
 
     try:

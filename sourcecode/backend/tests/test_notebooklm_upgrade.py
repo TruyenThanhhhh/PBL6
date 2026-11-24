@@ -311,6 +311,105 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
                 "qwen2.5:3b",
             )
 
+    def test_explicit_7b_respected_and_overview_sanitizer_preserves_content(self) -> None:
+        from app.services.llm_service import _build_instant_followup_suggestions, _sanitize_rag_output
+        from app.services.retrieval_service import is_global_summary_query
+
+        # 1. Người dùng chọn đích danh Qwen 7B ở FE -> phải giữ qwen2.5:7b, không âm thầm hạ về 3B
+        balanced_4gb = {
+            "id": "balanced",
+            "specs": {"available_ram_gb": 5.5, "gpu_vram_mb": 4096},
+        }
+        with patch("app.services.hardware_profile_service.get_active_profile_config", return_value=balanced_4gb):
+            self.assertEqual(
+                select_optimal_chat_model("qwen2.5:7b", ["qwen2.5:7b", "qwen2.5:3b"], task_tier="standard"),
+                "qwen2.5:7b",
+            )
+            self.assertEqual(
+                select_optimal_chat_model("auto", ["qwen2.5:7b", "qwen2.5:3b"], task_tier="standard"),
+                "qwen2.5:3b",
+            )
+
+        # 2. Nhận diện đúng câu hỏi tổng quan toàn file nhưng không bắt nhầm câu hỏi tra cứu chi tiết
+        self.assertTrue(is_global_summary_query("File này chứa nội dung gì, hãy nói chi tiết"))
+        self.assertFalse(is_global_summary_query("File này có công thức hình nón cụt không?"))
+        self.assertFalse(is_global_summary_query("Nội dung chương 9 là gì?"))
+
+        # 3. _sanitize_rag_output KHÔNG được nuốt 180 ký tự văn bản thật sau `[Tài liệu n]: ...`
+        long_rag = (
+            "[Tài liệu 1]: Chuyên đề Những hằng đẳng thức đáng nhớ gồm 7 hằng đẳng thức cơ bản.\n"
+            "[Tài liệu 2]: Gồm các bài tập vận dụng 7 hằng đẳng thức đáng nhớ để khai triển, biến đổi đa thức và việc thực hiện phép tính và rút gọn biểu thức.\n"
+            "[Tài liệu 3]: Ngoài ra tài liệu còn hướng dẫn các dạng bài tập nâng cao như chứng minh đẳng thức và nhiều bài toán Tính giá trị của biểu thức.\n"
+            "### Tài liệu trích dẫn:\n"
+        )
+        cleaned = _sanitize_rag_output(long_rag, citations_count=4)
+        self.assertIn("Những hằng đẳng thức đáng nhớ", cleaned)
+        self.assertIn("việc thực hiện phép tính và rút gọn biểu thức", cleaned)
+        self.assertIn("Tính giá trị của biểu thức", cleaned)
+        self.assertNotRegex(cleaned, r"(?:^|\s|\])nh\s+giá\s+trị")
+        self.assertNotIn("### Tài liệu trích dẫn:", cleaned)
+
+        # 4. Follow-up suggestions cho tài liệu toán học không dùng "quy định cụ thể những gì?" hay vỡ dòng
+        math_chunks = [
+            {
+                "document_name": "chuyen-de-nhung-hang-dang-thuc-dang-nho-3812.pdf",
+                "content": (
+                    "A. LÝ THUYẾT:\n"
+                    "1. Bình phương của một tổng: (A + B)² = A² + 2AB + B²\n"
+                    "Dạng 1: Biến đổi biểu thức\n"
+                    "Bài 1: Thực hiện phép tính:\n1.\n\n3 3 2 1 1 1 9 27 a) Ta có\n"
+                ),
+            }
+        ]
+        math_sugs = _build_instant_followup_suggestions(
+            "File này chứa nội dung gì, hãy nói chi tiết",
+            [{"source_type": "document", "document_name": "chuyen-de-nhung-hang-dang-thuc-dang-nho-3812.pdf"}],
+            math_chunks,
+        )
+        self.assertEqual(len(math_sugs), 3)
+        self.assertFalse(any("quy định cụ thể" in s.lower() for s in math_sugs))
+        self.assertFalse(any("\n" in s for s in math_sugs))
+
+    def test_pdf_math_superscript_reconstruction(self) -> None:
+        from pathlib import Path
+        import pymupdf
+        from app.services.document_service import _extract_pdf_page_clean_text
+
+        sample_pdf = Path(
+            r"D:\PBL6\sourcecode\backend\data\uploads\a53832cb-8f3a-4256-96f8-b0158a811d3c_chuyen-de-nhung-hang-dang-thuc-dang-nho-3812.pdf"
+        )
+        if not sample_pdf.exists():
+            self.skipTest("Sample math PDF not present in local uploads")
+        doc = pymupdf.open(str(sample_pdf))
+        try:
+            p1 = _extract_pdf_page_clean_text(doc[0])
+        finally:
+            doc.close()
+        self.assertIn("1. Bình phương của một tổng: (A + B)² = A² + 2AB + B²", p1)
+        self.assertIn("3. Hiệu hai bình phương: A² - B² = (A - B)(A + B)", p1)
+
+    def test_pinpoint_ordinal_item_hits_formula_1_instead_of_3(self) -> None:
+        from app.services.llm_service import _extract_pinpointed_answer_sentences, _sanitize_rag_output
+
+        chunks = [
+            {
+                "content": (
+                    "A. LÝ THUYẾT:\n"
+                    "1. Bình phương của một tổng: (A + B)² = A² + 2AB + B²\n"
+                    "2. Bình phương của một hiệu: (A - B)² = A² - 2AB + B²\n"
+                    "3. Bình phương của tổng 3 số hạng:\n"
+                    "(A + B + C)² = A² + B² + C² + 2(AB + BC + CA)\n"
+                )
+            }
+        ]
+        pin = _extract_pinpointed_answer_sentences("hằng đẳng thức số 1 là gì", chunks) or ""
+        self.assertIn("1. Bình phương của một tổng: (A + B)² = A² + 2AB + B²", pin)
+        self.assertNotIn("3. Bình phương của tổng 3 số hạng", pin)
+        self.assertEqual(
+            _sanitize_rag_output("[H1] Bình phương của một tổng là (A + B)² = A² + 2AB + B² [1]", 1),
+            "Bình phương của một tổng là (A + B)² = A² + 2AB + B² [1]",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

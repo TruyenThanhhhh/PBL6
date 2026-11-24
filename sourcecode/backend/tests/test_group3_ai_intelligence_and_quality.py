@@ -341,8 +341,12 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertIn("- Điều kiện xét học bổng Khá là gì?", cleaned_out)
 
         self.assertEqual(
-            select_optimal_chat_model("qwen2.5:7b", ["qwen2.5:7b", "qwen2.5:3b"], task_tier="fast"),
+            select_optimal_chat_model("auto", ["qwen2.5:7b", "qwen2.5:3b"], task_tier="fast"),
             "qwen2.5:3b",
+        )
+        self.assertEqual(
+            select_optimal_chat_model("qwen2.5:7b", ["qwen2.5:7b", "qwen2.5:3b"], task_tier="standard"),
+            "qwen2.5:7b",
         )
 
         # 5. Gợi ý theo loại tài liệu & làm sạch trích dẫn lồng tên file / câu lặp lại
