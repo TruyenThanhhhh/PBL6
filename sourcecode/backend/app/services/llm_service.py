@@ -257,6 +257,123 @@ _EXHAUSTIVE_LIST_QUERY_RE = re.compile(
 )
 
 
+_JP_POS_VI_MAP = (
+    ("連用名詞", "Danh từ liên dụng"),
+    ("形容詞", "Tính từ"),
+    ("名詞", "Danh từ"),
+    ("動詞", "Động từ"),
+    ("カタカナ", "Katakana"),
+    ("副詞", "Phó từ"),
+)
+
+
+def _translate_jp_lesson_label(raw_title: str) -> str:
+    clean = re.sub(r"^\[|\]$", "", (raw_title or "").strip())
+    for jp, vi in _JP_POS_VI_MAP:
+        if jp in clean and vi.lower() not in clean.lower():
+            clean = f"{clean} ({vi})"
+            break
+    return clean
+
+
+def _try_build_structured_workbook_summary(
+    query: str,
+    context_chunks: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Tóm tắt nhanh, chuẩn xác 100% tiếng Việt (<5ms) cho bảng từ vựng / workbook có cấu trúc phân bài rõ ràng
+    (tránh LLM nhỏ 3B/7B tự bịa tên bài hoặc chép nhầm ví dụ giữa các bài và pha tiếng Trung giản thể).
+    """
+    if not query or not context_chunks or not _GLOBAL_SUMMARY_CUE_RE.search(query):
+        return None
+    if _COMPARE_CUE_RE.search(query):
+        return None
+
+    doc_ids = [str(c.get("document_id") or "") for c in context_chunks if c.get("document_id")]
+    if len(set(doc_ids)) != 1:
+        return None
+    doc_id = doc_ids[0]
+    doc_name = str(context_chunks[0].get("document_name") or "Tài liệu")
+
+    joined_sample = "\n".join(str(c.get("content") or "") for c in context_chunks[:4])
+    if "|" not in joined_sample and "Sheet:" not in joined_sample:
+        return None
+
+    ordered_chunks: List[Dict[str, Any]] = []
+    try:
+        from app.database import get_db_connection
+        conn = get_db_connection()
+        try:
+            rows = conn.execute(
+                "SELECT chunk_index, page_number, content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index ASC",
+                (doc_id,),
+            ).fetchall()
+            ordered_chunks = [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        ordered_chunks = []
+
+    if not ordered_chunks:
+        ordered_chunks = list(context_chunks)
+
+    lesson_order: List[str] = []
+    lesson_data: Dict[str, Dict[str, Any]] = {}
+    current_lesson: Optional[str] = None
+    lesson_re = re.compile(r"^\s*(?:\[)?(Bài\s+\d+\s*[-–:]\s*[^\]\n]{2,60})(?:\])?\s*$", re.IGNORECASE)
+
+    for ch in ordered_chunks:
+        txt = str(ch.get("content") or "")
+        if txt.startswith("[CÂY MỤC LỤC") or txt.startswith("Sheet:"):
+            continue
+        for raw_ln in txt.splitlines():
+            ln = raw_ln.strip()
+            if not ln:
+                continue
+            m_les = lesson_re.match(ln)
+            if m_les:
+                lbl = m_les.group(1).strip()
+                if lbl not in lesson_data:
+                    lesson_order.append(lbl)
+                    lesson_data[lbl] = {"samples": [], "count": 0}
+                current_lesson = lbl
+                continue
+            if current_lesson and "|" in ln:
+                cells = [c.strip() for c in ln.strip("|").split("|") if c.strip()]
+                if len(cells) >= 3 and cells[0].isdigit():
+                    lesson_data[current_lesson]["count"] += 1
+                    if len(lesson_data[current_lesson]["samples"]) < 3:
+                        if len(cells) >= 4:
+                            lesson_data[current_lesson]["samples"].append(
+                                f"`{cells[1]}` ({cells[2]}: {cells[3]})"
+                            )
+                        else:
+                            lesson_data[current_lesson]["samples"].append(
+                                f"`{cells[1]}` ({cells[2]})"
+                            )
+
+    if len(lesson_order) < 3:
+        return None
+
+    total_entries = sum(lesson_data[k]["count"] for k in lesson_order)
+    lines = [
+        f"### Tổng quan tài liệu `{doc_name}` [1]\n",
+        f"Tài liệu gồm **{len(lesson_order)} bài học từ vựng** (tổng cộng **{total_entries} mục từ** được phân nhóm theo từng từ loại): [1]\n",
+    ]
+    for lbl in lesson_order:
+        info = lesson_data[lbl]
+        nice_lbl = _translate_jp_lesson_label(lbl)
+        count_tag = f"{info['count']} từ" if info["count"] > 0 else ""
+        ex_str = f" — Ví dụ: {', '.join(info['samples'])}" if info["samples"] else ""
+        meta = f" *({count_tag})*" if count_tag else ""
+        lines.append(f"- **{nice_lbl}**{meta}{ex_str}")
+
+    lines.append(
+        "\nBạn có thể bấm trực tiếp các gợi ý bên dưới hoặc hỏi cụ thể từng bài (ví dụ: *\"Nội dung chi tiết của Bài 2\"* hoặc *\"Lấy 10 từ đầu tiên của Bài 4\"*) để xem danh sách đầy đủ."
+    )
+    return "\n".join(lines)
+
+
 def _try_build_exhaustive_tabular_list_answer(
     query: str,
     context_chunks: List[Dict[str, Any]],
@@ -268,8 +385,10 @@ def _try_build_exhaustive_tabular_list_answer(
     - Không bị thiếu dòng nào (LLM thường dừng ở dòng 15–20).
     - Không bao giờ bị model nhỏ 3B chép sai mặt chữ Kanji/Hiragana/Số liệu.
     """
-    if not query or not context_chunks or not _EXHAUSTIVE_LIST_QUERY_RE.search(query):
+    if not query or not context_chunks:
         return None
+    if not _EXHAUSTIVE_LIST_QUERY_RE.search(query):
+        return _try_build_structured_workbook_summary(query, context_chunks)
 
     m_num = re.search(r"\b(\d{2,3})\s*(?:từ|động|danh|tính|phó|mục|dòng|tu|dong|muc)\b", query, re.IGNORECASE)
     requested_limit = int(m_num.group(1)) if m_num else 250
@@ -707,7 +826,7 @@ def _build_dynamic_system_prompt(
         "Bạn là Motivo AI — trợ lý tri thức cá nhân thông minh, diễn đạt tiếng Việt tự nhiên, đầy đủ và chuẩn xác.\n\n"
         "NGUYÊN TẮC TRẢ LỜI:\n"
         "- Trả lời thẳng vào nội dung câu hỏi ngay từ câu đầu tiên; TUYỆT ĐỐI KHÔNG lặp lại nguyên văn câu hỏi ('Câu hỏi của bạn là...', 'Bạn đã hỏi...').\n"
-        "- VIẾT TIẾNG VIỆT CÓ DẤU ĐẦY ĐỦ, ĐÚNG CHÍNH TẢ 100%: Mọi tiêu đề và nội dung tiếng Việt đều phải viết đúng chính tả có dấu (tuyệt đối không bỏ dấu thành 'CHUONG', 'GOCAO', 'DUONG THAT', 'chung minh').\n"
+        "- VIẾT 100% BẰNG TIẾNG VIỆT CÓ DẤU, ĐÚNG CHÍNH TẢ: Mọi tiêu đề và nội dung giải thích đều phải viết bằng tiếng Việt có dấu chuẩn xác (tuyệt đối KHÔNG tự chen chữ Hán giản thể Trung Quốc như '包括以下示例', '词', '示例', không viết sai chính tả kiểu 'CHUONG', 'GOCAO', 'DUONG THAT', 'Tác Liệu'); chỉ giữ nguyên từ vựng tiếng Nhật/Anh gốc của tài liệu khi trích dẫn ví dụ.\n"
         "- CHỈ BÁM SÁT NGUỒN (GROUNDED - ZERO FABRICATION): Giữ nguyên số liệu, công thức và điều kiện đúng 100% theo `[Tài liệu n]` (ví dụ: nếu nguồn ghi `1/OH² = 1/OA² + 1/OB²`, giữ chính xác công thức nghịch đảo bình phương đó, không tự đổi sai). TUYỆT ĐỐI KHÔNG tự bịa thêm ví dụ minh họa, tên riêng lạ hay giải hệ phương trình giả nếu nguồn không có và người dùng không hỏi.\n"
         "- BẮT BUỘC TRẢ LỜI ĐẦY ĐỦ MỌI VẾ CỦA CÂU HỎI: Nếu câu hỏi có nhiều vế hoặc mục tài liệu có nhiều trường hợp (a, b, c, 1, 2, 3...), hãy trình bày đủ mọi mục dưới dạng đề mục rõ ràng, không bỏ sót hay cắt ngang giữa chừng.\n"
         "- TUYỆT ĐỐI KHÔNG chia câu trả lời theo kiểu tách rời 'Tài liệu 1: ... Tài liệu 2: ...', KHÔNG dùng tiêu đề `### [1]` hay `**[1]`, và KHÔNG lặp lại cùng một định nghĩa nhiều lần. Luôn tổng hợp thành MỘT câu trả lời mạch lạc thống nhất và gắn nhãn `[1]`, `[2]` ở cuối ý.\n"
@@ -729,9 +848,9 @@ def _build_dynamic_system_prompt(
         sections.append(
             "- KHI HƯỚNG DẪN THỰC HÀNH: Nêu mục tiêu ngắn gọn, đánh số liên tục 'Bước 1:', 'Bước 2:'... đủ quy trình, rõ lệnh/thao tác cụ thể, không lặp lại ý giữa các bước."
         )
-    if _GLOBAL_SUMMARY_CUE_RE.search(q_clean):
+    if has_local and _GLOBAL_SUMMARY_CUE_RE.search(q_clean):
         sections.append(
-            "- TỔNG HỢP TOÀN TÀI LIỆU: Sắp xếp mạch lạc theo từng phần/chương/bài kèm ý chính nổi bật."
+            "- TỔNG HỢP TOÀN TÀI LIỆU: Đây là yêu cầu tóm tắt nguồn đang có trong kho — TUYỆT ĐỐI KHÔNG trả lời 'không chứa thông tin về chủ đề tóm tắt nội dung'. Hãy sắp xếp mạch lạc đúng tên từng phần/chương/bài theo [CÂY MỤC LỤC] và chỉ xếp ví dụ vào đúng bài chứa ví dụ đó (tuyệt đối không tự đổi tên bài)."
         )
     if has_web:
         sections.append(
@@ -958,6 +1077,28 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     text = answer
 
     # 0. Gỡ tiêu đề nội bộ, câu mở/chốt máy móc, dòng biến Sandbox/tên file bị rò và làm sạch LaTeX thô
+    for zh_bad, vi_ok in (
+        ("động词", "động từ"),
+        ("danh词", "danh từ"),
+        ("tính词", "tính từ"),
+        ("từ词", "từ vựng"),
+        ("副词", "phó từ (副詞)"),
+        ("名词", "danh từ (名詞)"),
+        ("动词", "động từ (動詞)"),
+        ("形容词", "tính từ (形容詞)"),
+        ("tính từ (形容詞)（形容詞）", "tính từ (形容詞)"),
+        ("tính từ (形容詞)(形容詞)", "tính từ (形容詞)"),
+        ("Tổng Hợp Toàn Tác Liệu", "Tổng hợp toàn bộ tài liệu"),
+    ):
+        text = text.replace(zh_bad, vi_ok)
+    text = re.sub(r"[，,]?\s*包括以下示例\s*[:：]?", ", bao gồm các ví dụ tiêu biểu:", text)
+    if citations_count > 0:
+        text = re.sub(
+            r'^\s*\[?\s*Tài\s+liệu\s+trong\s+kho\s+tri\s+thức\s+của\s+bạn\s+không\s+chứa\s+thông\s+tin\s+về\s+chủ\s+đề\s+["“]?tóm\s+tắt[^\n]*\]?\s*\n*',
+            "",
+            text,
+            flags=re.IGNORECASE | re.UNICODE,
+        )
     text = re.sub(
         r'(?im)^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
         "",
@@ -1062,6 +1203,9 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    # Dọn lại dòng chỉ đứng một mình [n] (kể cả sau khi chuẩn hóa '[Tài liệu n]: ...' -> '[n]') và chèn dấu cách nếu [n] dính sát chữ
+    text = re.sub(r"(?im)^\s*#{0,4}\s*\*{0,2}\s*\[\s*\d{1,3}\s*\]\*{0,2}\s*[:.-]?\s*$", "", text)
+    text = re.sub(r"(\[\d{1,3}\])(?=[A-Za-zÀ-Ỹà-ỹ])", r"\1 ", text)
     text = re.sub(
         r"\n*\s*Nếu\s+bạn\s+cần\s+thêm\s+thông\s+tin\s+cụ\s+thể[^.\n]{0,180}(?:chi\s+tiết\s+hơn|hỗ\s+trợ\s+thêm|cho\s+tôi\s+biết)[^.\n]*\.?\s*$",
         "",
@@ -1092,6 +1236,12 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
 
     text = re.sub(r"\[(\d{1,3})\]", _filter_citation, text)
     text = re.sub(r" +([,.;:])", r"\1", text)
+    text = re.sub(
+        r"\n*\s*(?:Trích\s*Đoạn\s*Trọng\s*Tâm\s*Khớp\s*Câu\s*Hỏi\s*Nhất\s*:[\s\S]*?(?=\n---GỢI\s*Ý|\Z))",
+        "",
+        text,
+        flags=re.IGNORECASE | re.UNICODE,
+    )
     text = re.sub(
         r"\n*\s*(?:Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s*:|Câu\s*hỏi\s*/\s*Yêu\s*cầu\s+của\s+người\s+dùng\s+về[^\n]*đã\s+được\s+giải\s+đáp|Hãy\s+đối\s+chiếu\s+tài\s+liệu\s+và\s+trả\s+lời\s+trực\s+diện|🎯\s*\[TRÍCH\s+ĐOẠN)[\s\S]*$",
         "",
@@ -1214,11 +1364,17 @@ def _prepare_rag_prompts_and_citations(
             if doc_key and doc_key in seen_doc_tails
             else raw_body
         )
-        focused_excerpt = _extract_tabular_match_excerpt(query, deduped_body)
+        is_global_sum_prompt = bool(_GLOBAL_SUMMARY_CUE_RE.search(query or ""))
+        if is_global_sum_prompt and len(context_chunks) >= 6 and ref_id > 1 and not deduped_body.startswith("[CÂY MỤC LỤC") and len(deduped_body) > 460:
+            # Khi tóm tắt toàn tài liệu nhiều phần, nén gọn mỗi phần sau mục lục ~460 ký tự để AI thấy được trọn vẹn mọi chương/bài trong ngân sách token
+            prompt_body = _build_word_boundary_preview(deduped_body, 460)
+        else:
+            prompt_body = deduped_body
+        focused_excerpt = _extract_tabular_match_excerpt(query, prompt_body)
         body = (
-            f"[Khớp trực tiếp]: {focused_excerpt}\n{deduped_body}"
+            f"[Khớp trực tiếp]: {focused_excerpt}\n{prompt_body}"
             if focused_excerpt
-            else deduped_body
+            else prompt_body
         )
         block = f"{header}{body}\n"
         block_tokens = _estimate_tokens(block)
@@ -1301,7 +1457,8 @@ def _prepare_rag_prompts_and_citations(
             re.IGNORECASE | re.UNICODE,
         )
     )
-    pinpointed = "" if is_section_ask else _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
+    is_summary_ask = bool(_GLOBAL_SUMMARY_CUE_RE.search(query or ""))
+    pinpointed = "" if (is_section_ask or is_summary_ask) else _extract_pinpointed_answer_sentences(query, context_chunks) if has_local else None
     pinpoint_block = (
         f"\n🎯 [TRÍCH ĐOẠN TRỌNG TÂM KHỚP CÂU HỎI NHẤT (ưu tiên trả lời chính xác từ thông tin này)]:\n{pinpointed}\n"
         if pinpointed
@@ -1323,9 +1480,17 @@ def _prepare_rag_prompts_and_citations(
             "\nHãy tổng hợp các nguồn trên thành một bài giải đáp/hướng dẫn hoàn chỉnh, gắn nhãn trích dẫn [1], [2] tương ứng:"
         )
     elif has_local and not has_web:
+        same_doc_note = ""
+        doc_ids_in_cites = {c.get("document_id") for c in citations if c.get("document_id")}
+        if len(doc_ids_in_cites) == 1 and len(citations) > 1 and is_summary_ask:
+            same_doc_note = (
+                f"\n(Lưu ý: Toàn bộ [Tài liệu 1]..[{len(citations)}] ở trên là các phần của CÙNG MỘT TÀI LIỆU "
+                f"'{citations[0]['document_name']}'. Hãy viết MỘT bài tóm tắt thống nhất theo các bài/chương thực tế trong mục lục, "
+                "TUYỆT ĐỐI KHÔNG chia theo số '[1]', '[2]' hay viết 'tài liệu đầu tiên / tài liệu thứ hai'.)\n"
+            )
         user_prompt = (
             f"Dưới đây là các tài liệu trong kho tri thức của người dùng:\n{context_text}"
-            f"{pinpoint_block}\n"
+            f"{pinpoint_block}{same_doc_note}\n"
             f"Câu hỏi/Yêu cầu của người dùng: {query}\n"
             "\nHãy đối chiếu tài liệu và trả lời trực diện, đúng trọng tâm câu hỏi, gắn nhãn trích dẫn [1], [2]... tương ứng:"
         )

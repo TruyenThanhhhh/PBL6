@@ -138,6 +138,43 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
         excerpt_koh = _extract_tabular_match_excerpt("後半 là gì", vocab_tbl)
         self.assertEqual(excerpt_koh, "106 | 後半 | こうはん | phần cuối")
 
+        zh_leak_raw = (
+            '[Tài liệu trong kho tri thức của bạn không chứa thông tin về chủ đề "tóm tắt nội dung".]\n'
+            "Tổng Hợp Toàn Tác Liệu\n"
+            "Danh sách từ vựng về động词，包括以下示例:\n- 歩く\n\n"
+            "Trích Đoạn Trọng Tâm Khớp Câu Hỏi Nhất:\n• 298 | 不自由な"
+        )
+        cleaned_zh = _sanitize_rag_output(zh_leak_raw, citations_count=2)
+        self.assertNotIn("không chứa thông tin về chủ đề", cleaned_zh)
+        self.assertNotIn("包括以下示例", cleaned_zh)
+        self.assertNotIn("động词", cleaned_zh)
+        self.assertNotIn("Trích Đoạn Trọng Tâm", cleaned_zh)
+        self.assertIn("động từ", cleaned_zh)
+
+        # Kiểm tra tóm tắt nhanh bảng từ vựng không bị lẫn chữ Hán giản thể hay sai bài học
+        from app.services.llm_service import _try_build_exhaustive_tabular_list_answer
+        wb_chunks = [
+            {
+                "document_id": "doc_missing_db_id",
+                "document_name": "Mimikara_N3.xlsx",
+                "page_number": 1,
+                "chunk_index": 1,
+                "content": (
+                    "Bài 1 - 名詞 - 120\n"
+                    "1 | 男性 | だんせい | đàn ông\n"
+                    "Bài 2 - 動詞\n"
+                    "121 | 鳴る | なる | kêu\n"
+                    "Bài 4 - 形容詞\n"
+                    "301 | 濃い | こい | đậm\n"
+                ),
+            }
+        ]
+        wb_sum = _try_build_exhaustive_tabular_list_answer("tóm tắt nội dung", wb_chunks)
+        self.assertIsNotNone(wb_sum)
+        self.assertIn("Bài 1 - 名詞 - 120 (Danh từ)", wb_sum)
+        self.assertIn("`鳴る` (なる: kêu)", wb_sum)
+        self.assertIn("`濃い` (こい: đậm)", wb_sum)
+
         broken_bold = "**[1] 3. Hình nón – Hình nón cụt:\ntừ Tài liệu 3: Sxq = π(R+r)l"
         cleaned_broken = _sanitize_rag_output(broken_bold, citations_count=2)
         self.assertNotIn("**[1]", cleaned_broken)

@@ -154,7 +154,7 @@ async def _retrieve_local_sources(
             search_spanning_chunks,
             workspace_id,
             query,
-            12,
+            8,
             selected_document_id,
             document_ids,
         )

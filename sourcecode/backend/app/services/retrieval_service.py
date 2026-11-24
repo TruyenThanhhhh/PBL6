@@ -412,8 +412,28 @@ def search_spanning_chunks(
         if total <= max_chunks:
             selected = all_chunks
         else:
-            step = total / max_chunks
-            selected = [all_chunks[int(i * step)] for i in range(max_chunks)]
+            sec_hdr_re = re.compile(
+                r"(?:^|\n)\s*(?:\[CÂY\s*MỤC\s*LỤC|Sheet:|Danh\s*mục\s*các\s*phần|#{1,4}\s+|\[?(?:Bài|Chương|Phần|Mục|Vấn\s*đề|Điều)\s+(?:[IVXLCDM]{1,5}|\d{1,3})\b)",
+                re.IGNORECASE | re.UNICODE,
+            )
+            priority_idx = [
+                idx for idx, ch in enumerate(all_chunks)
+                if idx == 0 or sec_hdr_re.search(ch.get("content") or "")
+            ]
+            picked: set[int] = set()
+            if len(priority_idx) >= max_chunks:
+                step = len(priority_idx) / max_chunks
+                for i in range(max_chunks):
+                    picked.add(priority_idx[int(i * step)])
+            else:
+                picked.update(priority_idx)
+                remain = [idx for idx in range(total) if idx not in picked]
+                need = max_chunks - len(picked)
+                if remain and need > 0:
+                    step = len(remain) / need
+                    for i in range(need):
+                        picked.add(remain[min(len(remain) - 1, int(i * step))])
+            selected = [all_chunks[idx] for idx in sorted(picked)]
         for c in selected:
             if "page_label" not in c and c.get("page_number") is not None:
                 c["page_label"] = f"Trang {c['page_number']}"
