@@ -1141,16 +1141,20 @@ def _run_hybrid_rrf_candidates(
         low_txt = full_txt.lower()
         if content_phrases:
             phrase_hits = 0
+            heading_phrase_hits = 0
             for ph in content_phrases:
                 if ph in low_txt:
                     phrase_hits += 1
                     item["rrf_score"] += 0.025
                     # Thưởng thêm nếu cụm từ khóa xuất hiện ngay trong dòng tiêu đề/mục (vd: '2. HÀM SỐ ĐỒNG BIẾN – NGHỊCH BIẾN')
-                    if re.search(rf"(?:^|\n)\s*(?:#{1,4}\s*|\d{{1,2}}\.\s*)[^\n]{{0,30}}{re.escape(ph)}", low_txt):
+                    if re.search(rf"(?:^|\n)\s*(?:#{1,4}\s*|\d{{1,2}}\.\s*)[^\n]{{0,35}}{re.escape(ph)}", low_txt):
                         item["rrf_score"] += 0.035
-                        item["_heading_match"] = True
+                        heading_phrase_hits += 1
                     if phrase_hits >= 4:
                         break
+            min_heading_hits = 1 if len(content_phrases) <= 1 else 2
+            if heading_phrase_hits >= min_heading_hits:
+                item["_heading_match"] = True
 
         if topic_cues and heading_line_re is not None:
             heading_texts = " ".join(m.group(0).lower() for m in heading_line_re.finditer(full_txt))

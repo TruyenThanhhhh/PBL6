@@ -52,6 +52,7 @@ function cleanMathDisplay(text: string): string {
     .replace(/\\tan/g, "tan")
     .replace(/\\cot/g, "cot")
     .replace(/\\in\b/g, "∈")
+    .replace(/\\perp/g, "⊥")
     .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => inner.trim())
     .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> **${inner.trim()}**\n\n`)
     .replace(/\b(sin|cos|tan|cot|arcsin|arccos|arctan|log)\s*\{([^{}]+)\}/g, "$1($2)")

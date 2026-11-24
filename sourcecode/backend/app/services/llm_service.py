@@ -870,6 +870,7 @@ def _strip_raw_latex_math(text: str) -> str:
         ("\\tan", "tan"),
         ("\\cot", "cot"),
         ("\\in", "∈"),
+        ("\\perp", "⊥"),
     )
     for k, v in latex_tokens:
         res = res.replace(k, v)
