@@ -270,9 +270,10 @@ def detect_section_intent(
         if num is not None:
             return _normalize_section_type(m.group(1)), num
 
-    # Nếu câu hỏi hiện tại là câu nối tiếp (ví dụ: "các bước tiếp theo đâu", "bước iếp theo")
+    # Chỉ coi là câu hỏi nối tiếp section khi thực sự chứa từ khóa hỏi bước/nội dung nối tiếp và không chứa Kanji/Cụm tra cứu từ mới
     q_lower = q.lower()
-    is_follow_up = any(kw in q_lower for kw in _FOLLOW_UP_KEYWORDS) or len(q_lower.split()) <= 5
+    has_cjk_lookup = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", q))
+    is_follow_up = any(kw in q_lower for kw in _FOLLOW_UP_KEYWORDS) and not has_cjk_lookup
     if is_follow_up and history:
         for turn in reversed(history[-8:]):
             if turn.get("role") == "user":

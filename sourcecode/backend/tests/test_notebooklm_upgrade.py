@@ -19,6 +19,7 @@ from app.main import app  # noqa: E402
 from app.services.intent_service import classify_chat_intent  # noqa: E402
 from app.services.llm_service import (  # noqa: E402
     _build_bounded_history_messages,
+    _extract_tabular_match_excerpt,
     _prepare_rag_prompts_and_citations,
     _sanitize_rag_output,
     _strip_raw_latex_math,
@@ -26,6 +27,7 @@ from app.services.llm_service import (  # noqa: E402
     select_optimal_chat_model,
 )
 from app.services.reasoning_service import _fast_local_reasoning_planner  # noqa: E402
+from app.services.retrieval_service import detect_section_intent  # noqa: E402
 
 
 class NotebookLMUpgradeTestCase(unittest.TestCase):
@@ -125,7 +127,16 @@ class NotebookLMUpgradeTestCase(unittest.TestCase):
             {"role": "assistant", "content": "Chương 9: Hai đường thẳng cắt nhau thỏa mãn điều kiện K"},
         ]
         self.assertEqual(_build_bounded_history_messages(ch9_history, current_query=frustum_q), [])
+        self.assertEqual(_build_bounded_history_messages(ch9_history, current_query="後半 là gì"), [])
         self.assertTrue(_build_bounded_history_messages(ch9_history, current_query="Giải thích thêm bước 2 vừa rồi"))
+        self.assertIsNone(
+            detect_section_intent("後半 là gì", [{"role": "user", "content": "Nội dung bài 2 gồm những gì?"}])
+        )
+
+        vocab_tbl = "104 | 多く | おおく | nhiều\n105 | 前半 | ぜんはん | phần đầu\n106 | 後半 | こうはん | phần cuối"
+        vocab_tbl = vocab_tbl + ("\n107 | a | b | c\n108 | d | e | f\n109 | g | h | i")
+        excerpt_koh = _extract_tabular_match_excerpt("後半 là gì", vocab_tbl)
+        self.assertEqual(excerpt_koh, "106 | 後半 | こうはん | phần cuối")
 
         broken_bold = "**[1] 3. Hình nón – Hình nón cụt:\ntừ Tài liệu 3: Sxq = π(R+r)l"
         cleaned_broken = _sanitize_rag_output(broken_bold, citations_count=2)

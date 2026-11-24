@@ -195,8 +195,9 @@ def _clean_history_turn_content(role: str, raw_content: str) -> str:
 
 _STANDALONE_FOLLOWUP_RE = re.compile(
     r"(?:\b(?:nội\s*dung\s*(?:vừa\s*nêu|ở\s*trên)|ý\s*trên|câu\s*(?:trên|vừa\s*rồi)|bước\s*\d+\s*vừa\s*rồi|"
-    r"vừa\s*rồi|vừa\s*nêu|vừa\s*nói|ở\s*trên|tiếp\s*theo|chi\s*tiết\s*hơn|giải\s*thích\s*thêm|ví\s*dụ\s*thêm|còn\s+.{1,25}\s+thì\s+sao)\b"
-    r"|^(?:vậy|thế|còn|ngoài\s*ra|cụ\s*thể\s*là)\b)",
+    r"vừa\s*rồi|vừa\s*nêu|vừa\s*nói|ở\s*trên|tiếp\s*theo|chi\s*tiết\s*hơn|giải\s*thích\s*thêm|ví\s*dụ\s*thêm|"
+    r"còn\s+.{1,25}\s+thì\s+sao|về\s+nó|của\s+nó|nữa\s+đi|nữa\s+không|tại\s+sao|vì\s+sao)\b"
+    r"|^(?:vậy|thế|còn|ngoài\s*ra|cụ\s*thể\s*là|giải\s*thích\s*thêm|tiếp|nữa)\b)",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -207,13 +208,16 @@ def _build_bounded_history_messages(
     max_tokens: Optional[int] = None,
     current_query: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """Giữ lịch sử hội thoại cô đọng, sạch khuôn mẫu nhiễu và tránh rò chủ đề cũ khi người dùng hỏi bài toán/chủ đề mới độc lập."""
-    if current_query:
+    """Giữ lịch sử hội thoại cô đọng, sạch khuôn mẫu nhiễu và cô lập hoàn toàn khi người dùng chuyển sang câu hỏi/từ khóa độc lập mới."""
+    if current_query is not None:
         q_clean = current_query.strip()
-        words = q_clean.split()
-        # Nếu câu hỏi mới đã dài & độc lập (không có đại từ/từ nối tiếp với lượt trước), không bơm chủ đề cũ vào LLM nhỏ
-        if len(words) >= 8 and not _STANDALONE_FOLLOWUP_RE.search(q_clean):
-            return []
+        if q_clean:
+            is_followup = bool(_STANDALONE_FOLLOWUP_RE.search(q_clean))
+            has_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", q_clean))
+            words = q_clean.split()
+            # Chỉ giữ history khi câu mới thực sự có từ nối tiếp/hồi chỉ, hoặc quá mơ hồ <= 2 từ thuần tiếng Việt không chứa từ khóa/Kanji độc lập
+            if not is_followup and (has_cjk or len(words) >= 3 or len(words) == 1):
+                return []
     if max_tokens is None:
         _, max_tokens, _, _ = _resolve_llm_runtime_budget()
     selected: List[Dict[str, str]] = []
@@ -337,6 +341,17 @@ def _extract_tabular_match_excerpt(query: str, body: str, max_len: int = 220) ->
             best_pos = pos
     if best_pos == -1:
         return None
+
+    if "\n" in body:
+        line_start = body.rfind("\n", 0, best_pos)
+        start = line_start + 1 if line_start != -1 else 0
+        line_end = body.find("\n", best_pos)
+        end = line_end if line_end != -1 else len(body)
+        if end - start > max_len:
+            end = min(end, start + max_len)
+        excerpt = body[start:end].strip(" |\n")
+        if excerpt:
+            return excerpt
 
     raw_start = max(0, best_pos - 60)
     if raw_start > 0:
