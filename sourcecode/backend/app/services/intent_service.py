@@ -60,15 +60,15 @@ _VERSION_DIFF_ASCII_RE = re.compile(
 )
 
 _QUIZ_ACTION_RE = re.compile(
-    r"(?:(?:tạo|ra|sinh|làm|soạn|thiết\s*kế|xây\s*dựng|biên\s*soạn).{0,36}"
+    r"(?:(?:tạo|đặt|viết|lập|ra|sinh|làm|soạn|cho(?:\s*tôi)?|đưa(?:\s*ra)?|thiết\s*kế|xây\s*dựng|biên\s*soạn).{0,36}"
     r"(?:đề\s*trắc\s*nghiệm|bài\s*trắc\s*nghiệm|trắc\s*nghiệm|quiz|bài\s*kiểm\s*tra|bài\s*test|đề\s*thi|câu\s*hỏi\s*(?:ôn\s*tập|kiểm\s*tra|trắc\s*nghiệm))"
-    r"|\b\d+\s*câu\s*(?:hỏi\s*)?trắc\s*nghiệm\b)",
+    r"|\b\d+\s*câu\s*(?:hỏi\s*)?(?:trắc\s*nghiệm|ôn\s*tập|kiểm\s*tra)\b)",
     re.IGNORECASE | re.UNICODE,
 )
 _QUIZ_ACTION_ASCII_RE = re.compile(
-    r"(?:(?:tao|ra|sinh|lam|soan|thiet\s*ke|xay\s*dung|bien\s*soan).{0,36}"
+    r"(?:(?:tao|dat|viet|lap|ra|sinh|lam|soan|cho(?:\s*toi)?|dua(?:\s*ra)?|thiet\s*ke|xay\s*dung|bien\s*soan).{0,36}"
     r"(?:de\s*trac\s*nghiem|bai\s*trac\s*nghiem|trac\s*nghiem|quiz|bai\s*kiem\s*tra|bai\s*test|de\s*thi|cau\s*hoi\s*(?:on\s*tap|kiem\s*tra|trac\s*nghiem))"
-    r"|\b\d+\s*cau\s*(?:hoi\s*)?trac\s*nghiem\b)",
+    r"|\b\d+\s*cau\s*(?:hoi\s*)?(?:trac\s*nghiem|on\s*tap|kiem\s*tra)\b)",
     re.IGNORECASE,
 )
 

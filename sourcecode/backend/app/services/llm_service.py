@@ -934,7 +934,7 @@ def _resolve_sampling_options(
     elif is_short_lookup:
         dyn_predict = min(max_predict, 520)
     else:
-        dyn_predict = min(max_predict, 1280)
+        dyn_predict = min(max_predict, 1536)
 
     if estimated_input_tokens > 0:
         needed = estimated_input_tokens + dyn_predict + 192
