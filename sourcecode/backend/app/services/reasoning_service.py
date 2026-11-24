@@ -119,7 +119,7 @@ def _fast_local_reasoning_planner(
             p_str = p.strip(" ,;?.!")
             if len(p_str) >= 10 and p_str.lower() != q_low:
                 sub_queries.append(p_str)
-    if any(k in q_low for k in ("vi phạm", "vi pham", "bị phạt", "bi phat", "rủi ro", "rui ro", "hợp lệ", "hop le", "đủ điều kiện", "du dieu kien")):
+    if initial_chunks and any(k in q_low for k in ("vi phạm", "vi pham", "bị phạt", "bi phat", "rủi ro", "rui ro", "hợp lệ", "hop le", "đủ điều kiện", "du dieu kien")):
         sub_queries.append("điều kiện ngoại lệ mức phạt chế tài quy định")
 
     sub_queries = sub_queries[:max_sub_queries]
@@ -156,7 +156,10 @@ def _fast_local_reasoning_planner(
         r_dec = round(rate_pct / 100.0, 6)
         if any(k in q_low for k in ("lãi kép", "lai kep", "tăng trưởng kép", "tang truong kep")) and periods:
             variables = {"von": principal, "lai_suat": r_dec, "so_ky": periods}
-            expressions = ["tong_nhan = round(von * ((1 + lai_suat) ** so_ky), 2)"]
+            expressions = [
+                "he_so_tang = round((1 + lai_suat) ** so_ky, 6)",
+                "tong_nhan = round(von * ((1 + lai_suat) ** so_ky), 2)",
+            ]
         elif periods and any(k in q_low for k in ("lãi", "lai", "tiết kiệm", "tiet kiem", "quá hạn", "qua han")):
             variables = {"von": principal, "ty_le": r_dec, "so_ky": periods}
             expressions = [
@@ -230,6 +233,20 @@ async def _plan_reasoning_steps(
     return None
 
 
+def _format_human_number(val: Any) -> str:
+    if isinstance(val, int):
+        return f"{val:,}".replace(",", ".")
+    if isinstance(val, float):
+        if val.is_integer():
+            return f"{int(val):,}".replace(",", ".")
+        decimals = 6 if abs(val) < 100 else 2
+        int_part, dec_part = f"{val:.{decimals}f}".split(".")
+        int_fmt = f"{int(int_part):,}".replace(",", ".")
+        dec_clean = dec_part.rstrip("0")
+        return f"{int_fmt},{dec_clean}" if dec_clean else int_fmt
+    return str(val)
+
+
 def _audit_reasoning_grounding(
     answer: str,
     citations_count: int,
@@ -237,11 +254,14 @@ def _audit_reasoning_grounding(
 ) -> Tuple[str, str, str]:
     """
     Hậu kiểm nhanh (<1ms) câu trả lời sau bước suy luận:
-    1. Loại bỏ trích dẫn giả [n] nằm ngoài danh sách nguồn (n > citations_count hoặc n <= 0).
-    2. Đảm bảo kết quả số học đã xác thực từ Python Sandbox xuất hiện rõ ràng trong kết luận.
+    1. Loại bỏ tiêu đề prompt nội bộ / cú pháp LaTeX thô nếu model 3B lỡ viết nhầm.
+    2. Loại bỏ trích dẫn giả [n] nằm ngoài danh sách nguồn (n > citations_count hoặc n <= 0).
+    3. Đảm bảo kết quả số học đã xác thực từ Python Sandbox xuất hiện rõ ràng trong kết luận.
     Trả về (audited_answer, extra_delta_to_stream, step4_detail).
     """
-    cleaned = answer or ""
+    from app.services.llm_service import _sanitize_rag_output
+
+    cleaned = _sanitize_rag_output(answer or "", citations_count)
     dropped_refs = 0
 
     def _check_ref(match: re.Match) -> str:
@@ -259,15 +279,17 @@ def _audit_reasoning_grounding(
     sandbox_note = ""
     if sandbox_res and sandbox_res.get("ok") and sandbox_res.get("final_result") is not None:
         final_val = sandbox_res["final_result"]
-        candidates = {str(final_val)}
+        human_val = _format_human_number(final_val)
+        candidates = {str(final_val), human_val}
         if isinstance(final_val, float) and final_val.is_integer():
             candidates.add(str(int(final_val)))
         if isinstance(final_val, (int, float)):
             candidates.add(f"{final_val:,.0f}".replace(",", "."))
             candidates.add(f"{final_val:,.0f}")
+            candidates.add(f"{final_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         if not any(tok in cleaned for tok in candidates):
             extra_delta = (
-                f"\n\n> **Kiểm chứng Python Sandbox:** Kết quả tính toán xác thực là **`{final_val}`**."
+                f"\n\n> **Kiểm chứng Python Sandbox:** Kết quả tính toán xác thực là **`{human_val}`**."
             )
             cleaned = cleaned.rstrip() + extra_delta
             sandbox_note = " Đã bổ sung số liệu xác thực từ Sandbox."
@@ -395,10 +417,15 @@ async def stream_autonomous_reasoning(
 
     # Bước 2: Multi-hop RAG + Cross-Check
     consolidated_chunks = list(initial_chunks)
-    sub_queries = [str(s).strip() for s in (plan or {}).get("sub_queries", []) if str(s).strip()]
-    cross_focus = (plan or {}).get("cross_check_focus")
-    if isinstance(cross_focus, str) and cross_focus.strip():
-        sub_queries.append(f"điều kiện ngoại lệ quy định {cross_focus.strip()}")
+    # Nếu vòng truy xuất đầu hoàn toàn không có đoạn tài liệu khớp câu hỏi VÀ đây là bài toán tính độc lập,
+    # bỏ qua các sub_queries generic để tránh kéo nhầm tài liệu lạc đề vào trích dẫn
+    if not initial_chunks and fast_plan.get("needs_calculation"):
+        sub_queries = []
+    else:
+        sub_queries = [str(s).strip() for s in (plan or {}).get("sub_queries", []) if str(s).strip()]
+        cross_focus = (plan or {}).get("cross_check_focus")
+        if isinstance(cross_focus, str) and cross_focus.strip():
+            sub_queries.append(f"điều kiện ngoại lệ quy định {cross_focus.strip()}")
 
     ran_queries: List[str] = []
     for sub_q in sub_queries[:max(1, max_steps - 1)]:
@@ -475,32 +502,41 @@ async def stream_autonomous_reasoning(
     # Bước 4: Tổng hợp suy luận + Self-Verify
     sandbox_block = ""
     if sandbox_res and sandbox_res.get("ok"):
-        steps_lines = "\n".join(f"  - `{st['expr']}` => **{st['value']}**" for st in sandbox_res.get("steps", []))
+        final_raw = sandbox_res.get("final_result")
+        final_human = _format_human_number(final_raw)
+        step_pairs = [
+            f"{st['target'] or 'Bước'} = {_format_human_number(st['value'])}"
+            for st in sandbox_res.get("steps", [])
+        ]
         sandbox_block = (
-            "\n\n## KẾT QUẢ ĐÃ KIỂM CHỨNG BẰNG PYTHON SANDBOX (SỐ LIỆU CHÍNH XÁC 100%, BẮT BUỘC DÙNG ĐÚNG KẾT QUẢ NÀY):\n"
-            f"{steps_lines}\n"
-            f"  - Đáp số cuối cùng đã xác thực: **{sandbox_res.get('final_result')}**"
+            "\n\n[DỮ KIỆN TOÁN HỌC ĐÃ TÍNH SẴN BẰNG HỆ THỐNG]:\n"
+            f"- Các giá trị chính xác đã tính: {'; '.join(step_pairs)}\n"
+            f"- Đáp số cuối cùng chính xác tuyệt đối: {final_human}.\n"
+            "(Hãy dùng đúng các con số này trong bài giải; KHÔNG tự nhân nhẩm khác số liệu này, KHÔNG viết tên biến Python hay dòng nhãn trên)."
         )
 
     verify_directive = (
-        "\n- TỰ KIỂM CHỨNG (SELF-VERIFY): Trước khi kết thúc, rà soát xem kết luận đã xét đủ điều kiện/ngoại lệ trong tài liệu và khớp tuyệt đối với kết quả kiểm chứng hay chưa."
+        "\n- TỰ KIỂM CHỨNG: Đảm bảo kết luận khớp tuyệt đối với đáp số đã tính sẵn, không tự ước lượng sai số trung gian và chỉ rõ phần nào từ tài liệu vs. phần phân tích tổng quát."
         if enable_self_verify
         else ""
     )
 
+    has_citations = bool(citations)
     synth_system = (
-        "Bạn là Chuyên gia Suy luận Tri thức AI. Thay vì chỉ chép lại nguyên văn tài liệu, hãy ÁP DỤNG các quy tắc, "
-        "công thức hoặc nguyên lý trong nguồn vào đúng tình huống người dùng hỏi theo quy trình 4 phần rõ ràng:\n"
-        "1. **Căn cứ / Quy tắc gốc trong tài liệu** (gắn trích dẫn [1], [2]...)\n"
-        "2. **Phân tích & Áp dụng từng bước vào tình huống mới**\n"
-        "3. **Tính toán / Kiểm chứng điều kiện** (dùng đúng kết quả Sandbox nếu có)\n"
-        "4. **Kết luận & Lưu ý ngoại lệ**\n"
-        "- Dừng ngay sau phần Kết luận (KHÔNG cần tự viết mục `---GỢI Ý TIẾP THEO---`)."
+        "Bạn là Chuyên gia Phân tích & Suy luận Tri thức AI. Hãy trình bày câu trả lời ĐÚNG MỘT LẦN theo đúng thứ tự 4 mục ngắn gọn sau (không lặp lại mục Kết luận 2 lần):\n"
+        + (
+            "### 1. Căn cứ từ tài liệu & Công thức áp dụng\n(gắn trích dẫn [1], [2]... nếu lấy từ tài liệu).\n"
+            if has_citations
+            else "### 1. Phương pháp & Công thức áp dụng\n(nêu ngắn gọn ở 1 dòng nếu tài liệu không chứa bài toán này, rồi ghi rõ công thức chuẩn).\n"
+        )
+        + "### 2. Phân tích & Tính toán từng bước\n- Viết công thức bằng ký hiệu phổ thông (`150.000.000 × (1 + 6,8%)^5 = 208.423.902,12 đồng`), tuyệt đối KHÔNG viết tên biến Python, KHÔNG tự nhẩm sai lũy thừa trung gian, và KHÔNG dùng cú pháp LaTeX (`\\boxed`, `\\%`, `\\times`, `\\(`, `\\[`).\n"
+        "### 3. Đánh giá rủi ro & Điều kiện thực tế\n- Giải thích chính xác bản chất nghiệp vụ (ví dụ với tiền gửi kỳ hạn: rút trước hạn vẫn bảo toàn tiền gốc nhưng mất phần lãi kép kỳ hạn dài do bị chuyển sang lãi suất không kỳ hạn thấp hoặc chịu phí tất toán nếu hợp đồng quy định).\n"
+        "### 4. Kết luận\n- Chốt gọn đáp số và khuyến nghị trong 2–3 câu; dừng ngay sau đó."
         f"{verify_directive}"
     )
 
     synth_user = (
-        f"Mục tiêu phân tích: {goal_text}\n"
+        f"Câu hỏi người dùng: {query}\n"
         f"{user_context_prompt}"
         f"{sandbox_block}"
     )

@@ -506,34 +506,40 @@ def _build_instant_followup_suggestions(
     """
     suggestions: List[str] = []
     q_folded = _fold_vn(query)
+    has_local_citations = any(c.get("source_type") == "document" for c in (citations or []))
 
-    # 1. Tìm các tiêu đề Điều / Chương / Bài / Mục (viết hoa chữ cái đầu hoặc đứng đầu dòng) trong chunks để gợi ý khám phá tiếp
-    for ch in (context_chunks or [])[:4]:
-        txt = str(ch.get("content") or "")
-        for m in re.finditer(
-            r"(?:^|\n)\s*(?:#{1,4}\s*)?((?:(?:Chương|Bài|Phần|Điều|Mục)\s+(?:[IVXLCDM]{1,5}|\d{1,3}))|(?:\d{1,2}\.\s+[^\n:]{4,48}))(?:\s*[:.-]\s*([^\n]{4,52}))?",
-            txt,
-            re.UNICODE,
-        ):
-            sec_label = m.group(1).strip()
-            raw_title = (m.group(2) or "").strip(" :.-")
-            # Tránh cắt cụt số thập phân kiểu 'GPA từ 3.60' hoặc '8.000.000': chỉ cắt ở dấu chấm câu có khoảng trắng theo sau
-            sec_title = re.split(r"\.\s+|\n", raw_title)[0].strip(" :.,;-")
-            if _fold_vn(sec_label) in q_folded:
-                continue
-            cand = (
-                f"{sec_label} ({sec_title}) quy định cụ thể những gì?"
-                if sec_title and len(sec_title) <= 44
-                else f"Nội dung chi tiết của {sec_label} gồm những gì?"
-            )
-            if cand not in suggestions:
-                suggestions.append(cand)
+    # 1. Chỉ trích xuất tiêu đề Chương/Bài/Điều/Mục khi thực sự có tài liệu địa phương liên quan được trích dẫn
+    if has_local_citations:
+        for ch in (context_chunks or [])[:4]:
+            txt = str(ch.get("content") or "")
+            for m in re.finditer(
+                r"(?:^|\n)\s*(?:#{1,4}\s*)?((?:(?:Chương|Bài|Phần|Điều|Mục)\s+(?:[IVXLCDM]{1,5}|\d{1,3}))|(?:\d{1,2}\.\s+[^\n:]{4,48}))(?:\s*[:.-]\s*([^\n]{4,52}))?",
+                txt,
+                re.UNICODE,
+            ):
+                sec_label = m.group(1).strip()
+                raw_title = (m.group(2) or "").strip(" :.-")
+                # Tránh cắt cụt số thập phân kiểu 'GPA từ 3.60' hoặc '8.000.000': chỉ cắt ở dấu chấm câu có khoảng trắng theo sau
+                sec_title = re.split(r"\.\s+|\n", raw_title)[0].strip(" :.,;-")
+                combined_sec = f"{sec_label} {sec_title}"
+                if (
+                    _fold_vn(sec_label) in q_folded
+                    or re.search(r"(?:FALSE|TRUE|hiển thị thông báo|trả về|nhập lại|email không)", combined_sec, re.IGNORECASE)
+                ):
+                    continue
+                cand = (
+                    f"{sec_label} ({sec_title}) quy định cụ thể những gì?"
+                    if sec_title and len(sec_title) <= 44
+                    else f"Nội dung chi tiết của {sec_label} gồm những gì?"
+                )
+                if cand not in suggestions:
+                    suggestions.append(cand)
+                if len(suggestions) >= 2:
+                    break
             if len(suggestions) >= 2:
                 break
-        if len(suggestions) >= 2:
-            break
 
-    doc_name = citations[0].get("document_name") if citations else None
+    doc_name = citations[0].get("document_name") if has_local_citations else None
     defaults = [
         f"Có điều kiện ngoại lệ hoặc lưu ý quan trọng nào khác trong {doc_name} không?" if doc_name else "Có trường hợp ngoại lệ hay lưu ý thực tế nào cần chú ý không?",
         "Hãy tóm tắt các ý chính liên quan thành bảng hoặc gạch đầu dòng ngắn gọn",
@@ -650,7 +656,7 @@ def _build_dynamic_system_prompt(
 
     sections.append(
         "ĐỊNH DẠNG:\n"
-        "- Sử dụng Markdown sạch và KaTeX (`$...$` / `$$...$$`) cho công thức toán học nếu cần; hiểu nối tiếp mạch hội thoại trước đó.\n"
+        "- Sử dụng Markdown sạch (tiêu đề `###`, in đậm, gạch đầu dòng). Viết công thức toán bằng chữ/ký hiệu phổ thông sạch sẽ như `150.000.000 × (1 + 0,068)^5 = 208.423.902,12 đồng`; TUYỆT ĐỐI KHÔNG dùng cú pháp LaTeX (`\\boxed{...}`, `\\(...\\)`, `\\[...\\]`) và KHÔNG chép lại tên biến Python.\n"
         "- Dừng ngay sau khi trả lời xong đầy đủ câu hỏi chính (KHÔNG cần tự viết mục `---GỢI Ý TIẾP THEO---`)."
     )
     return "\n\n".join(sections)
@@ -660,13 +666,28 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
     """
     Hậu kiểm câu trả lời RAG (<0.2ms):
     1. Chuẩn hóa `[Tài liệu 1]`, `[Nguồn 1]`, `[Nguồn web 1]` về `[1]`.
-    2. Chuyển `[1]: Nội dung` đầu dòng (do model nhỏ 3B dùng nhầm làm số thứ tự gạch đầu dòng) về `- Nội dung [1]`.
-    3. Loại bỏ trích dẫn giả `[n]` nằm ngoài phạm vi nguồn thực tế (`n > citations_count` hoặc `n <= 0`).
-    4. Chuẩn hóa biến thể `---\n-GỢI Ý TIẾP THEO---` và xóa nhãn mẫu `[Gợi ý 1]`, `Gợi ý 1:`.
+    2. Loại bỏ cú pháp LaTeX thô (`\\boxed{...}`, `\\( ... \\)`, `\\[ ... \\]`) và tiêu đề prompt nội bộ nếu model 3B chép nhầm.
+    3. Chuyển `[1]: Nội dung` đầu dòng về `- Nội dung [1]`.
+    4. Loại bỏ trích dẫn giả `[n]` nằm ngoài phạm vi nguồn thực tế (`n > citations_count` hoặc `n <= 0`).
+    5. Chuẩn hóa nhãn `---GỢI Ý TIẾP THEO---`.
     """
     if not answer:
         return ""
     text = answer
+
+    # 0. Gỡ tiêu đề nội bộ nếu model nhỏ lỡ chép từ prompt và làm sạch LaTeX thô
+    text = re.sub(
+        r"(?im)^(?:#{1,4}\s*)?(?:KẾT\s*QUẢ\s*ĐÃ\s*KIỂM\s*CHỨNG\s*BẰNG\s*PYTHON\s*SANDBOX[^:\n]*|\[DỮ\s*KIỆN\s*TOÁN\s*HỌC\s*ĐÃ\s*TÍNH\s*SẴN[^\]]*\])\s*:?\s*\n*",
+        "",
+        text,
+    )
+    text = re.sub(r"\\boxed\{([^{}]+)\}", r"**\1**", text)
+    text = re.sub(r"\\text\{([^{}]+)\}", r"\1", text)
+    text = re.sub(r"\\(?:left|right)\b", "", text)
+    text = text.replace("\\times", "×").replace("\\cdot", "·").replace("\\%", "%")
+    text = text.replace("\\(", "").replace("\\)", "").replace("\\[", "").replace("\\]", "")
+    text = re.sub(r"\^\{([^}]+)\}", r"^\1", text)
+    text = re.sub(r"\(\s*\*\*([^*]+)\*\*\s*\)", r"**\1**", text)
 
     # 1. Chuẩn hóa [Tài liệu 1] / [Nguồn 1] / [Nguồn web 1] / Tài liệu 1 -> [1]
     text = re.sub(

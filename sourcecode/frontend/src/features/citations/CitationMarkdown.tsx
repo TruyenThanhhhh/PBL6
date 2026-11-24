@@ -4,9 +4,24 @@ import remarkGfm from "remark-gfm"
 import { Check, Copy } from "lucide-react"
 import { useAppStore } from "@/store/app-store"
 
+function cleanMathDisplay(text: string): string {
+  return text
+    .replace(/\\boxed\{([^{}]+)\}/g, "**$1**")
+    .replace(/\\text\{([^{}]+)\}/g, "$1")
+    .replace(/\\(?:left|right)\b/g, "")
+    .replace(/\\times/g, "×")
+    .replace(/\\cdot/g, "·")
+    .replace(/\\%/g, "%")
+    .replace(/\\\((.*?)\\\)/gs, (_m, inner: string) => `\`${inner.trim()}\``)
+    .replace(/\\\[(.*?)\\\]/gs, (_m, inner: string) => `\n\n> \`${inner.trim()}\`\n\n`)
+    .replace(/\^\{([^}]+)\}/g, "^$1")
+}
+
 function withCitationChips(text: string) {
+  // Làm sạch ký hiệu LaTeX thô trước khi chuẩn hóa chip trích dẫn
+  const cleaned = cleanMathDisplay(text)
   // Hỗ trợ [1], [2], [Tài liệu 1], [Tài liệu 2], [Nguồn web 1], [Web 1]
-  return text.replace(/\[(?:Tài liệu |Nguồn web |Web )?(\d+)\]/gi, (_m, n: string) => `[[cite:${n}]]`)
+  return cleaned.replace(/\[(?:Tài liệu |Nguồn web |Web )?(\d+)\]/gi, (_m, n: string) => `[[cite:${n}]]`)
 }
 
 function CodeBlockWithCopy({
