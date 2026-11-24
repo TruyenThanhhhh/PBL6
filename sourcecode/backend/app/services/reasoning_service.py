@@ -92,25 +92,59 @@ def _parse_vn_amount(num_str: str, unit_str: Optional[str]) -> float:
     return val
 
 
+def _detect_reasoning_domain(
+    query: str,
+    initial_chunks: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[str, str]:
+    """Nhận diện lĩnh vực suy luận (<0.2ms) để điều phối công cụ truy xuất, Sandbox và cấu trúc lập luận phù hợp."""
+    q_low = (query or "").lower()
+    ctx_sample = " ".join(str(c.get("content") or "")[:300] for c in (initial_chunks or [])[:2]).lower()
+    combined = f"{q_low} {ctx_sample}"
+
+    if any(k in q_low for k in ("nón cụt", "non cut", "hình trụ", "hinh tru", "hình nón", "hinh non", "hình cầu", "parabol", "phương trình", "phuong trinh", "căn thức", "can thuc", "gtln", "gtnn", "tiếp xúc", "tiep xuc", "tam giác", "đường tròn", "số mol", "nồng độ", "vận tốc", "gia tốc", "xác suất")):
+        return "math_science", "Toán học & Khoa học"
+
+    if any(k in q_low for k in ("lãi suất", "lai suat", "lãi kép", "lai kep", "doanh thu", "chi phí", "chi phi", "lợi nhuận", "loi nhuan", "roi", "hòa vốn", "hoa von", "ngân sách", "ngan sach", "đầu tư", "dau tu", "thuế", "thue", "kpi", "tiền lương", "khấu trừ")):
+        return "finance_biz", "Tài chính & Kinh doanh"
+
+    if any(k in q_low for k in ("hợp đồng", "hop dong", "điều khoản", "dieu khoan", "quy định", "quy dinh", "quy chế", "quy che", "vi phạm", "vi pham", "chế tài", "che tai", "hợp lệ", "hop le", "luật", "nghị định", "ngoại lệ", "ngoai le", "nghĩa vụ", "quyền lợi")):
+        return "legal_policy", "Pháp lý & Quy chế"
+
+    if any(k in q_low for k in ("api", "sql", "database", "cơ sở dữ liệu", "rag", "llm", "vector", "bm25", "server", "docker", "python", "react", "bug", "lỗi hệ thống", "chậm", "treo", "nghẽn", "bottleneck", "latency", "kiến trúc", "kien truc", "hiệu năng", "hieu nang", "bảo mật", "lỗ hổng", "thuật toán", "cache")):
+        return "tech_debug", "Kỹ thuật & Kiến trúc hệ thống"
+
+    if any(k in q_low for k in ("phản biện", "phan bien", "mâu thuẫn", "mau thuan", "sai sót", "sai sot", "nhầm lẫn", "nham lan", "thiếu sót", "thieu sot", "kiểm chứng logic", "lập luận", "lap luan")):
+        return "academic_critique", "Phản biện & Kiểm chứng"
+
+    if any(k in q_low for k in ("chiến lược", "chien luoc", "phương án", "phuong an", "nên chọn", "nen chon", "tối ưu", "toi uu", "ưu nhược điểm", "uu nhuoc diem", "so sánh", "so sanh", "lộ trình", "lo trinh", "swot", "kế hoạch", "ke hoach")):
+        return "decision_strategy", "Chiến lược & Ra quyết định"
+
+    if any(k in combined for k in ("công thức", "thể tích", "diện tích", "chứng minh", "nghiệm")):
+        return "math_science", "Toán học & Khoa học"
+
+    return "general", "Phân tích đa chiều"
+
+
 def _fast_local_reasoning_planner(
     query: str,
     initial_chunks: List[Dict[str, Any]],
     max_sub_queries: int = 2,
 ) -> Dict[str, Any]:
     """
-    Bộ lập kế hoạch suy luận & trích xuất toán học tức thì (<1ms, 0 tốn LLM call):
-    1. Tách các mệnh đề câu hỏi ghép ('và', 'đồng thời', 'so sánh A với B', 'nếu... thì...') thành sub_queries.
-    2. Nhận diện và trích xuất tự động công thức Toán tài chính / Lãi kép / Lãi đơn / Tỷ lệ % / Phạt hợp đồng
-       từ câu hỏi + tài liệu để nạp thẳng vào Python AST Sandbox.
+    Bộ lập kế hoạch suy luận & trích xuất công thức đa lĩnh vực tức thì (<1ms, 0 tốn LLM call):
+    1. Nhận diện lĩnh vực (Toán/Khoa học, Tài chính/Kinh doanh, Pháp lý/Quy chế, Kỹ thuật/Hệ thống, Chiến lược, Phản biện).
+    2. Tách các mệnh đề câu hỏi ghép thành sub_queries truy xuất đa nhánh đúng trọng tâm lĩnh vực.
+    3. Trích xuất tự động biểu thức Toán hình học/đại số/tài chính/kinh doanh (lãi kép, ROI, hòa vốn...) nạp Python Sandbox.
     """
     q_clean = (query or "").strip()
     q_low = q_clean.lower()
+    domain, domain_label = _detect_reasoning_domain(query, initial_chunks)
 
-    # 1. Phân tách sub_queries đa nhánh
+    # 1. Phân tách sub_queries đa nhánh theo từng lĩnh vực
     sub_queries: List[str] = []
     parts = re.split(
-        r"\b(?:và\s+đánh\s+giá|và\s+so\s+sánh|và\s+đối\s+chiếu|đồng\s+thời|bên\s+cạnh\s+đó|"
-        r"va\s+danh\s+gia|va\s+so\s+sanh|va\s+doi\s+chieu|dong\s+thoi)\b",
+        r"\b(?:và\s+đánh\s+giá|và\s+so\s+sánh|và\s+đối\s+chiếu|và\s+đề\s+xuất|đồng\s+thời|bên\s+cạnh\s+đó|"
+        r"va\s+danh\s+gia|va\s+so\s+sanh|va\s+doi\s+chieu|va\s+de\s+xuat|dong\s+thoi)\b",
         q_clean,
         flags=re.IGNORECASE | re.UNICODE,
     )
@@ -119,8 +153,16 @@ def _fast_local_reasoning_planner(
             p_str = p.strip(" ,;?.!")
             if len(p_str) >= 10 and p_str.lower() != q_low:
                 sub_queries.append(p_str)
-    if initial_chunks and any(k in q_low for k in ("vi phạm", "vi pham", "bị phạt", "bi phat", "rủi ro", "rui ro", "hợp lệ", "hop le", "đủ điều kiện", "du dieu kien")):
-        sub_queries.append("điều kiện ngoại lệ mức phạt chế tài quy định")
+
+    if initial_chunks:
+        if domain == "legal_policy" or any(k in q_low for k in ("vi phạm", "vi pham", "bị phạt", "bi phat", "rủi ro", "rui ro", "hợp lệ", "hop le", "đủ điều kiện", "du dieu kien")):
+            sub_queries.append("điều kiện ngoại lệ mức phạt chế tài quy định")
+        elif domain == "tech_debug":
+            sub_queries.append("kiến trúc giới hạn cấu hình thông số hiệu năng bảo mật")
+        elif domain == "decision_strategy":
+            sub_queries.append("ưu điểm nhược điểm chi phí hiệu quả yêu cầu")
+        elif domain == "academic_critique":
+            sub_queries.append("trường hợp đặc biệt điều kiện lưu ý ngoại lệ")
 
     sub_queries = sub_queries[:max_sub_queries]
 
@@ -256,12 +298,40 @@ def _fast_local_reasoning_planner(
                         "V_cau = round((4 / 3) * pi * (R_cau ** 3), 4)",
                     ])
 
+        # Kinh doanh / ROI / Điểm hòa vốn tức thì cho lĩnh vực finance_biz
+        if not expressions and domain == "finance_biz":
+            rev_m = re.search(r"(?:doanh\s+thu|thu\s+về)\s*(?:đạt|là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)\s*(tỷ|ty|tỉ|ti|triệu|trieu|tr|nghìn|nghin|ngàn|ngan)?", q_low)
+            cost_m = re.search(r"(?:chi\s+phí|vốn\s+(?:đầu\s+tư|bỏ\s+ra))\s*(?:đầu\s+tư\s+|bỏ\s+ra\s+)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)\s*(tỷ|ty|tỉ|ti|triệu|trieu|tr|nghìn|nghin|ngàn|ngan)?", q_low)
+            if rev_m and cost_m:
+                rev_val = _parse_vn_amount(rev_m.group(1), rev_m.group(2))
+                cost_val = _parse_vn_amount(cost_m.group(1), cost_m.group(2))
+                if cost_val > 0:
+                    variables = {"doanh_thu": rev_val, "chi_phi": cost_val}
+                    expressions = [
+                        "loi_nhuan = round(doanh_thu - chi_phi, 2)",
+                        "roi_pct = round((loi_nhuan / chi_phi) * 100, 2)",
+                    ]
+
+    _DOMAIN_GOALS = {
+        "math_science": "Phân tích dữ kiện, áp dụng công thức chuẩn xác & kiểm chứng định lượng",
+        "finance_biz": "Phân tích chỉ số tài chính, tính toán hiệu quả & đánh giá rủi ro",
+        "legal_policy": "Đối chiếu điều khoản, rà soát điều kiện ngoại lệ & rủi ro tuân thủ",
+        "tech_debug": "Phân tích nguyên nhân gốc rễ, đánh đổi kiến trúc & phương án tối ưu",
+        "decision_strategy": "Đánh giá đa tiêu chí, so sánh phương án & đề xuất lộ trình tối ưu",
+        "academic_critique": "Kiểm chứng tính nhất quán, phát hiện mâu thuẫn & phản biện chuyên sâu",
+        "general": "Phân tích đa chiều, đối chiếu chứng cứ & tổng hợp kết luận có căn cứ",
+    }
     goal = (
-        "Áp dụng công thức & kiểm chứng số liệu từ tài liệu qua Python Sandbox"
-        if expressions
-        else "Phân tích đa chiều, đối chiếu điều khoản & điều kiện ngoại lệ trong tài liệu"
+        f"[{domain_label}] "
+        + (
+            "Áp dụng công thức & kiểm chứng số liệu từ tài liệu qua Python Sandbox"
+            if expressions
+            else _DOMAIN_GOALS.get(domain, _DOMAIN_GOALS["general"])
+        )
     )
     return {
+        "domain": domain,
+        "domain_label": domain_label,
         "goal": goal,
         "sub_queries": sub_queries,
         "cross_check_focus": None,
@@ -506,8 +576,10 @@ async def stream_autonomous_reasoning(
     if is_disconnected and await is_disconnected():
         return
 
+    domain = str(fast_plan.get("domain") or "general")
+    domain_label = str(fast_plan.get("domain_label") or "Phân tích đa chiều")
     goal_text = str((plan or {}).get("goal") or "Phân tích và suy luận từ ngữ cảnh tài liệu").strip()
-    step1 = _emit_step(1, "Phân rã bài toán", goal_text)
+    step1 = _emit_step(1, f"Phân rã bài toán · {domain_label}", goal_text)
     yield f"data: {json.dumps({'reasoning_step': step1}, ensure_ascii=False)}\n\n"
 
     # Bước 2: Multi-hop RAG + Cross-Check
@@ -615,7 +687,9 @@ async def stream_autonomous_reasoning(
         "S_cau": "Diện tích mặt cầu",
         "V_cau": "Thể tích khối cầu",
         "chenh_lech_V": "Độ chênh lệch thể tích (cm³)",
-        "chenh_lech_phan_tram": "Tỷ lệ chênh lệch thể tích (%)",
+        "loi_nhuan": "Lợi nhuận ròng",
+        "roi_pct": "Tỷ suất lợi nhuận ROI (%)",
+        "ket_qua": "Kết quả tính toán",
     }
     sandbox_block = ""
     if sandbox_res and sandbox_res.get("ok"):
@@ -647,25 +721,56 @@ async def stream_autonomous_reasoning(
     )
 
     has_citations = bool(citations)
-    is_finance_risk_q = bool(
-        re.search(r"\b(?:lãi|lai|tiền|tien|hợp\s+đồng|hop\s+dong|phạt|phat|rủi\s+ro|rui\s+ro|vay|gửi|gui)\b", query or "", re.IGNORECASE)
-    )
-    sec3_block = (
-        "### 3. Đánh giá rủi ro & Điều kiện thực tế\n- Giải thích chính xác bản chất nghiệp vụ (ví dụ với tiền gửi kỳ hạn: rút trước hạn vẫn bảo toàn tiền gốc nhưng mất phần lãi kép kỳ hạn dài do bị chuyển sang lãi suất không kỳ hạn thấp hoặc chịu phí tất toán nếu hợp đồng quy định).\n"
-        if is_finance_risk_q
-        else "### 3. Điều kiện áp dụng & Lưu ý phương pháp\n- Nêu ngắn gọn điều kiện xác định, giả thiết hoặc điểm dễ nhầm lẫn khi giải dạng bài trên.\n"
-    )
+    src_hint = "(gắn trích dẫn [1], [2]... tương ứng với nguồn trong tài liệu)." if has_citations else "(nêu ngắn gọn nếu tài liệu chưa có, rồi trình bày căn cứ chuẩn xác)."
+    domain_templates = {
+        "math_science": (
+            f"### 1. Căn cứ & Công thức áp dụng\n{src_hint}\n",
+            "### 2. Phân tích & Giải chi tiết từng bước\n- Trình bày công thức bằng ký hiệu phổ thông (`(π × 24 / 3) × (15^2 + 15×10 + 10^2) ≈ 11.938,05 cm^3`), KHÔNG viết tên biến gạch dưới kiểu Python và KHÔNG dùng cú pháp LaTeX (`\\frac`, `\\sqrt`, `\\pi`, `\\boxed`).\n",
+            "### 3. Điều kiện áp dụng & Lưu ý sai sót\n- Nêu ngắn gọn điều kiện xác định, giả thiết hoặc điểm dễ nhầm lẫn.\n",
+            "### 4. Kết luận\n- Chốt đáp số và nhận xét trong 2–3 câu; dừng ngay sau đó.",
+        ),
+        "finance_biz": (
+            f"### 1. Dữ kiện & Chỉ số nền tảng\n{src_hint}\n",
+            "### 2. Tính toán & Phân tích hiệu quả tài chính\n- Nêu rõ từng con số bằng định dạng dễ đọc (`150.000.000`, `9,95%`), KHÔNG tự nhẩm sai và KHÔNG viết tên biến Python.\n",
+            "### 3. Đánh giá rủi ro & Biên an toàn\n- Phân tích bản chất nghiệp vụ (phí tất toán, chi phí cơ hội, biến động thị trường hoặc điều khoản phạt).\n",
+            "### 4. Khuyến nghị quyết định\n- Đề xuất phương án tối ưu kèm lý do trong 2–3 câu.",
+        ),
+        "legal_policy": (
+            f"### 1. Căn cứ điều khoản & Quy định liên quan\n{src_hint}\n",
+            "### 2. Đối chiếu tình huống, Điều kiện áp dụng & Ngoại lệ\n- Tách từng điều kiện/ngoại lệ bằng gạch đầu dòng rõ ràng, chỉ rõ điều kiện nào thỏa mãn hoặc bị vi phạm.\n",
+            "### 3. Rủi ro pháp lý & Điểm bất lợi cần lưu ý\n- Chỉ ra chế tài, lỗ hổng nghĩa vụ hoặc trường hợp dễ tranh chấp.\n",
+            "### 4. Kết luận tuân thủ & Hướng xử lý\n- Khẳng định mức độ hợp lệ và đề xuất hành động cụ thể.",
+        ),
+        "tech_debug": (
+            f"### 1. Bối cảnh kỹ thuật & Giả thuyết\n{src_hint}\n",
+            "### 2. Phân tích nguyên nhân gốc rễ / Đánh đổi kiến trúc (Trade-offs)\n- So sánh hoặc truy vết từng lớp (hiệu năng, độ trễ, RAM/CPU, khả năng mở rộng, bảo mật) bằng gạch đầu dòng súc tích.\n",
+            "### 3. Rủi ro vận hành & Điểm nghẽn tiềm ẩn\n- Nêu giới hạn phần cứng, xung đột hoặc edge-case cần tránh.\n",
+            "### 4. Giải pháp khắc phục & Kiến nghị tối ưu\n- Đưa ra bước hành động ưu tiên rõ ràng.",
+        ),
+        "decision_strategy": (
+            f"### 1. Tiêu chí đánh giá & Bối cảnh\n{src_hint}\n",
+            "### 2. Phân tích & So sánh đa phương án\n- Đối chiếu ưu điểm, nhược điểm và tác động ngắn/dài hạn (dùng bảng hoặc gạch đầu dòng gọn).\n",
+            "### 3. Rủi ro & Điều kiện tiên quyết\n- Nêu các ràng buộc bắt buộc phải có để phương án khả thi.\n",
+            "### 4. Lựa chọn tối ưu & Lộ trình hành động\n- Chốt phương án đề xuất kèm 2–3 bước triển khai tiếp theo.",
+        ),
+        "academic_critique": (
+            f"### 1. Nội dung nguồn & Luận điểm chính\n{src_hint}\n",
+            "### 2. Kiểm chứng logic & Phát hiện điểm mâu thuẫn / thiếu sót\n- Đối chiếu từng luận điểm với chuẩn kiến thức hoặc giữa các mục trong tài liệu để chỉ rõ chỗ đúng, chỗ sai hoặc chưa chặt chẽ.\n",
+            "### 3. Phân tích phản biện & Cách điều chỉnh chuẩn xác\n- Nêu lập luận sửa lại (nếu phát hiện lỗi) kèm căn cứ giải thích.\n",
+            "### 4. Tổng kết đánh giá\n- Chốt ngắn gọn độ tin cậy và kết luận sau cùng.",
+        ),
+        "general": (
+            f"### 1. Cơ sở thông tin & Bối cảnh\n{src_hint}\n",
+            "### 2. Phân tích đa chiều từng khía cạnh\n- Chia ý rõ ràng bằng gạch đầu dòng, lập luận chặt chẽ giữa nguyên nhân — kết quả.\n",
+            "### 3. Lưu ý quan trọng & Giới hạn thực tế\n- Nêu các điều kiện ngoại lệ hoặc khía cạnh cần cân nhắc thêm.\n",
+            "### 4. Kết luận & Gợi ý bước tiếp theo\n- Chốt ngắn gọn nội dung cốt lõi.",
+        ),
+    }
+    s1, s2, s3, s4 = domain_templates.get(domain, domain_templates["general"])
     synth_system = (
-        "Bạn là Chuyên gia Phân tích & Suy luận Tri thức AI. Hãy trình bày câu trả lời ĐÚNG MỘT LẦN theo đúng thứ tự 4 mục ngắn gọn sau (không lặp lại mục Kết luận 2 lần):\n"
-        + (
-            "### 1. Căn cứ từ tài liệu & Công thức áp dụng\n(gắn trích dẫn [1], [2]... tương ứng với nguồn trong tài liệu).\n"
-            if has_citations
-            else "### 1. Phương pháp & Công thức áp dụng\n(nêu ngắn gọn ở 1 dòng nếu tài liệu không chứa bài toán này, rồi ghi rõ công thức chuẩn).\n"
-        )
-        + "### 2. Phân tích & Tính toán từng bước\n- Viết công thức bằng ký hiệu phổ thông (`(π × 24 / 3) × (15^2 + 15×10 + 10^2) ≈ 11.938,05 cm^3`), tuyệt đối KHÔNG viết tên biến Python, KHÔNG tự nhẩm sai lũy thừa/căn thức trung gian, và KHÔNG dùng cú pháp LaTeX (`\\frac`, `\\sqrt`, `\\pi`, `\\approx`, `\\boxed`, `\\%`, `\\times`, `\\(`, `\\[`).\n"
-        + sec3_block
-        + "### 4. Kết luận\n- Chốt gọn đáp số và nhận xét trong 2–3 câu; dừng ngay sau đó."
-        f"{verify_directive}"
+        "Bạn là Chuyên gia Phân tích & Suy luận Tri thức AI đa lĩnh vực. "
+        "Hãy trình bày câu trả lời ĐÚNG MỘT LẦN theo đúng 4 mục mạch lạc sau (KHÔNG lặp lại mục Kết luận 2 lần, KHÔNG chép câu hỏi hay dòng nhãn hệ thống):\n"
+        f"{s1}{s2}{s3}{s4}{verify_directive}"
     )
 
     synth_user = (

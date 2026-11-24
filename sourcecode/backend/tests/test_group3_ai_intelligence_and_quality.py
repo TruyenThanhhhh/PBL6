@@ -466,6 +466,40 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
             self.assertTrue(top_hits)
             self.assertEqual(top_hits[0]["page_number"], 70)
 
+        # 7. Suy luận đa lĩnh vực (Kỹ thuật/Debug, Pháp lý, Tài chính ROI, Phản biện, Chiến lược)
+        tech_plan = _fast_local_reasoning_planner(
+            "Vì sao API RAG bị chậm khi chạy BGE-M3 trên máy 8GB RAM và cách tối ưu kiến trúc?",
+            [{"content": "RAG pipeline"}],
+        )
+        self.assertEqual(tech_plan["domain"], "tech_debug")
+        self.assertTrue(any("kiến trúc" in sq for sq in tech_plan["sub_queries"]))
+
+        legal_plan = _fast_local_reasoning_planner(
+            "Hợp đồng này có vi phạm quy định bồi thường hay điều khoản bất lợi nào không?",
+            [{"content": "Điều 5"}],
+        )
+        self.assertEqual(legal_plan["domain"], "legal_policy")
+        self.assertTrue(any("ngoại lệ" in sq for sq in legal_plan["sub_queries"]))
+
+        roi_plan = _fast_local_reasoning_planner(
+            "Tính tỷ suất lợi nhuận ROI khi doanh thu đạt 250 triệu và chi phí bỏ ra là 150 triệu?",
+            [],
+        )
+        self.assertEqual(roi_plan["domain"], "finance_biz")
+        roi_sb = evaluate_python_sandbox(roi_plan["variables"], roi_plan["expressions"])
+        self.assertTrue(roi_sb["ok"])
+        self.assertAlmostEqual(roi_sb["final_result"], 66.67, places=2)
+
+        critique_plan = _fast_local_reasoning_planner(
+            "Hãy phản biện và kiểm tra xem mục 17 có mâu thuẫn hay nhầm lẫn gì không?",
+            [],
+        )
+        self.assertEqual(critique_plan["domain"], "academic_critique")
+
+        self.assertEqual(classify_chat_intent("Vì sao hệ thống tìm kiếm bị chậm và tối ưu hiệu năng ra sao?").kind, "deep_reasoning")
+        self.assertEqual(classify_chat_intent("Phát hiện mâu thuẫn và kiểm tra tính hợp lệ của tài liệu trên").kind, "deep_reasoning")
+        self.assertEqual(classify_chat_intent("Hãy phản biện lập luận ở mục 15 và 17").kind, "deep_reasoning")
+
 
 if __name__ == "__main__":
     unittest.main()
