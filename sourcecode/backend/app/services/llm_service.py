@@ -882,7 +882,7 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         return ""
     text = answer
 
-    # 0. Gỡ tiêu đề nội bộ, câu lặp lại câu hỏi và làm sạch LaTeX thô
+    # 0. Gỡ tiêu đề nội bộ, câu lặp lại câu hỏi, dòng biến Sandbox/tên file bị rò và làm sạch LaTeX thô
     text = re.sub(
         r'^(?:Câu\s+hỏi\s+của\s+bạn\s+là|Bạn\s+đã\s+hỏi|Về\s+câu\s+hỏi)\s*[:：]?\s*["“]?[^\n]{4,260}?["”]?\s*(?:\n+|$)',
         "",
@@ -890,10 +890,29 @@ def _sanitize_rag_output(answer: str, citations_count: int) -> str:
         flags=re.IGNORECASE | re.UNICODE,
     )
     text = re.sub(
-        r"(?im)^(?:#{1,4}\s*)?(?:KẾT\s*QUẢ\s*ĐÃ\s*KIỂM\s*CHỨNG\s*BẰNG\s*PYTHON\s*SANDBOX[^:\n]*|\[DỮ\s*KIỆN\s*TOÁN\s*HỌC\s*ĐÃ\s*TÍNH\s*SẴN[^\]]*\])\s*:?\s*\n*",
+        r"(?im)^(?:#{1,4}\s*)?(?:KẾT\s*QUẢ\s*ĐÃ\s*KIỂM\s*CHỨNG\s*BẰNG\s*PYTHON\s*SANDBOX[^:\n]*|\[(?:DỮ\s*KIỆN\s*TOÁN\s*HỌC|SỐ\s*LIỆU\s*ĐỐI\s*CHIẾU)[^\]]*\]|Các\s+giá\s+trị\s+chính\s+xác\s+đã\s+tính\s*:[^\n]*|Đáp\s+số\s+cuối\s+cùng\s+chính\s+xác\s+tuyệt\s+đối\s*:[^\n]*|Kết\s+quả\s+chính\s+cuối\s+cùng\s*:[^\n]*)\s*\n*",
         "",
         text,
     )
+    text = re.sub(
+        r"(?im)^\s*(?:\[?\d{1,2}\]?\s*[._:-]*\s*)?_?[^\n]{2,90}\.(?:pdf|docx?|xlsx?|txt)\s*\(\s*Trang\s*\d+[^\)]*\)\s*(?:[-–]\s*\[?\d{1,2}\]?)?\s*(?:\n|$)",
+        "",
+        text,
+    )
+    for py_var, clean_lbl in (
+        ("duong_sinh_l", "l"),
+        ("V_non_cut", "V(nón cụt)"),
+        ("V_non-cut", "V(nón cụt)"),
+        ("S_xq_non_cut", "Sxq(nón cụt)"),
+        ("S_xq_non-cut", "Sxq(nón cụt)"),
+        ("S_tp_non_cut", "Stp(nón cụt)"),
+        ("S_tp_non-cut", "Stp(nón cụt)"),
+        ("V_tru", "V(hình trụ)"),
+        ("S_tp_tru", "Stp(hình trụ)"),
+        ("chenh_lech_V", "ΔV"),
+        ("chenh_lech_phan_tram", "Tỷ lệ chênh lệch"),
+    ):
+        text = re.sub(rf"\b{re.escape(py_var)}\b", clean_lbl, text)
     text = _strip_raw_latex_math(text)
 
     # 1. Chuẩn hóa [Tài liệu [1]: ten_file (Trang X)] / [tài liệu [2]]: ... / [Tài liệu 1] / [Nguồn web 1] -> [1]
@@ -1005,7 +1024,8 @@ def _prepare_rag_prompts_and_citations(
         if page_label:
             meta_parts.append(page_label)
         page_suffix = f" ({' · '.join(meta_parts)})" if meta_parts else ""
-        header = f"\n--- [Tài liệu {ref_id}]: {chunk['document_name']}{page_suffix} ---\n"
+        prompt_doc_name = re.sub(r"^\[[^\]]+\]_?", "", str(chunk.get("document_name") or "")).strip() or str(chunk.get("document_name") or "")
+        header = f"\n--- [Tài liệu {ref_id}]: {prompt_doc_name}{page_suffix} ---\n"
         raw_body = decode_symbol_pua_text(str(chunk.get("content", "")))
         doc_key = str(chunk.get("document_id") or "")
         deduped_body = (

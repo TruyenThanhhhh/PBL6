@@ -595,20 +595,49 @@ async def stream_autonomous_reasoning(
     yield f"data: {json.dumps(reasoning_meta, ensure_ascii=False)}\n\n"
 
     # Bước 4: Tổng hợp suy luận + Self-Verify
+    _SANDBOX_HUMAN_LABELS = {
+        "von": "Vốn gốc",
+        "lai_suat": "Lãi suất/kỳ",
+        "so_ky": "Số kỳ",
+        "he_so_tang": "Hệ số tăng trưởng",
+        "tong_nhan": "Tổng tiền nhận được",
+        "tien_lai": "Tiền lãi",
+        "tong_cong": "Tổng cộng",
+        "duong_sinh_l": "Đường sinh hình nón cụt (l = √((R - r)^2 + h^2))",
+        "V_non_cut": "Thể tích hình nón cụt (cm³)",
+        "S_xq_non_cut": "Diện tích xung quanh hình nón cụt (π(R + r)l, cm²)",
+        "S_tp_non_cut": "Diện tích toàn phần hình nón cụt (Sxq + πR^2 + πr^2, cm²)",
+        "V_tru": "Thể tích hình trụ (πR^2h, cm³)",
+        "S_tp_tru": "Diện tích toàn phần hình trụ (2πR(h + R), cm²)",
+        "l_non": "Đường sinh hình nón",
+        "V_non": "Thể tích hình nón",
+        "S_tp_non": "Diện tích toàn phần hình nón",
+        "S_cau": "Diện tích mặt cầu",
+        "V_cau": "Thể tích khối cầu",
+        "chenh_lech_V": "Độ chênh lệch thể tích (cm³)",
+        "chenh_lech_phan_tram": "Tỷ lệ chênh lệch thể tích (%)",
+    }
     sandbox_block = ""
     if sandbox_res and sandbox_res.get("ok"):
         final_raw = sandbox_res.get("final_result")
         final_human = _format_human_number(final_raw)
-        step_pairs = [
-            f"{st['target'] or 'Bước'} = {_format_human_number(st['value'])}"
-            for st in sandbox_res.get("steps", [])
-        ]
+        step_lines = []
+        for st in sandbox_res.get("steps", []):
+            key = st.get("target") or "Bước"
+            label = _SANDBOX_HUMAN_LABELS.get(key, key)
+            val_fmt = _format_human_number(st["value"])
+            if key == "V_tru" and "R_tru" in variables and "h_tru" in variables:
+                r_fmt = _format_human_number(variables["R_tru"])
+                h_fmt = _format_human_number(variables["h_tru"])
+                step_lines.append(f"- {label}: {val_fmt} (với bán kính đáy R = {r_fmt}, chiều cao h = {h_fmt}; không chia đôi R)")
+            else:
+                step_lines.append(f"- {label}: {val_fmt}")
         raw_suffix = f" ({final_raw})" if str(final_raw) != final_human else ""
         sandbox_block = (
-            "\n\n[DỮ KIỆN TOÁN HỌC ĐÃ TÍNH SẴN BẰNG HỆ THỐNG]:\n"
-            f"- Các giá trị chính xác đã tính: {'; '.join(step_pairs)}\n"
-            f"- Đáp số cuối cùng chính xác tuyệt đối: {final_human}{raw_suffix}.\n"
-            "(Hãy dùng đúng các con số này trong bài giải; KHÔNG tự nhân nhẩm khác số liệu này, KHÔNG viết tên biến Python hay dòng nhãn trên)."
+            "\n\n[SỐ LIỆU ĐỐI CHIẾU ĐÃ TÍNH ĐÚNG]:\n"
+            + "\n".join(step_lines)
+            + f"\n- Kết quả chính cuối cùng: {final_human}{raw_suffix}.\n"
+            "(TUYỆT ĐỐI KHÔNG chép lại danh sách hay dòng tiêu đề trên vào câu trả lời; hãy lồng từng con số đúng vị trí tương ứng vào các bước giải sạch sẽ, không viết tên biến gạch dưới kiểu Python)."
         )
 
     verify_directive = (

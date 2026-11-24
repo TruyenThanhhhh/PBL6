@@ -396,6 +396,18 @@ class Group3AIIntelligenceAndQualityTestCase(unittest.TestCase):
         self.assertIn("√601", cleaned_math)
         self.assertIn("π ≈", cleaned_math)
 
+        leaked_sandbox = (
+            "Các giá trị chính xác đã tính: duong_sinh_l = 24,5153; V_non_cut = 11.938,05\n"
+            "[5] _Sổ tay tra cứu công thức toán 9.pdf (Trang 26) - [1]\n"
+            "Kết quả: V_non_cut = 11.938,05 cm^3 và V_tru = 10.857,34 cm^3."
+        )
+        cleaned_leaked = _sanitize_rag_output(leaked_sandbox, citations_count=5)
+        self.assertNotIn("Các giá trị chính xác đã tính", cleaned_leaked)
+        self.assertNotIn("_Sổ tay tra cứu", cleaned_leaked)
+        self.assertNotIn("duong_sinh_l", cleaned_leaked)
+        self.assertIn("V(nón cụt)", cleaned_leaked)
+        self.assertIn("V(hình trụ)", cleaned_leaked)
+
         geo_q = (
             "Dựa vào công thức Hình nón cụt và Hình trụ trong tài liệu, hãy tính thể tích và diện tích toàn phần "
             "của một cái xô hình nón cụt có bán kính hai đáy lần lượt là 15 cm và 10 cm, chiều cao 24 cm; "
