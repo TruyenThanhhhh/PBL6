@@ -407,7 +407,7 @@ def _fast_local_reasoning_planner(
                         "V_non = round((pi * (R_non ** 2) * h_non) / 3, 4)",
                         "S_tp_non = round(pi * R_non * (R_non + l_non), 4)",
                     ])
-            if "V_tru" in str(expressions) and "V_non" in str(expressions):
+            if "V_tru =" in str(expressions) and "V_non =" in str(expressions):
                 expressions.append("ty_le_V_tru_non = round(V_tru / V_non, 4)")
             elif has_sphere:
                 sph_r = re.search(r"bán\s+kính\s*(?:R\s*)?(?:là|bằng|=|:)?\s*(\d+(?:[.,]\d+)?)", q_low)

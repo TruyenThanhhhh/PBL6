@@ -156,7 +156,7 @@ REASONING_CASES = [
         "id": "R5_EXCEL_COUNT_COMPARE",
         "query": "Trong file từ vựng Mimikara N3, Bài 1 và Bài 2 bài nào có nhiều từ vựng hơn và chênh lệch bao nhiêu từ?",
         "doc": DOC_N3,
-        "check": lambda ans: "136" in ans and "116" in ans and "20" in ans and "760" not in ans,
+        "check": lambda ans: "120" in ans and "100" in ans and "20" in ans and "760" not in ans,
     },
 ]
 

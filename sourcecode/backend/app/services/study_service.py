@@ -345,8 +345,35 @@ def _get_document_context_items(
 
             from app.services.retrieval_service import (
                 detect_positional_intent,
+                detect_section_intent,
                 search_positional_chunks,
+                search_section_chunks,
             )
+
+            sec_intent = detect_section_intent(semantic_focus, None)
+            if sec_intent:
+                sec_type, sec_num = sec_intent
+                sec_chunks = search_section_chunks(
+                    workspace_id=workspace_id,
+                    sec_type=sec_type,
+                    sec_num=sec_num,
+                    max_chunks=max_chunks,
+                    document_id=document_id,
+                    document_ids=document_ids,
+                    query=semantic_focus,
+                )
+                for c in sec_chunks:
+                    ok = _append_chunk(
+                        str(c.get("content") or ""),
+                        c.get("document_id"),
+                        str(c.get("document_name") or "Tài liệu"),
+                        int(c.get("page_number") or 1),
+                        c.get("chunk_index"),
+                    )
+                    if not ok:
+                        break
+                if source_refs:
+                    return "\n\n".join(parts), source_refs
 
             pos_intent = detect_positional_intent(semantic_focus)
             if pos_intent:
@@ -1085,6 +1112,9 @@ def _extract_vocab_entries(source_refs: List[Dict[str, Any]]) -> List[Dict[str, 
 
             if not term_part or not meaning_part:
                 continue
+            # Loại trừ công thức toán học (f(x) ≥ 0, g(x) ≠ 0, dấu ngoặc nhọn hệ phương trình) để không nhận nhầm thành bảng từ vựng
+            if re.search(r"[{}≥≤≠√±⇔⇒∆Δπ=]|\b[fgh]\s*\(", f"{term_part} {meaning_part}"):
+                continue
             if not _has_balanced_delimiters(term_part) or not _has_balanced_delimiters(meaning_part):
                 continue
             if _NON_GLOSSARY_TERM_PREFIX_RE.search(term_part):
@@ -1194,6 +1224,28 @@ def _resolve_answer_index(raw_q: Dict[str, Any], options: List[str]) -> int:
 
     letter_map = {"A": 0, "B": 1, "C": 2, "D": 3}
 
+    # Ưu tiên đối chiếu chuỗi đáp án đúng tường minh (correctAnswer / answer) vì model nhỏ 3B-4B hay đếm lệch chỉ số 0-based
+    for key in ("correctAnswer", "correct_answer", "answer", "dap_an"):
+        ans_val = raw_q.get(key)
+        if ans_val is None or isinstance(ans_val, bool):
+            continue
+        ans_str = re.sub(r"^[A-Da-d][\.\)\:\-]\s*", "", str(ans_val).strip()).strip()
+        if not ans_str:
+            continue
+        upper = ans_str.upper()
+        if upper in letter_map and letter_map[upper] < len(options):
+            return letter_map[upper]
+        for idx, opt in enumerate(options):
+            if opt.strip().lower() == ans_str.lower():
+                return idx
+        if len(ans_str) >= 3:
+            matched_idxs = [
+                idx for idx, opt in enumerate(options)
+                if ans_str.lower() in opt.lower() or (len(opt.strip()) >= 3 and opt.strip().lower() in ans_str.lower())
+            ]
+            if len(matched_idxs) == 1:
+                return matched_idxs[0]
+
     for key in ("answerIndex", "answer_index", "correctIndex", "correct_index"):
         val = raw_q.get(key)
         if val is not None:
@@ -1208,24 +1260,6 @@ def _resolve_answer_index(raw_q: Dict[str, Any], options: List[str]) -> int:
                     return num
             except ValueError:
                 pass
-
-    for key in ("answer", "correctAnswer", "correct_answer", "dap_an"):
-        ans_val = raw_q.get(key)
-        if ans_val is None:
-            continue
-        ans_str = str(ans_val).strip()
-        if not ans_str:
-            continue
-        upper = ans_str.upper()
-        if upper in letter_map and letter_map[upper] < len(options):
-            return letter_map[upper]
-        for idx, opt in enumerate(options):
-            opt_clean = opt.strip()
-            if opt_clean.lower() == ans_str.lower():
-                return idx
-        for idx, opt in enumerate(options):
-            if ans_str.lower() in opt.lower() or opt.lower() in ans_str.lower():
-                return idx
 
     return 0
 
@@ -1324,6 +1358,14 @@ def _extract_and_normalize_llm_questions(
         if not prompt_raw:
             continue
         prompt_str = str(prompt_raw).strip()
+        # Gỡ thẻ nguồn nội bộ '[Nguồn 4]', '(Nguồn 6)' nếu LLM chép nhầm vào đề bài
+        prompt_str = re.sub(
+            r"(?:\s*(?:theo\s+định\s+nghĩa\s+)?(?:trong|ở|tại|theo)\s+)?(?:\[|\()\s*Nguồn\s*\d+\s*(?:\]|\))",
+            "",
+            prompt_str,
+            flags=re.IGNORECASE | re.UNICODE,
+        )
+        prompt_str = re.sub(r"\s{2,}", " ", prompt_str).replace(" ?", "?").strip()
         if len(prompt_str) < 8:
             continue
         prompt_key = prompt_str.lower()
@@ -1370,6 +1412,12 @@ def _extract_and_normalize_llm_questions(
                 continue
 
         ans_idx = _resolve_answer_index(q, options)
+        explanation = str(
+            q.get("explanation")
+            or q.get("giai_thich")
+            or q.get("reason")
+            or "Theo nội dung kiến thức trong tài liệu nguồn."
+        ).strip()
 
         if is_vocab_doc:
             # Với tài liệu bảng từ vựng, đảm bảo câu hỏi tiếng Việt và chứa từ/nghĩa thực trong tài liệu
@@ -1382,6 +1430,44 @@ def _extract_and_normalize_llm_questions(
             if not any(tok in combined_q for tok in vocab_known_tokens if len(tok) >= 2):
                 continue
 
+            # Kiểm chứng xác thực answerIndex dựa trên bảng vocab_entries thật (chống model 3B lệch chỉ số đáp án)
+            p_low = prompt_str.lower()
+            matched_ve = None
+            for ve in sorted(vocab_entries, key=lambda x: len(x.get("term") or ""), reverse=True):
+                t_low = (ve.get("term") or "").strip().lower()
+                r_low = (ve.get("reading") or "").strip().lower()
+                if (t_low and len(t_low) >= 1 and t_low in p_low) or (r_low and len(r_low) >= 2 and r_low in p_low):
+                    matched_ve = ve
+                    break
+            if matched_ve is not None:
+                m_low = (matched_ve.get("meaning") or "").strip().lower()
+                m_parts = [p.strip() for p in re.split(r"[,;/]", m_low) if len(p.strip()) >= 2]
+                verified_idx: Optional[int] = None
+                for o_i, opt in enumerate(options):
+                    o_low = opt.strip().lower()
+                    if m_low and (m_low == o_low or m_low in o_low or (len(o_low) >= 2 and o_low in m_low)):
+                        verified_idx = o_i
+                        break
+                    if any(mp == o_low or mp in o_low for mp in m_parts):
+                        verified_idx = o_i
+                        break
+                if verified_idx is not None:
+                    ans_idx = verified_idx
+                else:
+                    # Câu hỏi hỏi từ trong bảng nhưng KHÔNG có phương án nào khớp nghĩa thật -> loại bỏ để fallback sinh chuẩn
+                    continue
+        else:
+            # Với tài liệu văn xuôi/toán: nếu phần giải thích nhắc duy nhất 1 phương án và khác options[ans_idx], tự hiệu chỉnh
+            exp_low = explanation.lower()
+            cur_opt_low = options[ans_idx].strip().lower()
+            if cur_opt_low and cur_opt_low not in exp_low:
+                exp_hits = [
+                    o_i for o_i, opt in enumerate(options)
+                    if len(opt.strip()) >= 5 and opt.strip().lower() in exp_low
+                ]
+                if len(exp_hits) == 1:
+                    ans_idx = exp_hits[0]
+
         # Phân bổ vị trí đáp án đúng (A/B/C/D) tự nhiên thay vì dồn hết vào A (giữ nguyên câu đầu tiên cho tính tất định)
         global_idx = start_index + len(valid_questions)
         shift = (global_idx * 3) % len(options)
@@ -1391,12 +1477,6 @@ def _extract_and_normalize_llm_questions(
             ans_idx = options.index(correct_val)
 
         local_seen.add(prompt_key)
-        explanation = str(
-            q.get("explanation")
-            or q.get("giai_thich")
-            or q.get("reason")
-            or "Theo nội dung kiến thức trong tài liệu nguồn."
-        ).strip()
 
         item_q: Dict[str, Any] = {
             "id": f"ai-q-{global_idx + 1}",
@@ -2496,7 +2576,7 @@ async def generate_ai_quiz(
         else:
             batch_size = 3 if llm_total <= 6 else 4
         n_batches = min(5, max(1, (llm_total + batch_size - 1) // batch_size))
-        per_batch_chars = 1200 if is_eco else 1950
+        per_batch_chars = 1200 if is_eco else 1550
         remaining_ask = llm_total
         for b_idx in range(n_batches):
             ask_n = min(batch_size, remaining_ask)
@@ -2529,21 +2609,21 @@ async def generate_ai_quiz(
 
         per_call_timeout = min(
             OLLAMA_TIMEOUT,
-            max(20.0, min(remaining_time, 58.0 if is_eco else 68.0)),
+            max(20.0, min(remaining_time, 42.0 if is_eco else 48.0)),
         )
-        predict_tokens = min(900, max(420, ask_n * 195))
+        predict_tokens = min(680, max(380, ask_n * 165))
 
         system_prompt = (
             "Bạn là chuyên gia ra đề trắc nghiệm chuẩn sư phạm.\n"
             "Biên soạn câu hỏi trắc nghiệm 4 lựa chọn bằng tiếng Việt bám sát TÀI LIỆU NGUỒN ([Nguồn 1], [Nguồn 2]...).\n"
             "QUY TẮC:\n"
-            "1. Chỉ hỏi kiến thức thực có trong tài liệu; tuân thủ YÊU CẦU RIÊNG nếu có.\n"
+            "1. Chỉ hỏi kiến thức thực có trong tài liệu; tuân thủ YÊU CẦU RIÊNG nếu có; KHÔNG viết '[Nguồn X]' vào trong nội dung câu hỏi.\n"
             "2. Đa dạng cách hỏi tự nhiên (bản chất, nguyên nhân, mục tiêu, ý nghĩa, so sánh, sự kiện, phủ định). "
             "CẤM lặp 1 khuôn mẫu và CẤM dùng dạng điền chỗ trống '[...]'.\n"
-            "3. Cả 4 phương án phải CÙNG LOẠI ngữ nghĩa, đầy đủ nghĩa, độ dài tương đương; CẤM cắt lẻ 1 âm tiết, "
+            "3. Cả 4 phương án phải CÙNG LOẠI ngữ nghĩa, khác nhau hoàn toàn, đầy đủ nghĩa, độ dài tương đương; CẤM cắt lẻ 1 âm tiết, "
             "CẤM 'Không đề cập trong đoạn này', CẤM hỏi tên website/số trang/mục lục.\n"
-            "4. Phân bổ đều answerIndex vào 0, 1, 2, 3.\n"
-            'TRẢ VỀ DUY NHẤT JSON: {"questions":[{"prompt":"...","options":["...","...","...","..."],"answerIndex":1,"explanation":"...","sourceIndex":1}]}\n'
+            "4. Ghi CHÍNH XÁC nguyên văn phương án đúng vào trường correctAnswer (khớp 100% với 1 trong 4 phần tử của options) và answerIndex tương ứng (0..3).\n"
+            'TRẢ VỀ DUY NHẤT JSON: {"questions":[{"prompt":"...","options":["...","...","...","..."],"correctAnswer":"...","answerIndex":0,"explanation":"...","sourceIndex":1}]}\n'
             f"Tạo đúng {ask_n} câu hỏi khác nhau."
         )
 
@@ -2580,8 +2660,8 @@ async def generate_ai_quiz(
             )
             consecutive_errors = 0
             if not batch_qs:
-                # Nếu model trả về trùng hoặc không sinh thêm câu hợp lệ mới, dừng sớm để tránh lặp vô ích
-                break
+                # Lô hiện tại không có câu đạt chuẩn -> tiếp tục thử lát cắt tiếp theo thay vì hủy toàn bộ
+                continue
             valid_questions.extend(batch_qs)
         except Exception as exc:
             llm_error = exc
@@ -2594,6 +2674,11 @@ async def generate_ai_quiz(
             )
             if consecutive_errors >= 2:
                 break
+
+    # Lọc câu hỏi sạch TRƯỚC khi tính số lượng cần bù để luôn đảm bảo trả về đủ count câu hỏi
+    valid_questions = [
+        q for q in valid_questions if _is_clean_quiz_question(str(q.get("prompt") or ""), q.get("options") or [])
+    ]
 
     # Bổ sung câu hỏi chuẩn xác từ tài liệu nguồn nếu LLM trả về thiếu số lượng
     needed = count - len(valid_questions)
@@ -2608,7 +2693,9 @@ async def generate_ai_quiz(
                 quiz_style=eff_style,
                 difficulty=difficulty,
             )
-            valid_questions.extend(vocab_topup)
+            valid_questions.extend(
+                q for q in vocab_topup if _is_clean_quiz_question(str(q.get("prompt") or ""), q.get("options") or [])
+            )
 
         needed = count - len(valid_questions)
         if needed > 0 and (total_raw_chars >= 160 or not valid_questions):
@@ -2617,7 +2704,9 @@ async def generate_ai_quiz(
                 needed=needed,
                 existing_prompts=existing_prompts,
             )
-            valid_questions.extend(prose_topup)
+            valid_questions.extend(
+                q for q in prose_topup if _is_clean_quiz_question(str(q.get("prompt") or ""), q.get("options") or [])
+            )
 
     if not valid_questions and llm_error is not None:
         logger.exception("Lỗi khi sinh Quiz bằng AI: %s", llm_error)
@@ -2628,9 +2717,6 @@ async def generate_ai_quiz(
             "is_mock": True,
         }
 
-    valid_questions = [
-        q for q in valid_questions if _is_clean_quiz_question(str(q.get("prompt") or ""), q.get("options") or [])
-    ]
     final_questions = valid_questions[:count]
     for idx, q in enumerate(final_questions):
         q["id"] = f"ai-q-{idx + 1}"
